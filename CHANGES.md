@@ -5,3 +5,8 @@
 - Package skeleton: `pyproject.toml` with the `src` layout, `mastpipe` console
   script (`--version`, help), CI matrix (Linux, Windows, macOS × Python 3.11,
   3.12) and the privacy scan for tracked files.
+- Core data model (`mastpipe.core.model`): the dataclasses exchanged between
+  layers (`FrameMeta`, `Frame`, `MasterCalib`, `CalibrationSet`, `Trace`,
+  `TraceSet`, `Spectrum` with kept `versions`, `ExposureSpectra`,
+  `WavelengthSolution`, `ReferenceSolution`, `DriftModel`, `CombinedSpectrum`,
+  `QCReport`) and the vocabulary constants they validate against.
