@@ -26,3 +26,9 @@
   unreadable files collected on request), `load_frame` (float32, crop, then transpose /
   flip_x / flip_y), `read_manifest`/`apply_manifest` (CSV overrides by `source` [+ `extension`])
   and `file_checksum` (SHA-256, 16 hex).
+- Grating geometry step (`mastpipe.steps.geometry`: `GratingGeometry`, `grating_geometry`,
+  `theta_of_lambda`, `grating_x`, `lambda_of_x`, `nominal_solution`) and the synthetic-night
+  simulator (`mastpipe.sim.simulator`: `simulate_night` writing raw-shaped HighSpec frames with
+  a full arc, calibration-fiber arcs drifting linearly in time, drifted science and sky spectra,
+  cosmic rays and a background frame; `SimTruth` saved as `truth.npz` + `truth.json`, read back
+  by `load_truth`); session-scoped `sim_night` / `sim_night_lab3` test fixtures.
