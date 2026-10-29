@@ -239,6 +239,16 @@ def test_comb_shift_subpixel():
     assert comb_shift(np.array([]), a, max_shift=5.0) == 0.0
 
 
+def test_comb_shift_width_sets_the_consensus_scale():
+    rng = np.random.default_rng(11)
+    a = np.sort(rng.uniform(0.0, 1500.0, size=60))
+    b = a + 1.3 + rng.normal(0.0, 0.4, size=a.size)  # members scattered by 0.4 px
+    assert abs(comb_shift(a, b, max_shift=5.0, width=1.0) - 1.3) < 0.15
+    assert abs(comb_shift(a, b, max_shift=5.0, width=0.4) - 1.3) < 0.15
+    with pytest.raises(ValueError, match="width"):
+        comb_shift(a, b, max_shift=5.0, width=0.0)
+
+
 # ----------------------------------------------------------------------------- match_layout
 
 
@@ -299,10 +309,31 @@ def test_match_layout_one_to_one_by_distance(lab3_layout):
     ys = np.sort([nominal[0], nominal[1] - 1.0, nominal[1] + 0.4, nominal[2]])
     traces = [make_trace(i, y, x_center) for i, y in enumerate(ys)]
     matched = match_layout(TraceSet(traces=traces, shape=(398, 1598)), lab3_layout, 2.0)
-    assert matched.layout_shift == pytest.approx(0.0, abs=0.1)
+    # the two detections straddling row 1 pull the consensus a little below zero
+    assert matched.layout_shift == pytest.approx(0.0, abs=0.3)
     assert matched.missing == ()
     assert matched.extra == (1,)
     assert [trace.layout_index for trace in matched] == [0, None, 1, 2]
+
+
+def test_match_layout_perturbed_periodic_layout_does_not_alias(survey_traces, survey_layout):
+    rng = np.random.default_rng(13)
+    perturbed = survey_layout.copy()
+    perturbed["y_nominal"] = perturbed["y_nominal"] + rng.uniform(-0.5, 0.5, size=len(perturbed))
+    detected = TraceSet(
+        traces=[make_trace(t.index, t.y_center, 799.0) for t in survey_traces],
+        shape=survey_traces.shape,
+    )
+    for offset in (0.0, 2.0, -3.0):  # a global shift within half the 8.5 px pitch
+        shifted = TraceSet(
+            traces=[replace(t, y_center=t.y_center + offset) for t in detected],
+            shape=detected.shape,
+        )
+        matched = match_layout(shifted, perturbed, 3.0)
+        assert matched.layout_shift == pytest.approx(offset, abs=0.3)
+        assert matched.missing == () and matched.extra == ()
+        assert [t.layout_index for t in matched] == list(range(45))
+        assert [t.role for t in matched] == survey_layout["role"].tolist()
 
 
 # ----------------------------------------------------------------------------- classify_arc
@@ -318,6 +349,12 @@ def test_classify_arc_full_vs_calfiber_vs_unknown(night, survey_traces):
     assert set(flags) == set(range(45)) and all(flags.values())
 
     kind, flags = classify_arc(night.cal_arc, survey_traces, APERTURE_HALFWIDTH)
+    assert kind == "calfiber"
+    assert {i for i, lit in flags.items() if lit} == arc_traces
+
+    # a residual background of 0.5 ADU per pixel left by the calibration changes nothing
+    residual = Frame(data=night.cal_arc.data + 0.5, meta=night.cal_arc.meta)
+    kind, flags = classify_arc(residual, survey_traces, APERTURE_HALFWIDTH)
     assert kind == "calfiber"
     assert {i for i, lit in flags.items() if lit} == arc_traces
 
@@ -367,6 +404,46 @@ def test_classify_arc_toy_frames():
     kind, flags = classify_arc(toy_frame(lit_all), TraceSet(with_extra, shape), 2.0)
     assert kind == "full"
     assert flags[3] is False
+
+
+def toy_arc_scene() -> tuple[TraceSet, np.ndarray, np.ndarray]:
+    """Three traces (arc, science, sky) on a 60 x 200 frame: the noise and a cal-arc image."""
+    shape = (60, 200)
+    traces = [
+        replace(make_trace(i, y, 100.0), role=role, layout_index=i)
+        for i, (y, role) in enumerate(((10.0, "arc"), (30.0, "science"), (50.0, "sky")))
+    ]
+    rng = np.random.default_rng(17)
+    noise = rng.normal(0.0, 2.0, size=shape)
+    arc_only = noise.copy()
+    for start in range(5, 200, 10):
+        arc_only[10, start : start + 3] += 500.0
+    return TraceSet(traces=traces, shape=shape), noise, arc_only
+
+
+def test_classify_arc_survives_residual_background_and_scattered_light():
+    traceset, noise, arc_only = toy_arc_scene()
+    kind, flags = classify_arc(toy_frame(arc_only), traceset, 2.0)
+    assert (kind, flags) == ("calfiber", {0: True, 1: False, 2: False})
+
+    # 0.5 ADU per pixel left by the calibration: 5 rows x 0.5 = 2.5 ADU per column on every
+    # trace, above the 5 sigma noise floor of ~1.6; the spatial baseline removes it
+    kind, flags = classify_arc(toy_frame(arc_only + 0.5), traceset, 2.0)
+    assert (kind, flags) == ("calfiber", {0: True, 1: False, 2: False})
+
+    # scattered lamp light on the science trace at 3 % of the arc level is far above the
+    # noise floor but below lit_fraction of the brightest trace; lowering lit_fraction
+    # lets it count and the frame becomes unknown
+    arc_level = np.mean(arc_only[10] - noise[10])
+    scattered = arc_only.copy()
+    scattered[30, :] += 0.03 * arc_level
+    kind, flags = classify_arc(toy_frame(scattered), traceset, 2.0)
+    assert (kind, flags) == ("calfiber", {0: True, 1: False, 2: False})
+    kind, flags = classify_arc(toy_frame(scattered), traceset, 2.0, lit_fraction=0.01)
+    assert (kind, flags) == ("unknown", {0: True, 1: True, 2: False})
+
+    # a dark frame stays dark: no brightest trace to scale against
+    assert classify_arc(toy_frame(noise), traceset, 2.0)[0] == "unknown"
 
 
 # ---------------------------------------------------------------------- relative_throughput

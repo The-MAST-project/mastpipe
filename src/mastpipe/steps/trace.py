@@ -56,7 +56,12 @@ RMS_FLOOR_PX = 1e-3
 COMB_KERNEL_STEPS = 2.0
 """Width of the kernel :func:`comb_shift` lays on every position difference, in grid steps."""
 LAYOUT_SEARCH_PX = 20.0
-"""Smallest search range of the global layout shift, whatever the matching tolerance."""
+"""Largest search range of the global layout shift, in rows."""
+LAYOUT_SEARCH_PITCH = 0.45
+"""The search range as a fraction of the smallest layout pitch, kept below one half so a
+periodic layout cannot be matched one fiber off."""
+LIT_BASELINE_HALFWIDTHS = 4
+"""Rows of the per-column running median removed before a lit test, in aperture halfwidths."""
 SPIKE_FILTER = 3
 """Columns of the running median that removes single-column spikes before a lit test."""
 
@@ -291,21 +296,27 @@ def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
 # -------------------------------------------------------------------------- comb matching
 
 
-def comb_shift(a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1) -> float:
+def comb_shift(
+    a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1, width: float | None = None
+) -> float:
     """The shift ``s`` in ``[-max_shift, max_shift]`` for which ``a + s`` best overlaps ``b``.
 
     Every pairwise difference ``b_j - a_i`` within range is laid down as a Gaussian of
-    width ``COMB_KERNEL_STEPS · step``; the sum is sampled on a grid of ``step`` and the
-    maximum refined by a parabola through its neighbours. Members without a partner add
-    no peak and do not pull the estimate. ``0.0`` when either comb is empty or no
-    difference falls within the range.
+    ``width`` (default ``COMB_KERNEL_STEPS · step``; callers set it to the scatter they
+    expect between matching members, such as their matching tolerance); the sum is
+    sampled on a grid of ``step`` and the maximum refined by a parabola through its
+    neighbours. Members without a partner add no peak and do not pull the estimate.
+    ``0.0`` when either comb is empty or no difference falls within the range.
     """
     a = np.asarray(a, dtype=float).ravel()
     b = np.asarray(b, dtype=float).ravel()
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
     if a.size == 0 or b.size == 0 or max_shift <= 0 or step <= 0:
         return 0.0
-    width = COMB_KERNEL_STEPS * step
+    if width is None:
+        width = COMB_KERNEL_STEPS * step
+    if width <= 0:
+        raise ValueError(f"comb_shift width must be positive, got {width}")
     differences = (b[None, :] - a[:, None]).ravel()
     differences = differences[np.abs(differences) <= max_shift + 4.0 * width]
     if differences.size == 0:
@@ -333,19 +344,27 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
     """Assign the layout's rows to the detected traces and report what does not match.
 
     One global offset ``layout_shift`` (detected minus nominal, in rows) comes from
-    :func:`comb_shift` over at least ``max(3 · tolerance, LAYOUT_SEARCH_PX)``; each layout
-    row then takes the detected trace closest to ``y_nominal + layout_shift`` within
-    ``tolerance``, one-to-one, the smallest distances first. Matched traces receive
-    ``role``, ``telescope``, ``layout_index`` (the row's position in ``layout``) and
-    ``aperture`` (``None`` when the layout leaves it unset); unmatched ones keep ``None``
-    in all four. ``missing`` lists the layout indices without a detection, ``extra`` the
-    trace indices without a layout row. The input traces are not modified.
+    :func:`comb_shift` with a kernel of ``tolerance`` over
+    ``±min(LAYOUT_SEARCH_PX, LAYOUT_SEARCH_PITCH · smallest layout pitch)``: a periodic
+    layout matched one pitch off would still pair almost every row, so the search never
+    reaches the alias. Each layout row then takes the detected trace closest to
+    ``y_nominal + layout_shift`` within ``tolerance``, one-to-one, the smallest distances
+    first. Matched traces receive ``role``, ``telescope``, ``layout_index`` (the row's
+    position in ``layout``) and ``aperture`` (``None`` when the layout leaves it unset);
+    unmatched ones keep ``None`` in all four. ``missing`` lists the layout indices without
+    a detection, ``extra`` the trace indices without a layout row. The input traces are
+    not modified.
     """
     detected = np.array([trace.y_center for trace in traceset.traces], dtype=float)
     nominal = layout["y_nominal"].to_numpy(dtype=float)
     shift = 0.0
     if detected.size and nominal.size:
-        shift = -comb_shift(detected, nominal, max(3.0 * tolerance, LAYOUT_SEARCH_PX))
+        max_shift = LAYOUT_SEARCH_PX
+        if nominal.size > 1:
+            pitch = float(np.min(np.diff(np.sort(nominal))))
+            max_shift = min(max_shift, LAYOUT_SEARCH_PITCH * pitch)
+        if max_shift > 0:
+            shift = -comb_shift(detected, nominal, max_shift, width=float(tolerance))
     predicted = nominal + shift
 
     pairs = sorted(
@@ -429,32 +448,53 @@ def _aperture_sum(
 
 
 def classify_arc(
-    frame: Frame, traceset: TraceSet, halfwidth: float, lit_sigma: float = 5.0
+    frame: Frame,
+    traceset: TraceSet,
+    halfwidth: float,
+    lit_sigma: float = 5.0,
+    lit_fraction: float = 0.1,
 ) -> tuple[str, dict[int, bool]]:
     """Which traces carry light on ``frame``, and what kind of arc that makes it.
 
-    A trace is lit when the mean along x of its aperture-summed spectrum (rows within
-    ``halfwidth`` of the trace, single-column spikes removed by a running median of
-    :data:`SPIKE_FILTER` columns) exceeds ``lit_sigma`` times the noise of that mean,
-    taken as the frame's robust pixel sigma scaled by the aperture's row count and the
-    column count. The mean rather than the median is compared because an arc spectrum is
-    emission lines on a dark continuum: its median along x is the level between lines.
-    Returns ``("full", flags)`` when every matched trace (``role`` set) is lit,
-    ``("calfiber", flags)`` when every ``arc`` trace is lit and no ``science`` or ``sky``
-    trace is, else ``("unknown", flags)``; ``flags`` maps trace index to its lit flag,
-    unmatched traces included.
+    The frame first loses a per-column running median along y over
+    ``LIT_BASELINE_HALFWIDTHS · ceil(halfwidth)`` rows (made odd), which removes a residual
+    background and the smooth wings of neighbouring fibers. A trace's level is then the
+    mean along x of its aperture-summed spectrum (rows within ``halfwidth`` of the trace,
+    single-column spikes removed by a running median of :data:`SPIKE_FILTER` columns); it
+    is lit when that level exceeds both ``lit_sigma`` times the noise of the mean (the
+    baseline-subtracted frame's robust pixel sigma scaled by the aperture's row count and
+    the column count) and ``lit_fraction`` times the brightest trace's level, so that a
+    frame's own lit fibers set the scale and faint leakage never counts. The mean rather
+    than the median is compared because an arc spectrum is emission lines on a dark
+    continuum: its median along x is the level between lines. Returns ``("full", flags)``
+    when every matched trace (``role`` set) is lit, ``("calfiber", flags)`` when every
+    ``arc`` trace is lit and no ``science`` or ``sky`` trace is, else ``("unknown",
+    flags)``; ``flags`` maps trace index to its lit flag, unmatched traces included.
     """
     data = np.asarray(frame.data, dtype=float)
     ny, nx = data.shape
-    pixel_sigma = robust_sigma(data if frame.mask is None else data[~frame.mask])
+    finite = np.isfinite(data)
+    if frame.mask is not None:
+        finite &= ~frame.mask
+    filled = np.where(finite, data, 0.0)
+    window = _odd(LIT_BASELINE_HALFWIDTHS * int(np.ceil(halfwidth)) + 1)
+    data = filled - median_filter(filled, size=(window, 1), mode="nearest")
+    pixel_sigma = robust_sigma(data[finite])
     if not np.isfinite(pixel_sigma):
         pixel_sigma = 0.0
-    flags: dict[int, bool] = {}
+    levels: dict[int, float] = {}
+    noises: dict[int, float] = {}
     for trace in traceset:
         spectrum, n_rows = _aperture_sum(data, trace, halfwidth, frame.mask)
-        level = float(np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest")))
-        noise = pixel_sigma * np.sqrt(n_rows) / np.sqrt(nx)
-        flags[trace.index] = bool(level > lit_sigma * noise)
+        levels[trace.index] = float(
+            np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest"))
+        )
+        noises[trace.index] = pixel_sigma * np.sqrt(n_rows) / np.sqrt(nx)
+    brightest = max(levels.values(), default=0.0)
+    flags = {
+        index: bool(level > max(lit_sigma * noises[index], lit_fraction * brightest))
+        for index, level in levels.items()
+    }
 
     matched = [trace for trace in traceset if trace.role is not None]
     arcs = [trace for trace in matched if trace.role == "arc"]

@@ -101,11 +101,21 @@ group.
   configuration is unchanged and the tests pass the value explicitly, so the
   survey preset will need its own trace parameters when it is commissioned.
 - **A lit trace is judged by the mean, not the median, of its aperture
-  spectrum**: an arc spectrum is emission lines on a dark continuum, so its
-  median along x is the level between lines (zero in the simulator). The mean
-  is compared with `lit_sigma` times the noise of the mean, after a
-  three-column running median that removes single-pixel cosmic rays (lines are
-  wider than one column).
+  spectrum, against the frame's own brightest trace**: an arc spectrum is
+  emission lines on a dark continuum, so its median along x is the level
+  between lines (zero in the simulator). The frame first loses a per-column
+  running median along y (about four aperture halfwidths), which removes a
+  residual background and the smooth wings of lit neighbours; a trace is lit
+  when its mean exceeds both `lit_sigma` times the noise of the mean and
+  `lit_fraction` (0.1) of the brightest trace's mean, after a three-column
+  running median that removes single-pixel cosmic rays (lines are wider than
+  one column). An absolute noise floor alone (about 0.4 ADU per column per
+  sigma on a 1598-column frame) would call every trace lit after a residual of
+  0.3 ADU per pixel and turn calibration-fiber arcs into full arcs.
+- **The layout shift search stays below half the smallest layout pitch**
+  (`min(20 px, 0.45 x pitch)`, kernel width equal to the matching tolerance): a
+  periodic layout matched one pitch off would still pair almost every row with
+  the roles one fiber off, so the alias must be outside the search range.
 - **The collapse statistic is a parameter** (`TraceParams.collapse`: `median`,
   the notebook's choice and the default; `mean`; `percentile` with
   `collapse_percentile = 90`): a median along x cannot see a trace that carries
