@@ -82,3 +82,32 @@ group.
 - **Layout and anchor coordinates are in the cropped frame** of `config.yaml`,
   the frame every step works in; raw-frame numbers are converted when they are
   entered.
+
+## 2026-10-30 — Trace step
+
+- **Profile noise is the noise of the median, not the profile's own scatter**:
+  the notebook's `find_traces` thresholds the collapsed spatial profile at a
+  multiple of its own robust sigma, which is a noise estimate only while most
+  rows are empty. On the 45-trace survey layout (8.5 px pitch) that sigma
+  measures the comb itself (on the simulated flat 7 247 ADU, so the 5σ
+  threshold of 36 000 ADU exceeds every peak and nothing is detected), and on
+  the three-fiber layout the median of integer-valued pixels is quantised and
+  the sigma collapses to 0.1 ADU (noise peaks pass). `mastpipe.steps.trace`
+  uses the statistical noise of a median across the collapsed columns
+  (`sqrt(pi/2)` times the rows' robust scatter over `sqrt(n)`), which agrees
+  with the notebook where the notebook's estimate is a noise estimate. The
+  survey layout also needs `trace_halfwidth` below the pitch (4, against the
+  HighSpec default of 8, which sets a 16 px minimum separation); the instrument
+  configuration is unchanged and the tests pass the value explicitly, so the
+  survey preset will need its own trace parameters when it is commissioned.
+- **A lit trace is judged by the mean, not the median, of its aperture
+  spectrum**: an arc spectrum is emission lines on a dark continuum, so its
+  median along x is the level between lines (zero in the simulator). The mean
+  is compared with `lit_sigma` times the noise of the mean, after a
+  three-column running median that removes single-pixel cosmic rays (lines are
+  wider than one column).
+- **The median collapse cannot find traces on a line-only arc**: the design's
+  fallback to a fully lit frame when there is no flat works for frames with a
+  continuum; on the simulator's full arc (no continuum) the median-collapsed
+  profile shows no trace. Left as is until a real flat-less night shows what
+  the arc looks like; a mean or high-percentile collapse is the obvious fix.

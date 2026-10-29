@@ -38,3 +38,9 @@
   dark and bias masters), `calibrate_frame` (the notebook's bias/background or bias/dark
   arithmetic, variance in ADU² from gain and read noise, saturation and non-finite mask),
   `calibration_steps` and `flag_cosmic_rays` (median-filter residual above `sigma` noise units).
+- Trace step (`mastpipe.steps.trace`): `find_traces` (the notebook's band collapse, running-median
+  baseline, `find_peaks`, per-block centroids and two-pass clipped polynomial; the profile noise
+  is the statistical noise of the median across the collapsed columns), `comb_shift` (sub-pixel
+  shift between two position combs), `match_layout` (global shift, one-to-one assignment by
+  distance, `missing`/`extra`), `trace_source` (flat, else full arc), `classify_arc` (`full` /
+  `calfiber` / `unknown` from the lit traces) and `relative_throughput`.
