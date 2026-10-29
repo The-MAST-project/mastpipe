@@ -47,3 +47,9 @@
   brightest, after a spatial running-median baseline) and `relative_throughput`; `TraceParams.collapse`
   (`median` / `mean` / `percentile`) picks the band statistic, the percentile seeing a
   line-only arc when there is no flat.
+- Extraction step (`mastpipe.steps.extract`): `aperture_weights` (`round`, `floor` and
+  `subpixel` apertures carrying `2·hw + 1` rows of weight), `extract_aperture` (weighted sum
+  or mean per column along each trace with its propagated error; a column is masked below
+  `min_coverage` or when a masked pixel falls in the aperture; per-trace `aperture` override),
+  `fit_continuum` (Chebyshev fit with asymmetric clipping about the median residual, stored
+  as `Spectrum.continuum` beside the untouched raw flux) and `continuum_subtract_all`.
