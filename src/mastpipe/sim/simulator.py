@@ -1,7 +1,7 @@
 """A synthetic HighSpec night with the truth it was drawn from.
 
-:func:`simulate_night` writes raw-shaped ``uint16`` FITS frames (bias, dark, background,
-flat, one full arc, calibration-fiber arcs and science frames) whose headers the HighSpec
+:func:`simulate_night` writes raw-shaped ``uint16`` FITS frames (bias, dark, flat,
+one full arc, a background, calibration-fiber arcs and science frames) whose headers the HighSpec
 header map classifies, together with ``truth.npz`` + ``truth.json`` that
 :func:`load_truth` reads back as a :class:`SimTruth`. The simulation model:
 
@@ -12,11 +12,13 @@ header map classifies, together with ``truth.npz`` + ``truth.json`` that
   curvature ``|c| <= 2e-6``, imaged with a Gaussian spatial profile of ``fwhm_px``;
 - flats are a quadratic blaze times a per-fiber throughput (0.8-1.2) on every trace;
 - the **full arc** lights every trace with the catalogue lines at the exact
-  grating-equation pixel of the nominal solution ``(x_c, B)``; it defines the drift zero;
+  grating-equation pixel of the nominal solution ``(x_c, B)``, drifted like every other
+  frame by the law at its own time;
 - a **calibration-fiber arc** lights only the ``arc`` traces, its lines moved by
   ``shift + stretch (x - n/2)`` where shift and stretch interpolate linearly in time from
-  ``drift_px[0]`` / ``drift_stretch[0]`` at ``night_start`` to ``drift_px[1]`` /
-  ``drift_stretch[1]`` at the last frame;
+  ``drift_px[0]`` / ``drift_stretch[0]`` at the full arc's mid-time to ``drift_px[1]`` /
+  ``drift_stretch[1]`` at the last frame's mid-time (frames before the full arc carry the
+  start value, so with the default ``drift_px = (0.0, 0.6)`` the full arc is undrifted);
 - science frames carry no arc light: science fibers show a flat continuum with Gaussian
   absorption dips at fixed wavelengths, sky fibers a faint continuum plus emission lines,
   both drifted by the same law at the frame's own time and scaled by the throughput, plus
@@ -84,11 +86,13 @@ IMAGE_TYPES = {
 }
 LAMPS = {"arc": "thar", "flat": "flat"}
 SHUTTER_CLOSED = ("bias", "dark")
+ON_CHIP_MARGIN_PX = 10
 TRUTH_ARRAYS = (
     "trace_coeffs",
     "lines_nm",
     "line_logI",
     "line_pixels",
+    "lines_on_chip",
     "throughput",
     "science_flux",
     "sky_flux",
@@ -103,12 +107,13 @@ class SimTruth:
 
     ``layout`` is the fiber layout with a ``target`` column; ``trace_coeffs`` is
     ``(n_traces, 3)`` in ``numpy.polyval`` order, ``y(x)`` in cropped coordinates;
-    ``line_pixels`` is ``(n_traces, n_lines)``: the undrifted column of every catalogue line
-    (values outside ``[0, n_pix)`` are off the chip); ``science_flux`` and ``sky_flux`` are
-    the undrifted column spectra (ADU per column, throughput 1) of a science and a sky
-    fiber; ``frames`` has :data:`FRAME_COLUMNS`, one row per file in time order, with the
-    shift and stretch applied to that frame's content (the drift law at its mid-time, zero
-    for the full arc); ``extras`` holds JSON-native scalars and the cosmic-ray positions.
+    ``line_pixels`` is ``(n_traces, n_lines)``: the undrifted column of every catalogue line,
+    and ``lines_on_chip`` (``(n_lines,)``, bool) marks the lines whose nominal pixel lies
+    within ``[ON_CHIP_MARGIN_PX, n_pix - ON_CHIP_MARGIN_PX]``; ``science_flux`` and
+    ``sky_flux`` are the undrifted column spectra (ADU per column, throughput 1) of a
+    science and a sky fiber; ``frames`` has :data:`FRAME_COLUMNS`, one row per file in
+    time order, with the shift and stretch applied to that frame's content (the drift law
+    at its mid-time); ``extras`` holds JSON-native scalars and the cosmic-ray positions.
     """
 
     layout: pd.DataFrame
@@ -118,6 +123,7 @@ class SimTruth:
     lines_nm: np.ndarray
     line_logI: np.ndarray
     line_pixels: np.ndarray
+    lines_on_chip: np.ndarray
     throughput: np.ndarray
     science_flux: np.ndarray
     sky_flux: np.ndarray
@@ -393,14 +399,15 @@ def _schedule(
     n_cal_arc: int,
     n_science: int,
 ) -> list[tuple[str, str | None]]:
-    """``(exposure_type, arc_kind)`` in time order: calibrations, the full arc, then groups of
-    one calibration-fiber arc followed by its share of the science frames."""
+    """``(exposure_type, arc_kind)`` in time order: bias, dark, flat, the full arc, the
+    background, then groups of one calibration-fiber arc followed by its share of the
+    science frames."""
     order: list[tuple[str, str | None]] = []
     order += [("bias", None)] * n_bias
     order += [("dark", None)] * n_dark
-    order += [("background", None)] * n_background
     order += [("flat", None)] * n_flat
     order += [("arc", "full")] * n_full_arc
+    order += [("background", None)] * n_background
     if n_cal_arc <= 0:
         order += [("science", None)] * n_science
         return order
@@ -411,10 +418,13 @@ def _schedule(
     return order
 
 
-def _drift_at(seconds: float, total: float, endpoints: tuple[float, float]) -> float:
-    if total <= 0.0:
+def _drift_at(seconds: float, origin: float, end: float, endpoints: tuple[float, float]) -> float:
+    """The drift law: ``endpoints[0]`` up to ``origin`` seconds, linear to ``endpoints[1]`` at
+    ``end`` seconds."""
+    if seconds <= origin or end <= origin:
         return float(endpoints[0])
-    return float(endpoints[0] + (endpoints[1] - endpoints[0]) * seconds / total)
+    fraction = (seconds - origin) / (end - origin)
+    return float(endpoints[0] + (endpoints[1] - endpoints[0]) * fraction)
 
 
 def _cards(
@@ -480,10 +490,12 @@ def simulate_night(
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
     Frames are ``sim_<type>_<nn>.fits`` at ``detector.shape``, one every ``cadence_min``
-    minutes from ``night_start`` in the order bias, dark, background, flat, full arc, then
+    minutes from ``night_start`` in the order bias, dark, flat, full arc, background, then
     one calibration-fiber arc followed by its share of the science frames, repeated
-    ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). Every
-    random number comes from ``numpy.random.default_rng(seed)``.
+    ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). The
+    drift law runs from the (first) full arc's mid-time to the last frame's; without a
+    full arc it runs from ``night_start``. Every random number comes from
+    ``numpy.random.default_rng(seed)``.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -494,7 +506,9 @@ def simulate_night(
         n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science
     )
     start = datetime.fromisoformat(night_start)
-    total_seconds = (len(schedule) - 1) * cadence_min * 60.0
+    kinds = [kind for _, kind in schedule]
+    origin_seconds = (kinds.index("full") if "full" in kinds else 0) * cadence_min * 60.0
+    end_seconds = (len(schedule) - 1) * cadence_min * 60.0
     exposures = {**EXPOSURE_S, "science": exposure_science, "background": exposure_science}
     targets = sorted({t for t in scene.layout["target"] if t is not None})
     science_object = "+".join(targets) if targets else "sim"
@@ -504,10 +518,8 @@ def simulate_night(
     counters: dict[str, int] = {}
     for k, (exposure_type, arc_kind) in enumerate(schedule):
         seconds = k * cadence_min * 60.0
-        shift = _drift_at(seconds, total_seconds, drift_px)
-        stretch = _drift_at(seconds, total_seconds, drift_stretch)
-        if arc_kind == "full":
-            shift, stretch = 0.0, 0.0
+        shift = _drift_at(seconds, origin_seconds, end_seconds, drift_px)
+        stretch = _drift_at(seconds, origin_seconds, end_seconds, drift_stretch)
         exposure = exposures[exposure_type]
         mid_time = (start + timedelta(seconds=seconds)).isoformat(timespec="seconds")
         index = counters.get(exposure_type, 0)
@@ -542,6 +554,8 @@ def simulate_night(
         lines_nm=scene.lines_nm,
         line_logI=scene.line_logI,
         line_pixels=np.tile(scene.line_x, (len(scene.layout), 1)),
+        lines_on_chip=(scene.line_x >= ON_CHIP_MARGIN_PX)
+        & (scene.line_x <= scene.n_pix - ON_CHIP_MARGIN_PX),
         throughput=scene.throughput,
         science_flux=_science_spectrum(scene, 0.0, 0.0),
         sky_flux=_sky_spectrum(scene, 0.0, 0.0),

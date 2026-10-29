@@ -50,9 +50,8 @@ def background_level(truth: SimTruth, path: Path) -> float:
 
 
 def on_chip(truth: SimTruth, trace_row: int) -> np.ndarray:
-    pixels = truth.line_pixels[trace_row]
-    n_pix = truth.science_flux.size
-    return pixels[(pixels > 10) & (pixels < n_pix - 10)]
+    """Undrifted pixels of the catalogue lines the truth marks as on the chip."""
+    return truth.line_pixels[trace_row][truth.lines_on_chip]
 
 
 def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
@@ -80,9 +79,10 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     times = pd.to_datetime(frames.mid_time)
     assert times.is_monotonic_increasing and times.is_unique
     order = frames.exposure_type.tolist()
-    assert order[:5] == ["bias"] * 5 and order[5:8] == ["dark"] * 3
-    assert order.index("flat") < order.index("arc")
-    assert kinds.index("full") < kinds.index("calfiber")
+    expected_order = ["bias"] * 5 + ["dark"] * 3 + ["flat"] * 3 + ["arc", "background"]
+    expected_order += ["arc", "science", "science"] * 2
+    assert order == expected_order
+    assert kinds[11] == "full" and kinds[13] == "calfiber" and kinds[16] == "calfiber"
     for i in frames.index[frames.exposure_type == "science"]:
         assert "calfiber" in kinds[:i]
     assert frames.mid_time.iloc[0] == "2026-10-01T18:00:00"
@@ -146,6 +146,7 @@ def test_truth_roundtrip(sim_night):
         "lines_nm",
         "line_logI",
         "line_pixels",
+        "lines_on_chip",
         "throughput",
         "science_flux",
         "sky_flux",
@@ -158,9 +159,15 @@ def test_truth_roundtrip(sim_night):
     assert loaded.extras == truth.extras
     assert loaded.trace_coeffs.shape == (45, 3)
     assert loaded.line_pixels.shape == (45, loaded.lines_nm.size)
+    assert loaded.lines_on_chip.shape == (loaded.lines_nm.size,)
+    assert loaded.lines_on_chip.dtype == np.bool_
+    n_pix = loaded.extras["n_pix"]
+    pixels = loaded.line_pixels[0]
+    np.testing.assert_array_equal(loaded.lines_on_chip, (pixels >= 10) & (pixels <= n_pix - 10))
+    assert 40 < loaded.lines_on_chip.sum() < loaded.lines_nm.size
 
 
-def test_calfiber_arc_lights_only_arc_traces(sim_night):
+def test_calfiber_arc_lights_only_arc_traces(sim_night, highspec_effective):
     out_dir, truth = sim_night
     frames = truth.frames
     path = out_dir / frames.file[frames.arc_kind == "calfiber"].iloc[0]
@@ -179,10 +186,12 @@ def test_calfiber_arc_lights_only_arc_traces(sim_night):
         spectrum = aperture_spectrum(data, truth.trace_coeffs[i])
         assert spectrum.max() > level * 9 + 5000.0
 
-    # the full arc lights the science traces too
-    full = cropped(out_dir / frames.file[frames.arc_kind == "full"].iloc[0], truth)
+    # the full arc lights the science traces too, and nothing saturates
+    full_path = out_dir / frames.file[frames.arc_kind == "full"].iloc[0]
+    full = cropped(full_path, truth)
     for i in science_rows[:3]:
         assert aperture_spectrum(full, truth.trace_coeffs[i]).max() > level * 9 + 5000.0
+    assert fits.getdata(full_path).max() < highspec_effective.detector.saturation
 
 
 def test_science_frames_have_no_arc_lines(sim_night):
@@ -221,16 +230,16 @@ def test_drift_interpolates_in_time(sim_night):
     between = shifts.iloc[cal[0] : cal[1] + 1]
     assert between.is_monotonic_increasing and between.is_unique
     assert shifts.iloc[-1] == pytest.approx(0.6)
-    assert shifts.iloc[0] == pytest.approx(0.0)
-    assert shifts.iloc[frames.index[frames.arc_kind == "full"][0]] == pytest.approx(0.0)
+    full = frames.index[frames.arc_kind == "full"][0]
+    assert shifts.iloc[full] == pytest.approx(0.0)
+    assert (shifts.iloc[:full] == 0.0).all()  # before the full arc: the start value
     assert (frames.stretch == 0.0).all()
-    # the law is linear in time
+    # the law is linear in time from the full arc's mid-time to the last frame's
     seconds = (
-        pd.to_datetime(frames.mid_time) - pd.Timestamp(frames.mid_time.iloc[0])
+        pd.to_datetime(frames.mid_time) - pd.Timestamp(frames.mid_time.iloc[full])
     ).dt.total_seconds()
-    expected = 0.6 * seconds / seconds.iloc[-1]
-    drifted = frames.arc_kind != "full"
-    np.testing.assert_allclose(shifts[drifted], expected[drifted], atol=1e-9)
+    expected = 0.6 * np.clip(seconds, 0.0, None) / seconds.iloc[-1]
+    np.testing.assert_allclose(shifts, expected, atol=1e-9)
 
     # and the lines on the cal arcs really sit at the truth pixel plus the recorded shift
     fiber = int(np.where(truth.layout.role == "arc")[0][0])
@@ -247,7 +256,6 @@ def test_drift_interpolates_in_time(sim_night):
             cropped(out_dir / frames.file.iloc[i], truth), truth.trace_coeffs[fiber]
         )
         assert centroid(spectrum, x_true) == pytest.approx(x_true + shifts.iloc[i], abs=0.1)
-    full = frames.index[frames.arc_kind == "full"][0]
     spectrum = aperture_spectrum(
         cropped(out_dir / frames.file.iloc[full], truth), truth.trace_coeffs[fiber]
     )
