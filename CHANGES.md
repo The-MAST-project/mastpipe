@@ -32,3 +32,9 @@
   a full arc, calibration-fiber arcs drifting linearly in time, drifted science and sky spectra,
   cosmic rays and a background frame; `SimTruth` saved as `truth.npz` + `truth.json`, read back
   by `load_truth`); session-scoped `sim_night` / `sim_night_lab3` test fixtures.
+- Clean step (`mastpipe.steps.calib`, `mastpipe.steps.cosmics`): `stack_frames` (median or
+  mean with optional sigma clipping, per-pixel variance of the master), `build_master`
+  (validity keys and input-checksum provenance), `build_calibration_set` (dark rate from the
+  dark and bias masters), `calibrate_frame` (the notebook's bias/background or bias/dark
+  arithmetic, variance in ADU² from gain and read noise, saturation and non-finite mask),
+  `calibration_steps` and `flag_cosmic_rays` (median-filter residual above `sigma` noise units).
