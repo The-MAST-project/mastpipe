@@ -31,17 +31,39 @@ def flag_cosmic_rays(
 
     An integer ``size`` means the along-dispersion footprint ``(1, size)``: one row,
     ``size`` columns. A ``(rows, columns)`` tuple is used as given (``(5, 5)`` for a
-    square). Returns a new bool mask equal to ``mask`` (``None`` for no prior mask) with
-    the flagged pixels added; neither input is modified. Tracks of several pixels along a
-    row are not caught (see the module docstring).
+    square). Pixels that are non-finite or already masked never enter the median: they
+    are replaced by a local estimate (the row median, refined by the footprint median of
+    the filled image) before filtering, so a cosmic ray next to a bad pixel is still seen
+    against its good neighbours; they are never flagged themselves. Returns a new bool
+    mask equal to ``mask`` (``None`` for no prior mask) with the flagged pixels added;
+    neither input is modified. Tracks of several pixels along a row are not caught (see
+    the module docstring).
     """
     data = np.asarray(data, dtype=np.float64)
     noise = np.sqrt(np.clip(np.asarray(variance, dtype=np.float64), 0.0, None))
-    residual = data - median_filter(data, size=footprint(size))
-    flagged = residual > sigma * noise
+    bad = ~np.isfinite(data)
+    if mask is not None:
+        bad |= np.asarray(mask, dtype=bool)
+    shape = footprint(size)
+    filled = _fill_bad(data, bad)
+    filled = np.where(bad, median_filter(filled, size=shape), filled)
+    residual = data - median_filter(filled, size=shape)
+    flagged = ~bad & (residual > sigma * noise)
     if mask is None:
         return flagged
     return np.asarray(mask, dtype=bool) | flagged
+
+
+def _fill_bad(data: np.ndarray, bad: np.ndarray) -> np.ndarray:
+    """``data`` with the ``bad`` pixels replaced by the median of their row's good pixels
+    (the frame's good-pixel median for a row without any)."""
+    good = np.where(bad, np.nan, data)
+    row_has_good = ~bad.all(axis=1)
+    frame_level = np.nanmedian(good) if row_has_good.any() else 0.0
+    row_level = np.full(data.shape[0], frame_level)
+    if row_has_good.any():
+        row_level[row_has_good] = np.nanmedian(good[row_has_good], axis=1)
+    return np.where(bad, row_level[:, None], data)
 
 
 def footprint(size: int | tuple[int, int]) -> tuple[int, int]:

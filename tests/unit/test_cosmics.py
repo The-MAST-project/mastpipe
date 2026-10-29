@@ -44,6 +44,31 @@ def test_flag_cosmic_rays_on_hand_array():
     assert flag_cosmic_rays(blob, blob, None, size=(5, 5))[4, 4]
 
 
+def test_flag_cosmic_rays_near_masked_and_non_finite_pixels():
+    data = np.full((9, 9), 10.0)
+    variance = np.full((9, 9), 4.0)
+    data[4, 4] = 100.0  # the spike
+    data[4, 6] = np.nan  # a non-finite pixel two columns away, inside the (1, 5) window
+    data[4, 2] = 1e6  # a saturated pixel two columns the other way, masked on input
+    mask = np.zeros((9, 9), dtype=bool)
+    mask[4, 2] = True
+    data_before = data.copy()
+
+    out = flag_cosmic_rays(data, variance, mask)
+    assert out[4, 4]  # the spike is still found
+    assert out[4, 2]  # the input mask is carried
+    assert not out[4, 3] and not out[4, 5]  # neighbours of the bad pixels are not flagged
+    assert out.sum() == 2
+    assert np.array_equal(data, data_before, equal_nan=True)
+    # the same with no input mask and the saturated pixel left unmasked: it is flagged
+    # itself, and still does not hide the spike
+    out = flag_cosmic_rays(data, variance, None)
+    assert out[4, 4] and out[4, 2] and out.sum() == 2
+    # a whole row of NaN does not raise or warn
+    data[0, :] = np.nan
+    assert flag_cosmic_rays(data, variance, None)[4, 4]
+
+
 def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective):
     out_dir, truth = sim_night
     detector = highspec_effective.detector

@@ -34,6 +34,8 @@ MEDIAN_EFFICIENCY = 1.253
 """Standard error of a median relative to that of a mean, ``sqrt(pi / 2)`` for Gaussian noise."""
 MAD_TO_SIGMA = 1.4826
 """The median absolute deviation of Gaussian noise scaled to its standard deviation."""
+EXPOSURE_TOLERANCE = 1e-6
+"""Relative spread of exposure times still treated as one exposure in a master."""
 
 
 # ------------------------------------------------------------------------------- stacking
@@ -104,10 +106,12 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     The validity record holds the keys that decide where the master applies: ``camera``,
     ``binning`` and ``readout_mode`` (which every input must share, ``ValueError``
     otherwise), the mean ``detector_temperature``, the mean ``mid_time`` (ISO-8601) and
-    the ``exposure_time`` (the common value, or the mean when they differ); a value no
-    input provides is ``None``. The provenance lists the input checksums in order, the
-    number of frames and the stacking method. ``ValueError`` for no frames or for frames
-    of different shapes.
+    the ``exposure_time``. For any kind but ``"bias"`` the exposure times must agree to
+    :data:`EXPOSURE_TOLERANCE` (relative), ``ValueError`` otherwise — a dark or
+    background of mixed exposures has no single scaling time, so the caller groups frames
+    by exposure time first; a bias records the mean. A value no input provides is
+    ``None``. The provenance lists the input checksums in order, the number of frames and
+    the stacking method. ``ValueError`` for no frames or for frames of different shapes.
     """
     if not frames:
         raise ValueError(f"master {kind}: no frames to stack")
@@ -116,6 +120,14 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
         values = {getattr(meta, key) for meta in metas}
         if len(values) != 1:
             raise ValueError(f"master {kind}: inputs mix {key} values {sorted(map(str, values))}")
+    exposures = [meta.exposure_time for meta in metas if meta.exposure_time is not None]
+    if kind != "bias" and exposures:
+        spread = max(exposures) - min(exposures)
+        if spread > EXPOSURE_TOLERANCE * max(abs(t) for t in exposures):
+            raise ValueError(
+                f"master {kind}: inputs mix exposure times {sorted(set(exposures))}; "
+                "stack frames of one exposure time at a time"
+            )
     shapes = {frame.data.shape for frame in frames}
     if len(shapes) != 1:
         raise ValueError(f"master {kind}: inputs have different shapes {sorted(shapes)}")

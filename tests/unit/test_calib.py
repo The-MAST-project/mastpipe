@@ -128,9 +128,21 @@ def test_build_master_validity_and_provenance():
     assert dark.data[0, 0] == pytest.approx(531.0)
     assert dark.provenance["method"] == "mean"
 
-    # mixed exposure times average; missing values become None
+    # a dark or background of mixed exposure times is an error, a bias averages them;
+    # missing values become None
     mixed = [frame(1.0, "dark", 100.0), frame(1.0, "dark", 300.0)]
-    assert build_master(mixed, "dark", CalibParams()).validity["exposure_time"] == 200.0
+    with pytest.raises(ValueError):
+        build_master(mixed, "dark", CalibParams())
+    with pytest.raises(ValueError):
+        build_master(mixed, "background", CalibParams())
+    nearly = [frame(1.0, "dark", 300.0), frame(1.0, "dark", 300.0 * (1 + 1e-7))]
+    assert build_master(nearly, "dark", CalibParams()).validity["exposure_time"] == (
+        pytest.approx(300.0)
+    )
+    biases = [frame(1.0, "bias", 0.0), frame(1.0, "bias", 0.1)]
+    assert build_master(biases, "bias", CalibParams()).validity["exposure_time"] == (
+        pytest.approx(0.05)
+    )
     bare = Frame(
         data=np.zeros(SHAPE, dtype=np.float32),
         meta=FrameMeta(instrument="toy", camera="main", exposure_type="bias"),
