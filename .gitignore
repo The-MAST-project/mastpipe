@@ -1,0 +1,30 @@
+# design/implementation documents stay local for now (user decision 2026-09-24)
+docs/design/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# local configuration and secrets
+.env
+*.local.*
+config.local.yaml
+
+# notebooks and tooling state
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# agent memory (repo-local, never committed)
+.claude/memory/
+
+# throwaway spikes (kept locally, never committed)
+spike/
+.superpowers/
