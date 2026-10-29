@@ -64,3 +64,21 @@ group.
      run only when their calibrations exist.
   8. Kept versions are columns in the per-fiber spectrum table on one
      wavelength grid, not separate extensions.
+
+## 2026-10-29 — Instrument definitions as package data
+
+- **One folder per instrument, discovered by the registry**: `config.yaml`
+  carries everything except the configuration blocks, which are one YAML file
+  each under `gratings/` (HighSpec) or `bands/` (DeepSpec) with `name` equal to
+  the file stem; layouts are `layouts/<preset>.csv` for every preset listed in
+  `config.yaml`; anchor pairs are optional `anchors/<configuration>_<preset>.yaml`.
+  A new grating is therefore a data change with no code edit, which a test
+  proves with a temporary extra file.
+- **Line tables are generated, not hand-edited**: the Murphy et al. atlas is not
+  shipped; `scripts/make_line_table.py` reads it from `MASTPIPE_ATLAS_DIR` and
+  writes the committed `lines/<configuration>.csv` (catalogue lines in band with
+  the usable flag at the instrument resolution). The header comment records the
+  criteria and the counts so a regeneration must reproduce the file unchanged.
+- **Layout and anchor coordinates are in the cropped frame** of `config.yaml`,
+  the frame every step works in; raw-frame numbers are converted when they are
+  entered.

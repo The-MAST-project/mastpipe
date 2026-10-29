@@ -66,5 +66,8 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "NPY"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["mastpipe"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

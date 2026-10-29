@@ -1,0 +1,4 @@
+trace,role,telescope,y_nominal,slope_nominal,aperture
+0,arc,,17.4,0.0017,
+1,arc,,189.0,0.0020,
+2,arc,,360.7,0.0023,

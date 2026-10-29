@@ -1,0 +1,31 @@
+# HighSpec: fiber-fed R ~ 20 000 spectrograph with one Andor camera and interchangeable
+# narrow-band gratings. Numbers come from the HighSpec laboratory reduction notebook
+# The grating blocks live in gratings/*.yaml, one file per grating,
+# and are merged into `configurations` by mastpipe.instruments.registry.
+name: highspec
+
+cameras:
+  main:
+    name: main
+    shape: [400, 1600]          # [ny, nx] of the raw frame; dispersion runs along x
+    gain: 1.0                   # e-/ADU  PLACEHOLDER: not yet measured (flat pairs)
+    read_noise: 5.0             # e-      PLACEHOLDER: not yet measured (bias pairs)
+    pixel_size_um: 16.0
+    saturation: 65000.0         # ADU, 16-bit readout
+    crop: [1, 1599, 1, 399]     # [x_min, x_max, y_min, y_max], end exclusive: drops the edge row and column
+    dispersion_axis: 1
+
+# Step parameters; anything not listed keeps the defaults of mastpipe.config.models.
+params:
+  trace:
+    trace_halfwidth: 8          # ~2.5 x the 3 px fiber image
+    degree: 2                   # a quadratic absorbs the conical-diffraction curvature
+  extract:
+    halfwidth: 9.0              # 3 x the fiber image
+    continuum_degree: 15
+  lines:
+    sigma_guess: 1.2739936      # 3.0 / 2.3548: Gaussian sigma of a 3 px FWHM line image
+
+default_layout: lab3
+layouts: [lab3, survey45]       # one layouts/<preset>.csv per entry
+arc_classification: lit_traces  # a full arc lights every fiber; a drift arc only the arc fibers

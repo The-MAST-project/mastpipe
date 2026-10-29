@@ -1,0 +1,7 @@
+# Anchor pairs [air wavelength nm, pixel] measured on trace 0 of the lab3 layout, in the
+# cropped frame of config.yaml. They seed the first Mg b reference solution through
+# `mastpipe identify`.
+trace: 0
+pairs:
+  - [515.8605, 267.22]
+  - [525.8360, 1423.22]

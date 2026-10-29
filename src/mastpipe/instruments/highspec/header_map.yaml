@@ -1,0 +1,44 @@
+# Raw FITS header vocabulary of HighSpec (Andor Solis keywords that exist today plus the
+# names the pipeline looks for once the control software writes them). This file and
+# mastpipe/io/ingest.py are the only places where a raw keyword name may appear; edit here
+# when the keywords change. Interpreted by mastpipe.io.headers.
+#
+# fields: pipeline name -> {keys: header keywords tried in order, type, lower, map, default,
+#         filename_regex (named group `value`, used when no keyword is present)}
+fields:
+  exposure_time: {keys: [EXPOSURE, EXPTIME], type: float}
+  mid_time: {keys: [DATE-OBS, DATE], type: str}
+  detector_temperature: {keys: [TEMP, CCD-TEMP], type: float}
+  binning_x: {keys: [HBIN], type: int}
+  binning_y: {keys: [VBIN], type: int}
+  readout_mode: {keys: [READMODE, OUTPTAMP], lower: true}
+  exposure_type:
+    keys: [IMAGETYP, OBSTYPE]
+    lower: true
+    map:
+      bias: bias
+      zero: bias
+      dark: dark
+      flat: flat
+      arc: arc
+      comp: arc
+      object: science
+      light: science
+      science: science
+      background: background
+  arc_kind: {keys: [ARCKIND], lower: true}
+  lamp_state: {keys: [LAMP], lower: true}
+  shutter_state: {keys: [SHUTTER], lower: true}
+  configuration: {keys: [GRATING], lower: true, filename_regex: "(?P<value>mgb518|halpha|caiihk)"}
+  fiber_preset: {keys: [FIBPRE]}
+  target: {keys: [OBJECT]}
+
+# classification: applied in order when the header carries no valid exposure type; the
+# first matching rule wins and the last rule, with no condition, is the fallback.
+classification:
+  - {when: {exposure_time: {lt: 0.001}}, type: bias}
+  - {when: {lamp_state: {eq: "off"}, shutter_state: {eq: closed}}, type: dark}
+  - {when: {lamp_state: {eq: thar}}, type: arc}
+  - {when: {lamp_state: {eq: flat}}, type: flat}
+  - {when: {exposure_time: {missing: true}}, type: unknown}
+  - {type: science}
