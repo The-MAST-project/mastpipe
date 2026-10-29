@@ -106,8 +106,11 @@ group.
   is compared with `lit_sigma` times the noise of the mean, after a
   three-column running median that removes single-pixel cosmic rays (lines are
   wider than one column).
-- **The median collapse cannot find traces on a line-only arc**: the design's
-  fallback to a fully lit frame when there is no flat works for frames with a
-  continuum; on the simulator's full arc (no continuum) the median-collapsed
-  profile shows no trace. Left as is until a real flat-less night shows what
-  the arc looks like; a mean or high-percentile collapse is the obvious fix.
+- **The collapse statistic is a parameter** (`TraceParams.collapse`: `median`,
+  the notebook's choice and the default; `mean`; `percentile` with
+  `collapse_percentile = 90`): a median along x cannot see a trace that carries
+  only emission lines (on the simulator's full arc it finds no trace), so when
+  the runner falls back to the full arc for trace finding it passes
+  `collapse="percentile"`, which recovers all 45 simulated survey traces within
+  0.2 px at the detector centre. The detection threshold and the centroid
+  threshold use the chosen statistic's own standard error.

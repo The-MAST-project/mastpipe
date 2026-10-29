@@ -43,4 +43,6 @@
   is the statistical noise of the median across the collapsed columns), `comb_shift` (sub-pixel
   shift between two position combs), `match_layout` (global shift, one-to-one assignment by
   distance, `missing`/`extra`), `trace_source` (flat, else full arc), `classify_arc` (`full` /
-  `calfiber` / `unknown` from the lit traces) and `relative_throughput`.
+  `calfiber` / `unknown` from the lit traces) and `relative_throughput`; `TraceParams.collapse`
+  (`median` / `mean` / `percentile`) picks the band statistic, the percentile seeing a
+  line-only arc when there is no flat.

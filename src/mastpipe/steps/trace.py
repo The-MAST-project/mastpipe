@@ -38,10 +38,13 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import median_filter
 from scipy.signal import find_peaks
+from scipy.stats import norm
 
 from mastpipe.config.models import TraceParams
 from mastpipe.core.model import Frame, Trace, TraceSet
 
+COLLAPSE_STATISTICS = ("median", "mean", "percentile")
+"""How a band of columns is collapsed along x into a spatial profile."""
 MAD_TO_SIGMA = 1.4826
 """The median absolute deviation of Gaussian noise scaled to its standard deviation."""
 MEDIAN_EFFICIENCY = 1.2533
@@ -73,25 +76,52 @@ def robust_sigma(v: np.ndarray) -> float:
     return float(MAD_TO_SIGMA * np.median(np.abs(values - np.median(values))))
 
 
-def _collapse(block: np.ndarray) -> tuple[np.ndarray, float]:
-    """Median of ``block`` along x and the noise of that median.
+def _statistic_factor(statistic: str, percentile: float) -> float:
+    """Standard error of the collapse statistic relative to that of a mean, for Gaussian
+    noise: 1 for the mean, ``sqrt(pi/2)`` for the median, ``sqrt(p (1 - p)) / phi(z_p)``
+    for the ``p`` quantile."""
+    if statistic == "mean":
+        return 1.0
+    if statistic == "median":
+        return MEDIAN_EFFICIENCY
+    if statistic == "percentile":
+        if not 0.0 < percentile < 100.0:
+            raise ValueError(f"collapse_percentile must be within (0, 100), got {percentile}")
+        p = percentile / 100.0
+        return float(np.sqrt(p * (1.0 - p)) / norm.pdf(norm.ppf(p)))
+    raise ValueError(f"collapse must be one of {COLLAPSE_STATISTICS}, got {statistic!r}")
 
-    The noise is ``sqrt(pi/2)`` times the median over rows of each row's robust scatter
-    across the block's columns, divided by the square root of the column count. Rows
-    without a finite value collapse to ``0.0``.
+
+def _collapse(
+    block: np.ndarray, statistic: str = "median", percentile: float = 90.0
+) -> tuple[np.ndarray, float]:
+    """``block`` collapsed along x by ``statistic`` (the median, the mean or the
+    ``percentile`` of each row) and the noise of that statistic.
+
+    The noise is the statistic's standard error for Gaussian noise: the median over rows
+    of each row's robust scatter across the block's columns, divided by the square root
+    of the column count and scaled by :func:`_statistic_factor`. Rows without a finite
+    value collapse to ``0.0``.
     """
+    factor = _statistic_factor(statistic, percentile)
     block = np.asarray(block, dtype=float)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows are handled below
-        profile = np.nanmedian(block, axis=1)
-        deviation = np.nanmedian(np.abs(block - profile[:, None]), axis=1)
+        centre = np.nanmedian(block, axis=1)
+        if statistic == "mean":
+            profile = np.nanmean(block, axis=1)
+        elif statistic == "percentile":
+            profile = np.nanpercentile(block, percentile, axis=1)
+        else:
+            profile = centre
+        deviation = np.nanmedian(np.abs(block - centre[:, None]), axis=1)
     row_sigma = MAD_TO_SIGMA * deviation
     row_sigma = row_sigma[np.isfinite(row_sigma)]
     n_columns = block.shape[1]
     if row_sigma.size == 0 or n_columns == 0:
         noise = 0.0
     else:
-        noise = float(MEDIAN_EFFICIENCY * np.median(row_sigma) / np.sqrt(n_columns))
+        noise = float(factor * np.median(row_sigma) / np.sqrt(n_columns))
     return np.nan_to_num(profile, nan=0.0), noise
 
 
@@ -177,7 +207,10 @@ def _follow(
 def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
     """Find the fiber traces on ``image`` (``(ny, nx)``, dispersion along x).
 
-    The algorithm is described in the module docstring. Each trace carries ``coeffs`` in
+    The algorithm is described in the module docstring; ``params.collapse`` picks the
+    statistic (median, mean or ``params.collapse_percentile`` of each row) that collapses
+    the detection band and the ``x_bin`` blocks along x, the percentile being the one
+    that sees a trace carrying only emission lines. Each trace carries ``coeffs`` in
     ``polyval`` order, ``y_center`` and ``slope`` at the centre column ``nx // 2``, the
     ``rms`` of its kept centroids about the fit, ``n_points`` (kept centroids), ``snr``
     (detection peak height over the collapsed-profile noise) and the second-pass samples
@@ -199,7 +232,8 @@ def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
 
     # detection on the central band
     lo, hi = max(0, x_center - params.center_width), min(nx, x_center + params.center_width + 1)
-    profile, noise = _collapse(image[:, lo:hi])
+    collapse = (params.collapse, params.collapse_percentile)
+    profile, noise = _collapse(image[:, lo:hi], *collapse)
     residual = profile - median_filter(profile, size=window, mode="nearest")
     peaks, properties = find_peaks(
         residual,
@@ -216,7 +250,7 @@ def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
     x_bin = max(1, int(params.x_bin))
     blocks = []
     for start in range(0, nx - x_bin + 1, x_bin):
-        block_profile, block_noise = _collapse(image[:, start : start + x_bin])
+        block_profile, block_noise = _collapse(image[:, start : start + x_bin], *collapse)
         block_profile = block_profile - median_filter(block_profile, size=window, mode="nearest")
         blocks.append((start + (x_bin - 1) / 2.0, block_profile, block_noise))
 
@@ -361,7 +395,12 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
 
 def trace_source(frames_by_type: dict[str, list[Frame]]) -> tuple[str, Frame | None]:
     """Where to find traces: ``("flat", frame)`` when a flat is listed, else
-    ``("arc_full", frame)`` for the first full arc, else ``("none", None)``."""
+    ``("arc_full", frame)`` for the first full arc, else ``("none", None)``.
+
+    A full arc is emission lines on a dark continuum, invisible to a median collapse
+    along x; when the source is ``"arc_full"`` the runner passes ``find_traces``
+    parameters with ``collapse="percentile"``.
+    """
     for key in ("flat", "arc_full"):
         frames = frames_by_type.get(key) or []
         if frames:

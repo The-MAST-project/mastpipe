@@ -70,6 +70,8 @@ class TraceParams(_Strict):
     min_points: int = 4
     layout_tolerance: float = 3.0
     max_traces: int | None = None
+    collapse: Literal["median", "mean", "percentile"] = "median"
+    collapse_percentile: float = 90.0
 
 
 class ExtractParams(_Strict):

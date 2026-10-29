@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from mastpipe.config.models import CalibParams, TraceParams
 from mastpipe.core.model import Frame, FrameMeta, Trace, TraceSet
@@ -33,10 +34,9 @@ APERTURE_HALFWIDTH = 3.0
 # ------------------------------------------------------------------------------- fixtures
 
 
-@pytest.fixture(scope="module")
-def night(sim_night, highspec_effective):
+def calibrated_night(sim, highspec_effective) -> SimpleNamespace:
     """Calibrated simulated frames: master flat, full arc, calibration-fiber arc, science."""
-    out_dir, truth = sim_night
+    out_dir, truth = sim
     detector = highspec_effective.detector
     refs = scan_folder(out_dir, "highspec", load_header_map("highspec"))
     by_type: dict[str, list[Frame]] = {}
@@ -67,6 +67,16 @@ def night(sim_night, highspec_effective):
         cal_arc=clean(arcs["calfiber"]),
         science=clean(by_type["science"][0]),
     )
+
+
+@pytest.fixture(scope="module")
+def night(sim_night, highspec_effective) -> SimpleNamespace:
+    return calibrated_night(sim_night, highspec_effective)
+
+
+@pytest.fixture(scope="module")
+def night_lab3(sim_night_lab3, highspec_effective) -> SimpleNamespace:
+    return calibrated_night(sim_night_lab3, highspec_effective)
 
 
 @pytest.fixture(scope="module")
@@ -165,6 +175,44 @@ def test_find_traces_lab3_like_curvature():
     linear = find_traces(image, TraceParams(degree=1))
     assert len(linear) == 3
     assert all(trace.rms > 0.1 for trace in linear)
+
+
+def test_find_traces_on_simulated_lab3_flat_gives_exactly_3(night_lab3, highspec_effective):
+    truth = night_lab3.truth
+    params = highspec_effective.params.trace  # the HighSpec configuration's values
+    assert params.trace_halfwidth == 8 and params.collapse == "median"
+    traces = find_traces(night_lab3.flat.data, params)
+    assert len(traces) == len(truth.trace_coeffs) == 3  # no noise peaks
+    nx = night_lab3.flat.data.shape[1]
+    for x in (100, nx // 2, nx - 100):
+        found = np.array([trace.y(x) for trace in traces])
+        assert np.max(np.abs(found - np.polyval(truth.trace_coeffs.T, x))) < 0.3
+    assert all(trace.rms < 0.05 for trace in traces)
+
+
+def test_find_traces_on_simulated_full_arc_with_percentile_collapse(night):
+    truth = night.truth
+    arc = night.full_arc.data
+    nx = arc.shape[1]
+    expected = np.polyval(truth.trace_coeffs.T, nx // 2)
+    # the median along x of a line-only spectrum is the level between lines: no traces
+    assert len(find_traces(arc, SURVEY_PARAMS)) < 45
+    params = TraceParams(trace_halfwidth=4, collapse="percentile")
+    assert params.collapse_percentile == 90.0
+    traces = find_traces(arc, params)
+    assert len(traces) == 45
+    found = np.array([trace.y_center for trace in traces])
+    assert np.max(np.abs(found - expected)) < 0.3
+    assert all(trace.n_points >= params.min_points for trace in traces)
+
+
+def test_trace_params_collapse_is_validated():
+    assert TraceParams().collapse == "median"
+    assert TraceParams(collapse="mean").collapse == "mean"
+    with pytest.raises(ValidationError):
+        TraceParams(collapse="maximum")
+    with pytest.raises(ValueError, match="collapse_percentile"):
+        find_traces(np.zeros((20, 50)), TraceParams(collapse="percentile", collapse_percentile=100))
 
 
 def test_find_traces_empty_image_gives_no_traces():
