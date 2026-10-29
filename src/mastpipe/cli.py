@@ -1,19 +1,27 @@
 """Command-line entry point.
 
-Sub-commands are registered on the parser returned by :func:`build_parser`;
-with no sub-command the program prints its help and exits successfully.
+Sub-commands are added by the registrars listed in :data:`COMMANDS`; each adds
+one sub-parser whose ``func`` default runs the command. With no sub-command the
+program prints its help and exits successfully.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from mastpipe.__version__ import __version__
 
+CommandRegistrar = Callable[[argparse._SubParsersAction], None]
+"""Adds one sub-parser to the sub-parsers action and sets its ``func`` default,
+a callable taking the parsed ``argparse.Namespace`` and returning the exit code."""
+
+COMMANDS: list[CommandRegistrar] = []
+"""Registrars applied, in order, by :func:`build_parser`."""
+
 
 def build_parser() -> argparse.ArgumentParser:
-    """Return the top-level argument parser with its sub-parser group."""
+    """Return the top-level argument parser with every registered sub-command."""
     parser = argparse.ArgumentParser(
         prog="mastpipe",
         description="Data-reduction pipeline for the MAST fiber-fed spectrographs.",
@@ -23,7 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.add_subparsers(dest="command", title="commands", metavar="<command>")
+    subparsers = parser.add_subparsers(dest="command", title="commands", metavar="<command>")
+    for register in COMMANDS:
+        register(subparsers)
     return parser
 
 
@@ -33,4 +43,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
-    return 0
+        return 0
+    return args.func(args)

@@ -1,19 +1,19 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mastpipe"
 description = "Data-reduction pipeline for the MAST fiber-fed spectrographs (HighSpec, DeepSpec)"
 readme = "README.md"
-license = { text = "BSD-3-Clause" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dynamic = ["version"]
 authors = [{ name = "The MAST project" }]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
