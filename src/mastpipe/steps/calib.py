@@ -232,9 +232,10 @@ def calibrate_frame(
     The variance is ``max(gain (raw - bias), 0) / gain² + RN² / gain²`` in ADU²; the mask
     marks pixels at or above ``saturation`` in the raw frame, the bias or the background
     master (when a level is given), non-finite output values and whatever ``frame.mask``
-    already marks. The data are ``float32``; the input frame is left untouched and the
-    output shares its metadata. ``ValueError`` when the frame has no exposure time or does
-    not match the calibration shape.
+    already marks. The dark master is held as a rate, so a pixel saturated in it is not
+    recoverable here and is not masked. The data are ``float32``; the input frame is left
+    untouched and the output shares its metadata. ``ValueError`` when the frame has no
+    exposure time or does not match the calibration shape.
     """
     t = frame.meta.exposure_time
     if t is None:

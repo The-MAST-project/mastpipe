@@ -54,7 +54,7 @@ class CalibParams(_Strict):
     stack_method: str = "median"
     clip_sigma: float | None = None
     cosmic_sigma: float = 8.0
-    cosmic_size: int = 5
+    cosmic_size: int | tuple[int, int] = 5  # int: (1, size) along dispersion
 
 
 class TraceParams(_Strict):

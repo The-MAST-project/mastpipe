@@ -7,7 +7,7 @@ from mastpipe.core.model import Frame
 from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
-from mastpipe.steps.cosmics import flag_cosmic_rays
+from mastpipe.steps.cosmics import flag_cosmic_rays, footprint
 
 
 def test_flag_cosmic_rays_on_hand_array():
@@ -32,8 +32,16 @@ def test_flag_cosmic_rays_on_hand_array():
     assert not flag_cosmic_rays(data, variance, mask)[2, 6]
     # no input mask: only the flagged pixels come back
     assert flag_cosmic_rays(data, variance, None).sum() == 1
-    # a (rows, columns) footprint is accepted as well
-    assert flag_cosmic_rays(data, variance, None, size=(1, 5)).sum() == 1
+    # an int is the along-dispersion footprint; a (rows, columns) tuple is used as given
+    assert footprint(5) == (1, 5) and footprint((5, 5)) == (5, 5)
+    assert flag_cosmic_rays(data, variance, None, size=(5, 5)).sum() == 1
+    # an emission line imaged by the fiber (a 3 px profile in both axes, Poisson variance)
+    # is not a cosmic ray along the row, whereas a square footprint flags its core
+    profile = np.array([0.73, 1.0, 0.73])
+    blob = np.full((9, 9), 10.0)
+    blob[3:6, 3:6] += 90.0 * np.outer(profile, profile)
+    assert not flag_cosmic_rays(blob, blob, None).any()
+    assert flag_cosmic_rays(blob, blob, None, size=(5, 5))[4, 4]
 
 
 def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective):
@@ -66,6 +74,9 @@ def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective)
     n_pixels = clean.data.size
     false_on_science = new.sum() - found
     assert false_on_science < 1e-3 * n_pixels
+    # the along-dispersion footprint leaves the sky-fiber emission lines (the only bright,
+    # sharp features on a science frame) essentially unflagged
+    assert false_on_science < 10
 
     # the same frame with the planted hits removed is clean: fewer than 0.1 % flagged
     spotless = science.data.copy()
