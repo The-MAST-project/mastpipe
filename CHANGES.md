@@ -20,3 +20,9 @@
   `mgb518` grating block, `lab3` and generated `survey45` layouts, the Mg b line table
   (73 Murphy et al. catalogue lines, 30 usable at R = 23081) and the `mgb518`/`lab3`
   anchor pairs; `scripts/make_survey45_layout.py` and `scripts/make_line_table.py`.
+- Ingest (`mastpipe.io`): `HeaderMap` (`from_dict`, `resolve` with `keys`/`type`/`lower`/`map`/
+  `default`/`filename_regex`, `classify` with `header`/`rule:<i>`/`unclassified` provenance),
+  `scan_folder` (one `FrameRef` per image HDU, primary header merged under extensions,
+  unreadable files collected on request), `load_frame` (float32, crop, then transpose /
+  flip_x / flip_y), `read_manifest`/`apply_manifest` (CSV overrides by `source` [+ `extension`])
+  and `file_checksum` (SHA-256, 16 hex).
