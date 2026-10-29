@@ -53,3 +53,9 @@
   `min_coverage` or when a masked pixel falls in the aperture; per-trace `aperture` override),
   `fit_continuum` (Chebyshev fit with asymmetric clipping about the median residual, stored
   as `Spectrum.continuum` beside the untouched raw flux) and `continuum_subtract_all`.
+- Line step (`mastpipe.steps.lines`): `find_lines` (the notebook's 2-D line finder: strip
+  detilted onto each trace, running-median continuum per row, detection on the y-collapsed
+  profile, groups fitted as sums of Gaussians with the residual-driven deblender, windows
+  clipped at the midpoint to the neighbours, the `isolated`/`near_edge`/`complete`/`on_trace`/
+  `fit_ok` flags and the `use_x`/`use_y` verdicts; adds a `saturated` flag that bars `use_x`
+  and a variance-based `snr` when a variance image is given) and `lines_summary`.
