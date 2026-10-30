@@ -8,18 +8,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mastpipe.config.models import CalibParams, LineParams
-from mastpipe.core.model import Frame, Trace, TraceSet
-from mastpipe.instruments.registry import load_header_map
-from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.sim.simulator import FWHM_PX, GAUSSIAN_FWHM
-from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
+from mastpipe.config.models import LineParams
+from mastpipe.core.model import Trace, TraceSet
+from mastpipe.sim.simulator import FWHM_PX
 from mastpipe.steps.lines import LINE_COLUMNS, find_lines, lines_summary
+from tests.conftest import ARC_SIGMA_PX, ARC_STRIP_HALFWIDTH
 
-STRIP_HALFWIDTH = 4
-"""Rows on either side of a simulated trace (3 px FWHM image, 8.5 px pitch): the strip holds
-the whole profile and stays 4.5 rows clear of the neighbouring fiber's centre."""
-SIGMA_PX = FWHM_PX / GAUSSIAN_FWHM
+STRIP_HALFWIDTH = ARC_STRIP_HALFWIDTH
+SIGMA_PX = ARC_SIGMA_PX
 MIN_LOG_INTENSITY = 1.5
 MATCH_TOLERANCE_PX = 0.15
 MIN_RECOVERED_FRACTION = 0.6
@@ -79,43 +75,15 @@ def one_trace(shape: tuple[int, int], y: float, slope: float = 0.0) -> TraceSet:
 
 
 @pytest.fixture(scope="module")
-def night(sim_night, highspec_effective) -> SimpleNamespace:
-    """The simulated full arc, calibrated, with traces built from the truth."""
-    out_dir, truth = sim_night
-    detector = highspec_effective.detector
-    refs = scan_folder(out_dir, "highspec", load_header_map("highspec"))
-    by_type: dict[str, list[Frame]] = {}
-    for ref in refs:
-        by_type.setdefault(ref.meta.exposure_type, []).append(load_frame(ref, detector))
-    params = CalibParams()
-    masters = [build_master(by_type[kind], kind, params) for kind in ("bias", "dark", "background")]
-    calib = build_calibration_set(*masters, detector)
-    kind_of = dict(zip(truth.frames["file"], truth.frames["arc_kind"], strict=True))
-    full = next(frame for frame in by_type["arc"] if kind_of[frame.meta.source] == "full")
-    arc = calibrate_frame(full, calib, saturation=detector.saturation)
-    traces = [
-        make_trace(
-            i,
-            float(np.polyval(coeffs, arc.shape[1] // 2)),
-            role=row["role"],
-            coeffs=np.asarray(coeffs, dtype=float),
-        )
-        for i, (coeffs, (_, row)) in enumerate(
-            zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
-        )
-    ]
-    return SimpleNamespace(
-        truth=truth,
-        arc=arc,
-        traces=TraceSet(traces=traces, shape=arc.shape),
-        params=LineParams(halfwidth=STRIP_HALFWIDTH, sigma_guess=SIGMA_PX),
-    )
+def night(sim_full_arc) -> SimpleNamespace:
+    """The simulated full arc, calibrated, with traces built from the truth (session-wide)."""
+    return sim_full_arc
 
 
 @pytest.fixture(scope="module")
-def arc_lines(night) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
-    """Line tables and strips of every trace of the simulated full arc."""
-    return find_lines(night.arc.data, night.arc.variance, night.traces, night.params)
+def arc_lines(sim_arc_lines) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
+    """Line tables and strips of every trace of the simulated full arc (session-wide)."""
+    return sim_arc_lines
 
 
 # ------------------------------------------------------------------------- simulated arc

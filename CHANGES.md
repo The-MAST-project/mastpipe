@@ -69,3 +69,11 @@
   `scripts/make_line_table.py` from these: 31 of 73 lines usable (514.6056 nm Th I now passes
   the SNR 20 cut at 20.4 with the notebook's truncated Gaussian kernel; the earlier 30 came
   from a `gaussian_filter1d` kernel that put it at 19.996).
+- Full-arc wavelength solve (`mastpipe.steps.wavecal`): `identify_lines` (nearest catalogue
+  line within a tolerance, runner-up rejection), `shift_to_reference` (cross-correlation of
+  continuum-subtracted fluxes with a parabolic peak), `solve_fiber` (the notebook's identify ->
+  fit -> clip passes with the convergence rule and the `min_lines` give-up), `solve_full_arc`
+  (every fiber seeded from one anchored model slid by the cross-correlation shift, or from its
+  own solution in a previous reference), `build_reference` (identifier, `valid_from`, 12-hex
+  SHA-256 over the solutions), `fiber_agreement` (the same line, fiber to fiber) and
+  `wavelength_map`; session-scoped calibrated-full-arc, line-table and flux test fixtures.
