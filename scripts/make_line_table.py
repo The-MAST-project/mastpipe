@@ -3,9 +3,8 @@
 Needs the atlas of Murphy et al. 2007, MNRAS 378, 221 (line list ``thar_MM201006.dat``)
 and Murphy et al. 2010, ApJ 723, 89 (spectrum ``thar_spec_MM201006.fits``), which is not
 part of the repository: the folder holding both files is read from the environment variable
-``MASTPIPE_ATLAS_DIR``. The atlas functions come from :mod:`mastpipe.steps.atlas`, so the
-script runs once that module exists (Task 11 of Plan 1); the committed table was first
-produced by an equivalent run of the same criteria and must be reproduced unchanged.
+``MASTPIPE_ATLAS_DIR``. The atlas functions come from :mod:`mastpipe.steps.atlas`; the
+committed table is this script's own output and a rerun must reproduce it unchanged.
 
 Criteria (from the HighSpec laboratory reduction notebook): the atlas spectrum in the band
 plus a 0.5 nm pad has its pedestal removed (centred rolling 5th percentile over 201 samples)
