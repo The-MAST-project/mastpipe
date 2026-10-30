@@ -77,3 +77,13 @@
   own solution in a previous reference), `build_reference` (identifier, `valid_from`, 12-hex
   SHA-256 over the solutions), `fiber_agreement` (the same line, fiber to fiber) and
   `wavelength_map`; session-scoped calibrated-full-arc, line-table and flux test fixtures.
+- Provenance and FITS products (`mastpipe.pipeline.provenance`, `mastpipe.io.products`):
+  `Provenance` as `MP*` header cards (`MPVER`, `MPCFGH`, the three statuses, `MPWREF`/`MPWREFH`,
+  numbered `MPIN0001`/`MPCAL001`/`MPDARC01`/`MPSTEP01` lists with count cards) and back;
+  `product_name`/`reference_name`/`combined_name`; writer/reader pairs for masters (image +
+  `VARIANCE`, validity as `MPVALKnn`/`MPVALVnn`), trace sets (`TRACES`, `SAMPLES`), exposure
+  spectra (`SPECTRA` with kept versions as `FLUX_<V>`/`ERROR_<V>`/`MASK_<V>` columns and
+  presence cards, `FrameMeta` as `MPMKnn`/`MPMVnn`, optional `DRIFT` table), reference
+  solutions (`SOLUTIONS`, `LINES`; hash and geometry checked on read) and combined spectra
+  (`COMBINED`, `CONTRIB`, `EXCLUDED`, barycentric as `MPBCKnn`/`MPBCVnn`); `write_qc`/`read_qc`
+  JSON. No raw instrument keyword reaches a product header.
