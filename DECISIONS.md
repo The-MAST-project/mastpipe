@@ -179,3 +179,58 @@ group.
   of the models holding that fiber in its `WEIGHT` column; the per-arc weights
   are in the science QC JSON (`drift_weights`, aligned with `drift_arcs`).
 
+## 2026-10-30 — Rulings made during Plan 1 and recorded at its close
+
+- **`config_hash` covers the values of the effective configuration only**:
+  `EffectiveConfig.layers`, which records how the values were reached
+  (instrument, configuration block, overrides), is excluded from the hashed
+  JSON. The hash names *what* was used, so the same effective configuration
+  hashes the same on every platform, and an override that merely restates a
+  value (as the command line does when it repeats a default) does not make a
+  product look different from one reduced without it.
+- **The first reference is reproduced from the notebook's stored anchor pairs, not
+  imported from the notebook's solution** (extends call 2 of the revision):
+  the two `(wavelength, pixel)` pairs read off the notebook's anchor figure
+  are stored with the instrument (`anchors/mgb518_lab3.yaml`, with the trace
+  they were measured on) and `identify --stored-anchors` re-solves every fiber
+  from them. The reference therefore carries the pipeline's own provenance
+  and line list, and the notebook's numbers remain an independent check: the
+  laboratory regression compares the two rather than asserting an import.
+- **One comb-matching primitive**: `comb_shift` (the Gaussian-kernel
+  cross-match of two position combs with a parabolic peak) serves both the
+  global shift of `match_layout` (trace rows against the layout) and the
+  shift guess of `fit_fiber_drift` (measured line columns against the
+  reference's identified lines). The kernel width is a parameter set by each
+  caller to the scatter it expects between matching members — the layout
+  tolerance in one case, `drift.tol_px` in the other — rather than the grid
+  step.
+- **The cosmic-ray footprint runs along the dispersion axis** (`(1, size)`
+  for an integer `cosmic_size`, a `(rows, columns)` tuple when given): a
+  spectral line is extended across rows by the fiber image but is as sharp as
+  a cosmic ray along a column, so a square median footprint flagged the cores
+  of bright emission lines (the simulated sky lines) while the along-row one
+  does not. Tracks of several pixels along a row are a known gap until
+  profile-based rejection.
+- **The simulator's drift law is anchored at the full arc**: the shift and
+  stretch run from their start value at the full arc's mid-time to their end
+  value at the last frame's, frames before the arc carrying the start value,
+  so with the default `drift_px = (0.0, 0.6)` the full arc itself is
+  undrifted. A reference solved from it then has zero drift by construction
+  and every later measured drift is relative to it, as it is at the telescope.
+- **The usable-line table is generated with the notebook's convolution
+  kernel**: a normalised Gaussian truncated at three sigma applied with
+  `numpy.convolve`, not `scipy.ndimage.gaussian_filter1d`. The two differ in
+  the wings enough to move the 514.6056 nm Th I line across the SNR 20 cut
+  (20.4 against 19.996), so the committed `mgb518` table has 31 usable lines
+  of 73 and `scripts/make_line_table.py` must reproduce it unchanged.
+- **The laboratory regression asserts the layout-matched fibers, with the
+  flat calibrated as the notebook does** (bias subtracted, lamp-off background
+  kept: `flat_subtract_background` is off). On the real flat the median-noise
+  trace estimator also detects two faint ambient-light features (S/N 6–10)
+  that the notebook's profile-scatter sigma swallows; `match_layout` sets them
+  aside as `extra`, they never solve and they vanish when the background is
+  subtracted, so the regression checks the three `arc`-role traces against
+  the notebook's centres and leaves the raw count to the trace unit tests.
+  The frames are reached only through `MASTPIPE_TEST_DATA` with the layout the
+  README documents; nothing about their location is in the repository.
+

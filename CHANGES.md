@@ -138,4 +138,16 @@
 - Quick-look: drift models are tied to the reference they were fitted against and only
   those are paired with a frame; the `interpolate` blend is tested and the per-arc blend
   weights are written to the science QC JSON (`drift_weights`).
+- Regression on the laboratory data (`tests/regression/test_lab_highspec.py`, `slow`,
+  skipped unless `MASTPIPE_TEST_DATA` points at the frames): the lab3 calibration frames
+  and the best-focus Th-Ar frame staged with a manifest; trace finding on the calibrated
+  flat reproduces the notebook's three trace centres within 0.3 px with quadratic rms
+  below 0.01 px; `run_identify` with the stored anchors gives three solutions at rms
+  0.016 / 0.033 / 0.012 px with 23 / 25 / 20 lines (the notebook: 0.016 / 0.038 / 0.010,
+  23 / 25 / 19), coverage 513.50–527.32 nm within 0.03 nm and a median fiber-to-fiber
+  spread of 0.023 px; the arc's own lines fitted for drift against its reference give
+  zero shift; `run_quicklook` before and after `identify` fails on nothing. README:
+  commands with examples, the three-cadence wavelength scheme, the product layout and
+  the spectra table columns, the environment variables. DECISIONS: the rulings of Plan 1
+  not yet recorded.
 
