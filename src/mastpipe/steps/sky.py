@@ -22,7 +22,7 @@ from mastpipe.core.model import Spectrum, SpectrumVersion, TraceSet
 
 RESAMPLERS = ("linear",)
 """How :func:`subtract_sky` moves the sky onto the science wavelength grid."""
-REASONS = ("no sky fiber", "sky fiber fully masked", "no wavelength")
+REASONS = ("no sky fiber", "sky fiber fully masked", "no wavelength", "bad throughput")
 """Why :func:`subtract_sky_all` leaves a science fiber at its raw extraction."""
 
 
@@ -43,24 +43,41 @@ def resample_sky(
     """``sky``'s flux and error scaled by ``scale`` and linearly interpolated onto
     ``wavelength``, with the mask they carry.
 
-    The resampled mask marks every target pixel that interpolates between two sky pixels
-    of which at least one is masked (the sky mask is interpolated as 0/1 and anything above
-    zero is masked), and every target pixel outside the sky's wavelength coverage, where the
-    flux and error are NaN. A decreasing sky grid is flipped for the interpolation.
-    ``ValueError`` when the sky has no wavelength grid or it is not monotonic.
+    A target wavelength between sky pixels ``j`` and ``j + 1`` at fraction ``t`` takes the
+    flux ``(1 - t) f_j + t f_{j+1}`` and the error of that combination,
+    ``sqrt((1 - t)² σ_j² + t² σ_{j+1}²)`` (a target exactly on a sky pixel takes that
+    pixel's flux and error). The resampled mask marks every target pixel whose
+    interpolation gives non-zero weight to a masked sky pixel, and every target pixel
+    outside the sky's wavelength coverage, where the flux and error are NaN. A decreasing
+    sky grid is flipped for the interpolation. ``ValueError`` when the sky has no
+    wavelength grid or it is not monotonic.
     """
     if sky.wavelength is None:
         raise ValueError(f"sky fiber {sky.fiber} has no wavelength grid; cannot resample")
     xp, flipped = _increasing(np.asarray(sky.wavelength, dtype=float), "sky")
     flux = np.asarray(sky.flux, dtype=float) * scale
     error = np.asarray(sky.error, dtype=float) * abs(scale)
-    bad = sky.mask.astype(float)
+    bad = sky.mask
     if flipped:
         flux, error, bad = flux[::-1], error[::-1], bad[::-1]
     target = np.asarray(wavelength, dtype=float)
-    flux_out = np.interp(target, xp, flux, left=np.nan, right=np.nan)
-    error_out = np.interp(target, xp, error, left=np.nan, right=np.nan)
-    mask_out = np.interp(target, xp, bad, left=1.0, right=1.0) > 0
+    inside = (target >= xp[0]) & (target <= xp[-1])
+    j = np.clip(np.searchsorted(xp, target, side="right") - 1, 0, len(xp) - 2)
+    k = j + 1
+    t = np.clip((target - xp[j]) / (xp[k] - xp[j]), 0.0, 1.0)
+    on_left = t == 0.0
+    on_right = t == 1.0
+    between = ~on_left & ~on_right
+    flux_out = np.where(on_left, flux[j], np.where(on_right, flux[k], np.nan))
+    error_out = np.where(on_left, error[j], np.where(on_right, error[k], np.nan))
+    flux_out[between] = (1.0 - t[between]) * flux[j][between] + t[between] * flux[k][between]
+    error_out[between] = np.sqrt(
+        (1.0 - t[between]) ** 2 * error[j][between] ** 2 + t[between] ** 2 * error[k][between] ** 2
+    )
+    mask_out = (bad[j] & ~on_right) | (bad[k] & ~on_left)
+    flux_out[~inside] = np.nan
+    error_out[~inside] = np.nan
+    mask_out[~inside] = True
     return flux_out, error_out, mask_out
 
 
@@ -98,13 +115,14 @@ def subtract_sky_all(
     ``traceset.by_telescope(spectrum.telescope)``, and its spectrum the one of ``spectra``
     with that ``fiber`` index. The throughput ratio is ``throughput[science] /
     throughput[sky]`` when ``params.scale_by_throughput`` and both fibers are in
-    ``throughput`` with a positive sky value, else 1.0. Spectra whose role is not
+    ``throughput``, else 1.0. Spectra whose role is not
     ``"science"`` pass through unchanged, as does a science spectrum that cannot be
     subtracted; those are listed in the second element as ``{"fiber", "telescope",
     "reason"}`` with a reason from :data:`REASONS`: ``"no sky fiber"`` (the spectrum has no
     telescope, the layout has no sky trace for it, or no spectrum carries that fiber),
-    ``"sky fiber fully masked"``, or ``"no wavelength"`` (either side). The order of
-    ``spectra`` is kept.
+    ``"sky fiber fully masked"``, ``"no wavelength"`` (either side), or ``"bad throughput"``
+    (scaling is on, both fibers are in ``throughput``, and either value is non-finite or not
+    positive). The order of ``spectra`` is kept.
     """
     by_fiber = {spectrum.fiber: spectrum for spectrum in spectra}
     out: list[Spectrum] = []
@@ -129,9 +147,16 @@ def subtract_sky_all(
                 and spectrum.fiber in throughput
                 and sky.fiber in throughput
             ):
-                sky_throughput = float(throughput[sky.fiber])
-                if sky_throughput > 0:
-                    ratio = float(throughput[spectrum.fiber]) / sky_throughput
+                own = float(throughput[spectrum.fiber])
+                other = float(throughput[sky.fiber])
+                if not (np.isfinite(own) and np.isfinite(other) and own > 0 and other > 0):
+                    reason = "bad throughput"
+                    skipped.append(
+                        {"fiber": spectrum.fiber, "telescope": telescope, "reason": reason}
+                    )
+                    out.append(spectrum)
+                    continue
+                ratio = own / other
             out.append(subtract_sky(spectrum, sky, ratio, params))
             continue
         skipped.append({"fiber": spectrum.fiber, "telescope": telescope, "reason": reason})

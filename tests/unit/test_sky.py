@@ -150,8 +150,11 @@ def test_subtract_sky_resamples_scaled_sky_onto_science_grid():
     naive = science.flux - 1.5 * sky.flux
     assert np.max(np.abs(naive)) > 0.15 * 1.5 * LINE_PEAK
     assert np.max(np.abs(skysub.flux[inside])) < 0.5 * np.max(np.abs(naive))
-    # errors add in quadrature and the science pixel outside the sky coverage is masked
-    assert np.allclose(skysub.error[inside], np.sqrt(science.error[inside] ** 2 + 1.5**2 * 4.0))
+    # errors add in quadrature: science pixel i lies 0.6 of the way from sky pixel i - 1 to
+    # sky pixel i, so the sky term is 1.5 * 2 * sqrt(0.4^2 + 0.6^2); the science pixel
+    # outside the sky coverage is masked
+    sky_term = 1.5 * 2.0 * np.sqrt(0.4**2 + 0.6**2)
+    assert np.allclose(skysub.error[inside], np.sqrt(science.error[inside] ** 2 + sky_term**2))
     assert skysub.mask[0] and not skysub.mask[inside].any()
     assert np.isnan(out.sky[0]) and np.isnan(skysub.flux[0])
     # a decreasing sky grid is interpolated the same way
@@ -180,6 +183,35 @@ def test_sky_mask_marks_any_masked_neighbour():
     assert skysub.mask[5]  # the science mask is kept
     assert skysub.mask[0]  # before the first sky wavelength: outside the coverage
     assert np.array_equal(out.mask, science_mask)  # raw mask untouched
+
+
+def test_sky_error_propagates_exactly():
+    # a half-pixel offset: every science pixel i is the mean of sky pixels i - 1 and i, so
+    # its sky error is sqrt(0.25 s[i-1]^2 + 0.25 s[i]^2), not the mean of the two sigmas
+    x = np.arange(N_PIX, dtype=float)
+    sigma = 1.0 + 0.5 * np.sin(x / 7.0) + (x % 3)  # varies pixel to pixel
+    science = make_spectrum(1, np.zeros(N_PIX), "science", "T01", wavelength=grid(0.0), error=0.0)
+    sky = make_spectrum(2, np.zeros(N_PIX), "sky", "T01", wavelength=grid(0.5))
+    sky.error = sigma.copy()
+    out = subtract_sky(science, sky, 2.0, SkyParams())
+    error = out.versions["skysub"].error
+    expected = 2.0 * np.sqrt(0.25 * sigma[:-1] ** 2 + 0.25 * sigma[1:] ** 2)
+    assert np.allclose(error[1:], expected)
+    assert not np.allclose(error[1:], 2.0 * 0.5 * (sigma[:-1] + sigma[1:]))  # not interpolated
+    assert np.isnan(error[0])
+    # a sky grid 0.25 px later puts science pixel i at t = 0.75 between sky pixels i - 1
+    # and i: weights 0.25 and 0.75
+    sky.wavelength = grid(0.25)
+    error = subtract_sky(science, sky, 1.0, SkyParams()).versions["skysub"].error
+    assert np.allclose(error[1:], np.sqrt(0.25**2 * sigma[:-1] ** 2 + 0.75**2 * sigma[1:] ** 2))
+    # on the same grid every target sits on a sky pixel and takes its sigma
+    sky.wavelength = grid(0.0)
+    error = subtract_sky(science, sky, 1.0, SkyParams()).versions["skysub"].error
+    assert np.array_equal(error, sigma)
+    # the science error adds in quadrature
+    science.error = np.full(N_PIX, 3.0)
+    error = subtract_sky(science, sky, 1.0, SkyParams()).versions["skysub"].error
+    assert np.allclose(error, np.sqrt(9.0 + sigma**2))
 
 
 def test_skysub_version_and_raw_kept():
@@ -306,6 +338,29 @@ def test_masked_sky_fiber_leaves_raw_only():
         {"fiber": 3, "telescope": "T02", "reason": "no wavelength"},
         {"fiber": 5, "telescope": "T03", "reason": "no sky fiber"},
     ]
+
+
+def test_bad_throughput_leaves_raw_only():
+    traces, spectra = toy_layout()
+    throughput = {1: np.nan, 2: 0.8, 3: 1.0, 4: 0.0}
+    out, skipped = subtract_sky_all(spectra, traces, throughput, SkyParams())
+    assert out[1] is spectra[1] and out[3] is spectra[3]
+    assert out[1].versions == {} and out[3].versions == {}
+    assert skipped == [
+        {"fiber": 1, "telescope": "T01", "reason": "bad throughput"},
+        {"fiber": 3, "telescope": "T02", "reason": "bad throughput"},
+        {"fiber": 5, "telescope": "T03", "reason": "no sky fiber"},
+    ]
+    out, skipped = subtract_sky_all(spectra, traces, {1: 1.0, 2: -0.5}, SkyParams())
+    assert skipped[0] == {"fiber": 1, "telescope": "T01", "reason": "bad throughput"}
+    assert "skysub" in out[3].versions  # T02 has no throughput at all: ratio 1
+    # with scaling off the throughputs are not consulted
+    out, skipped = subtract_sky_all(
+        spectra, traces, throughput, SkyParams(scale_by_throughput=False)
+    )
+    assert [s["reason"] for s in skipped] == ["no sky fiber"]
+    assert "skysub" in out[1].versions and "skysub" in out[3].versions
+    assert np.all(np.isfinite(out[1].sky))
 
 
 # -------------------------------------------------------------------------- simulated night
