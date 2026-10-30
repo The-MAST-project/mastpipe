@@ -38,7 +38,7 @@ import pandas as pd
 from mastpipe.__version__ import __version__
 from mastpipe.config.loader import build_effective, config_hash, load_yaml, parse_override
 from mastpipe.config.models import EffectiveConfig
-from mastpipe.core.model import CalibrationSet, Frame, ReferenceSolution, TraceSet
+from mastpipe.core.model import CalibrationSet, Frame, MasterCalib, ReferenceSolution, TraceSet
 from mastpipe.instruments.registry import (
     load_anchor_trace,
     load_anchors,
@@ -98,11 +98,49 @@ class ArcLines:
     steps: list[str]
 
 
-def _latest_master(calib_dir: Path, kind: str) -> Path | None:
-    """The last ``*_{kind}.fits`` of ``calib_dir`` in name order (products carry a time
-    stamp, so the last is the latest), ``None`` without one."""
-    found = sorted(path for path in calib_dir.glob(f"*_{kind}.fits") if path.is_file())
-    return found[-1] if found else None
+MASTER_KINDS = ("bias", "background", "flat")
+"""Master kinds :func:`_arc_lines` looks for in ``out_dir/calib``."""
+NO_TIME = "notime"
+"""The stamp :func:`~mastpipe.io.products.product_name` writes for a frame without a mid-time."""
+
+
+def _latest_master(calib_dir: Path, effective: EffectiveConfig, kind: str) -> Path | None:
+    """The latest ``{instrument}_{configuration}_{camera}_{stamp}_{kind}.fits`` of ``calib_dir``.
+
+    Only the masters of ``effective``'s instrument, configuration and camera qualify; the
+    latest is the one with the largest ``YYYYmmddTHHMMSS`` stamp (compared as a stamp, not
+    as a file name), and a ``notime`` master is taken only when no dated one exists.
+    ``None`` without a candidate.
+    """
+    prefix = f"{effective.instrument}_{effective.configuration}_{effective.camera}_"
+    suffix = f"_{kind}.fits"
+    dated: list[tuple[str, Path]] = []
+    undated: list[Path] = []
+    for path in calib_dir.glob(f"{glob.escape(prefix)}*{glob.escape(suffix)}"):
+        if not path.is_file():
+            continue
+        stamp = path.name[len(prefix) : -len(suffix)]
+        if stamp == NO_TIME:
+            undated.append(path)
+        elif (
+            stamp.isascii()
+            and len(stamp) == 15
+            and stamp[8] == "T"
+            and stamp.replace("T", "").isdigit()
+        ):
+            dated.append((stamp, path))
+    if dated:
+        return max(dated, key=lambda item: (item[0], item[1].name))[1]
+    return sorted(undated)[-1] if undated else None
+
+
+def _master_name(kind: str, master: MasterCalib) -> str:
+    """Identifier of an injected master: its provenance ``name`` when the caller set one,
+    else ``{kind}:{validity mid_time | notime}``."""
+    name = master.provenance.get("name")
+    if name:
+        return str(name)
+    return f"{kind}:{master.validity.get('mid_time') or NO_TIME}"
 
 
 def _frame_ref(full_arc: Path, instrument: str):
@@ -113,15 +151,28 @@ def _frame_ref(full_arc: Path, instrument: str):
     return refs[0]
 
 
-def _arc_lines(full_arc: Path, effective: EffectiveConfig, layout: pd.DataFrame, out_dir: Path):
+def _arc_lines(
+    full_arc: Path,
+    effective: EffectiveConfig,
+    layout: pd.DataFrame,
+    out_dir: Path,
+    masters: dict[str, MasterCalib] | None = None,
+    traceset: TraceSet | None = None,
+) -> ArcLines:
     """Load, calibrate, trace, extract, continuum-fit and find the lines of a full arc.
 
-    Masters are looked up in ``out_dir/calib``: ``*_bias.fits`` and ``*_background.fits``
-    (the latest of each) calibrate the frame, ``*_flat.fits`` gives the traces; without a
-    flat the traces are found on the arc with ``collapse="percentile"``. Without a bias
-    or background nothing is subtracted and the frame only gains its variance and mask.
-    The layout is matched with ``params.trace.layout_tolerance``. Returns an
-    :class:`ArcLines`.
+    Masters come from ``masters`` (keyed by kind, as a runner holding its library's choice
+    passes them) or, when that is ``None``, from ``out_dir/calib``: the latest
+    ``*_bias.fits``, ``*_background.fits`` and ``*_flat.fits`` of the effective instrument,
+    configuration and camera (:func:`_latest_master`). The bias and background calibrate the
+    frame, the background only when ``params.calib.subtract_background`` is on (otherwise it
+    serves the saturation mask alone, which the steps record and ``calibrations`` does not);
+    without them the frame only gains its variance and mask. ``traceset`` is used as given
+    (a runner's night traces); otherwise the traces are found on the flat master when there
+    is one and on the arc itself with ``collapse="percentile"`` when not, and matched to the
+    layout with ``params.trace.layout_tolerance``. Returns an :class:`ArcLines`; its
+    ``calibrations`` are the masters that were applied (file names when read from
+    ``out_dir/calib``, :func:`_master_name` when injected).
     """
     full_arc = Path(full_arc)
     out_dir = Path(out_dir)
@@ -131,23 +182,27 @@ def _arc_lines(full_arc: Path, effective: EffectiveConfig, layout: pd.DataFrame,
     frame = load_frame(ref, detector)
     shape = (int(frame.shape[0]), int(frame.shape[1]))
 
-    calib_dir = out_dir / CALIB_FOLDER
+    found: dict[str, tuple[MasterCalib, str]] = {}
+    if masters is not None:
+        found = {kind: (master, _master_name(kind, master)) for kind, master in masters.items()}
+    else:
+        calib_dir = out_dir / CALIB_FOLDER
+        if calib_dir.is_dir():
+            for kind in MASTER_KINDS:
+                path = _latest_master(calib_dir, effective, kind)
+                if path is not None:
+                    found[kind] = (products.read_master(path)[0], path.name)
+    bias = found.get("bias")
+    background = found.get("background")
+    flat = found.get("flat")
     calibrations: list[str] = []
-    bias = background = None
-    bias_path = _latest_master(calib_dir, "bias") if calib_dir.is_dir() else None
-    background_path = _latest_master(calib_dir, "background") if calib_dir.is_dir() else None
-    flat_path = _latest_master(calib_dir, "flat") if calib_dir.is_dir() else None
-    if bias_path is not None:
-        bias, _ = products.read_master(bias_path)
-        calibrations.append(bias_path.name)
-    if background_path is not None:
-        background, _ = products.read_master(background_path)
-        calibrations.append(background_path.name)
-    t_background = None if background is None else background.validity.get("exposure_time")
+    if bias is not None:
+        calibrations.append(bias[1])
+    t_background = None if background is None else background[0].validity.get("exposure_time")
     calib = CalibrationSet(
-        bias=None if bias is None else bias.data,
+        bias=None if bias is None else bias[0].data,
         dark_rate=0.0,
-        background=None if background is None else background.data,
+        background=None if background is None else background[0].data,
         t_background=None if t_background is None else float(t_background),
         gain=detector.gain,
         read_noise=detector.read_noise,
@@ -156,22 +211,32 @@ def _arc_lines(full_arc: Path, effective: EffectiveConfig, layout: pd.DataFrame,
     subtract_background = background is not None and params.calib.subtract_background
     arc = calibrate_frame(frame, calib, subtract_background, saturation=detector.saturation)
     steps = calibration_steps(calib, float(frame.meta.exposure_time or 0.0), subtract_background)
+    if background is not None:
+        if subtract_background:
+            calibrations.append(background[1])
+        else:
+            steps.append(
+                f"background {background[1]} present but not subtracted "
+                "(calib.subtract_background off): saturation mask only"
+            )
 
-    flat_frames: list[Frame] = []
-    if flat_path is not None:
-        flat, _ = products.read_master(flat_path)
-        flat_frames.append(Frame(data=flat.data, meta=frame.meta, variance=flat.variance))
-        calibrations.append(flat_path.name)
-    source, trace_frame = trace_source({"flat": flat_frames, "arc_full": [arc]})
-    trace_params = params.trace
-    if source == "arc_full":
-        trace_params = trace_params.model_copy(update={"collapse": "percentile"})
-    assert trace_frame is not None
-    traceset = find_traces(trace_frame.data, trace_params)
-    traceset = match_layout(traceset, layout, params.trace.layout_tolerance)
+    if traceset is not None:
+        source = "given"
+    else:
+        flat_frames: list[Frame] = []
+        if flat is not None:
+            flat_frames.append(Frame(data=flat[0].data, meta=frame.meta, variance=flat[0].variance))
+            calibrations.append(flat[1])
+        source, trace_frame = trace_source({"flat": flat_frames, "arc_full": [arc]})
+        trace_params = params.trace
+        if source == "arc_full":
+            trace_params = trace_params.model_copy(update={"collapse": "percentile"})
+        assert trace_frame is not None
+        traceset = find_traces(trace_frame.data, trace_params)
+        traceset = match_layout(traceset, layout, params.trace.layout_tolerance)
     if len(traceset) == 0:
         raise ValueError(f"{full_arc.name}: no trace found on the {source.replace('_', ' ')}")
-    steps.append(f"traces from {source} ({len(traceset)} found, {len(traceset.missing)} missing)")
+    steps.append(f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing)")
 
     spectra = extract_aperture(arc, traceset, params.extract)
     spectra = continuum_subtract_all(spectra, params.extract)

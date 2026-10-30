@@ -17,10 +17,12 @@ from mastpipe.config.models import CalibParams
 from mastpipe.core.model import Frame, ReferenceSolution
 from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.io.products import read_reference, reference_name, write_master
+from mastpipe.io.products import product_name, read_reference, reference_name, write_master
 from mastpipe.io.qa import plot_anchor_panels, strongest_spread
 from mastpipe.pipeline import identify
 from mastpipe.pipeline.identify import (
+    _arc_lines,
+    _latest_master,
     parse_anchor_pairs,
     read_anchors_file,
     run_identify,
@@ -100,8 +102,13 @@ def calib_dir(sim_night, survey_effective, tmp_path_factory) -> Path:
     flat = build_master(flats, "flat", params)
     prov = Provenance("0.0.1", "abc", [], [])
     for master in (bias, background, flat):
-        write_master(out_dir / "calib" / f"sim_{master.kind}.fits", master, prov)
+        name = product_name(by_type[master.kind][0].meta, master.kind)
+        write_master(out_dir / "calib" / name, master, prov)
     return out_dir
+
+
+def master_names(calib_dir: Path) -> list[str]:
+    return sorted(p.name for p in (calib_dir / "calib").glob("*.fits") if "_wref" not in p.name)
 
 
 @pytest.fixture(scope="module")
@@ -214,7 +221,8 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
     # provenance: the arc's checksum, the masters used, solved status
     assert back.source_checksums == tuple(prov.inputs) and len(prov.inputs) == 1
     assert prov.wavelength_status == "solved"
-    assert sorted(prov.calibrations) == ["sim_background.fits", "sim_bias.fits", "sim_flat.fits"]
+    assert sorted(prov.calibrations) == master_names(identified.out_dir)
+    assert len(prov.calibrations) == 3
     assert prov.pipeline_version and prov.config_hash
     agreement = pd.read_csv(identified.out_dir / "calib" / "fiber_agreement.csv", encoding="utf-8")
     assert list(agreement.columns) == ["wavelength", "n_fibers", "spread_px"]
@@ -257,7 +265,7 @@ def test_identify_uses_stored_anchors_and_trace(
     # the output folder holds no masters: traces came from the arc, nothing was subtracted
     _, prov = read_reference(path, lambda instrument, configuration: None)
     assert prov.calibrations == []
-    assert any(step.startswith("traces from arc_full") for step in prov.steps)
+    assert any(step.startswith("traces arc_full") for step in prov.steps)
     # write_reference=False solves but writes nothing; the path is where it would go
     monkeypatch.setattr(identify, "load_anchor_trace", lambda *a: 0)
     dry, dry_path = run_identify(
@@ -276,6 +284,69 @@ def test_identify_uses_stored_anchors_and_trace(
     assert not (tmp_path / "dry").exists()
 
 
+def test_latest_master_sorts_by_stamp_within_the_configuration(tmp_path, survey_effective):
+    names = [
+        "highspec_mgb518_main_20260930T235900_bias.fits",
+        "highspec_mgb518_main_20261001T180000_bias.fits",
+        "highspec_mgb518_main_notime_bias.fits",  # sorts after every digit stamp by name
+        "highspec_noconf_main_20270101T000000_bias.fits",  # another configuration, later
+        "highspec_mgb518_other_20270101T000000_bias.fits",  # another camera, later
+        "highspec_mgb518_main_20270101T000000_flat.fits",  # another kind
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    assert sorted(names)[-1] != "highspec_mgb518_main_20261001T180000_bias.fits"
+    chosen = _latest_master(tmp_path, survey_effective, "bias")
+    assert chosen is not None and chosen.name == "highspec_mgb518_main_20261001T180000_bias.fits"
+    assert _latest_master(tmp_path, survey_effective, "background") is None
+    for name in names[:2]:
+        (tmp_path / name).unlink()
+    chosen = _latest_master(tmp_path, survey_effective, "bias")
+    assert chosen is not None and chosen.name == "highspec_mgb518_main_notime_bias.fits"
+
+
+def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
+    sim_night_lab3, highspec_effective, lab3_layout, tmp_path
+):
+    night_dir, truth = sim_night_lab3
+    detector = highspec_effective.detector
+    refs = scan_folder(night_dir, "highspec", load_header_map("highspec"))
+    by_type: dict[str, list[Frame]] = {}
+    for ref in refs:
+        if ref.meta.exposure_type in ("bias", "background"):
+            by_type.setdefault(ref.meta.exposure_type, []).append(load_frame(ref, detector))
+    bias = build_master(by_type["bias"], "bias", CalibParams())
+    background = build_master(by_type["background"], "background", CalibParams())
+    background.provenance["name"] = "night background"
+    row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
+    arc = night_dir / str(row["file"])
+    masters = {"bias": bias, "background": background}
+
+    lines = _arc_lines(arc, highspec_effective, lab3_layout, tmp_path, masters=masters)
+    assert lines.calibrations == [f"bias:{bias.validity['mid_time']}", "night background"]
+    assert lines.steps[:2] == ["bias", "background x 0.1 (t 30 s / t_background 300 s)"]
+    assert len(lines.traceset) == 3 and lines.steps[2].startswith("traces arc_full (3 found")
+    assert abs(float(np.median(lines.frame.data)) - 0.0) < 2.0  # bias and background gone
+
+    # with background subtraction off the background is not an applied calibration
+    no_subtract = highspec_effective.model_copy(
+        update={
+            "params": highspec_effective.params.model_copy(
+                update={"calib": CalibParams(subtract_background=False)}
+            )
+        }
+    )
+    lines2 = _arc_lines(
+        arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset
+    )
+    assert lines2.calibrations == [f"bias:{bias.validity['mid_time']}"]
+    assert lines2.steps[0] == "bias"
+    assert lines2.steps[1].startswith("background night background present but not subtracted")
+    assert lines2.steps[2] == "traces given (3 found, 0 missing)"
+    assert lines2.traceset is lines.traceset
+    assert not (tmp_path / "calib").exists()
+
+
 # ------------------------------------------------------------------------------- solve
 
 
@@ -284,8 +355,8 @@ def test_run_solve_seeded_by_previous_reference(identified, arc, survey_effectiv
     out_dir = tmp_path / "again"
     # the same masters as the anchor run, so the two solves see the same lines
     (out_dir / "calib").mkdir(parents=True)
-    for master in (identified.out_dir / "calib").glob("sim_*.fits"):
-        shutil.copy(master, out_dir / "calib" / master.name)
+    for name in master_names(identified.out_dir):
+        shutil.copy(identified.out_dir / "calib" / name, out_dir / "calib" / name)
     again = run_solve(arc.path, survey_effective, "survey45", out_dir, previous)
     path = out_dir / "calib" / reference_name(again)
     assert path.is_file()
