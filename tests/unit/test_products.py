@@ -15,6 +15,7 @@ from astropy.io import fits
 from mastpipe.core.model import (
     LINE_COLUMNS,
     CombinedSpectrum,
+    DriftModel,
     ExposureSpectra,
     FrameMeta,
     MasterCalib,
@@ -326,21 +327,10 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         drift_arcs=(CHECKSUMS[1], CHECKSUMS[2]),
         provenance={"idempotence_key": "abc", "n_arcs": 2},
     )
-    drift = pd.DataFrame(
-        {
-            "fiber": [0, 44],
-            "y_center": [10.5, 390.2],
-            "shift_px": [0.31, 0.35],
-            "stretch": [0.0, 1e-5],
-            "n_lines": [25, 24],
-            "rms_px": [0.02, 0.03],
-            "usable": [True, True],
-            "weight": [1.0, 1.0],
-        }
-    )
+    drift = make_drift()
     prov = make_provenance()
     path = tmp_path / product_name(META, "spec")
-    write_spectra(path, es, prov, drift, drift_scatter_px=0.021, drift_usable=True)
+    write_spectra(path, es, prov, drift, weights={0: 0.6, 44: 0.4})
     back, prov_back, drift_back = read_spectra(path)
     assert prov_back == prov
     assert back.meta == META
@@ -354,9 +344,7 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         assert_spectrum_equal(actual, expected)
         assert set(actual.versions) == {"skysub"}
     assert drift_back is not None
-    pd.testing.assert_frame_equal(drift_back, drift, check_dtype=False)
-    assert drift_back.attrs["scatter_px"] == pytest.approx(0.021)
-    assert drift_back.attrs["usable"] is True
+    assert_drift_equal(drift_back, drift)
     with fits.open(path) as hdul:
         header = hdul["SPECTRA"].header
         assert header["MPHASSKY"] is True
@@ -365,13 +353,96 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         assert np.all(np.isnan(table["FLUX_FLUXCAL"])) and np.all(table["MASK_FLUXCAL"])
         assert table["FLUX_SKYSUB"].shape == (3, N_SPEC)
         assert "DRIFT" in hdul
-        assert hdul["DRIFT"].header["MPDSCAT"] == pytest.approx(0.021)
-        assert hdul["DRIFT"].header["MPDUSE"] is True
+        drift_header = hdul["DRIFT"].header
+        assert drift_header["MPDSCAT"] == pytest.approx(0.021)
+        assert drift_header["MPDUSE"] is True
+        assert drift_header["MPDTIME"] == drift.arc_mid_time
+        assert drift_header["MPDNPIX"] == N_PIX
+        assert drift_header["MPDNSH"] == 2 and drift_header["MPDSH01"] == pytest.approx(1e-4)
+        assert drift_header["MPDNST"] == 1 and drift_header["MPDST01"] == pytest.approx(2e-6)
+        assert list(hdul["DRIFT"].data["WEIGHT"]) == [0.6, 0.4]
         primary = hdul[0].header
         assert primary["MPNMK"] == 18
         meta_keys = {primary[f"MPMK{n:02d}"] for n in range(1, 19)}
         assert {"instrument", "camera", "exposure_type", "binning", "unresolved"} <= meta_keys
         assert json.loads(primary["MPMV07"]) == [1, 1]
+
+
+def make_drift() -> DriftModel:
+    return DriftModel(
+        arc_checksums=(CHECKSUMS[1], CHECKSUMS[2]),
+        arc_mid_time="2026-10-01T20:18:00",
+        per_fiber=pd.DataFrame(
+            {
+                "fiber": [0, 44],
+                "y_center": [10.5, 390.2],
+                "shift_px": [0.31, 0.35],
+                "stretch": [0.0, 1e-5],
+                "n_lines": [25, 24],
+                "rms_px": [0.02, 0.03],
+                "usable": [True, True],
+            }
+        ),
+        shift_coeffs=np.array([1e-4, 0.3]),
+        stretch_coeffs=np.array([2e-6]),
+        scatter_px=0.021,
+        usable=True,
+        n_pix=N_PIX,
+    )
+
+
+def assert_drift_equal(actual: DriftModel, expected: DriftModel) -> None:
+    assert actual.arc_checksums == expected.arc_checksums
+    assert actual.arc_mid_time == expected.arc_mid_time
+    pd.testing.assert_frame_equal(actual.per_fiber, expected.per_fiber, check_dtype=False)
+    assert_arrays_equal(actual.shift_coeffs, expected.shift_coeffs)
+    assert_arrays_equal(actual.stretch_coeffs, expected.stretch_coeffs)
+    assert actual.scatter_px == pytest.approx(expected.scatter_px)
+    assert actual.usable is expected.usable
+    assert actual.n_pix == expected.n_pix
+    assert actual.shift_at(100.0) == pytest.approx(expected.shift_at(100.0))
+
+
+def test_spectra_provenance_disagreement_raises(tmp_path):
+    rng = np.random.default_rng(7)
+    es = ExposureSpectra(
+        meta=META,
+        spectra=[make_spectrum(0, rng, with_versions=False)],
+        wavelength_status="reference",
+        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_hash="0011223344aa",
+    )
+    prov = Provenance("0.0.1", "abcdef012345", [CHECKSUMS[0]], [], wavelength_status="nominal")
+    with pytest.raises(ValueError, match="wavelength_status"):
+        write_spectra(tmp_path / "spec.fits", es, prov)
+    prov = replace(prov, wavelength_status="reference", reference_hash="deadbeef0000")
+    with pytest.raises(ValueError, match="reference_hash"):
+        write_spectra(tmp_path / "spec.fits", es, prov)
+    prov = replace(prov, reference_hash=None, drift_arcs=[CHECKSUMS[2]])
+    with pytest.raises(ValueError, match="drift_arcs"):
+        write_spectra(tmp_path / "spec.fits", es, prov)
+
+
+def test_spectra_bare_provenance_filled_from_exposure(tmp_path):
+    rng = np.random.default_rng(8)
+    es = ExposureSpectra(
+        meta=META,
+        spectra=[make_spectrum(0, rng, with_versions=False)],
+        wavelength_status="transferred",
+        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_hash="0011223344aa",
+        drift_arcs=(CHECKSUMS[1],),
+    )
+    bare = Provenance("0.0.1", "abcdef012345", [CHECKSUMS[0]], ["bias_a"])
+    path = tmp_path / "spec.fits"
+    write_spectra(path, es, bare)
+    back, prov_back, _ = read_spectra(path)
+    assert prov_back.wavelength_status == "transferred"
+    assert prov_back.reference_id == es.reference_id
+    assert prov_back.reference_hash == es.reference_hash
+    assert prov_back.drift_arcs == [CHECKSUMS[1]]
+    assert prov_back.inputs == [CHECKSUMS[0]] and prov_back.calibrations == ["bias_a"]
+    assert back.wavelength_status == "transferred" and back.drift_arcs == (CHECKSUMS[1],)
 
 
 def test_spectra_roundtrip_without_versions(tmp_path):
@@ -613,7 +684,14 @@ def test_no_raw_keywords_in_products(tmp_path, reference):
     ref, geom = reference
     master = MasterCalib("bias", rng.normal(size=(4, 6)), {"camera": "main"}, 2, variance=None)
     traceset = TraceSet([make_trace(0, [0.002, 10.0], role="arc")], shape=(400, N_PIX))
-    es = ExposureSpectra(META, [make_spectrum(0, rng, with_versions=True)])
+    es = ExposureSpectra(
+        META,
+        [make_spectrum(0, rng, with_versions=True)],
+        wavelength_status=prov.wavelength_status,
+        reference_id=prov.reference_id,
+        reference_hash=prov.reference_hash,
+        drift_arcs=tuple(prov.drift_arcs),
+    )
     cs = CombinedSpectrum(
         "HD 1234",
         np.arange(N_SPEC, dtype=float),

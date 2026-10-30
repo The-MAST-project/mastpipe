@@ -47,6 +47,7 @@ from mastpipe.core.model import (
     LINE_COLUMNS,
     VERSIONS,
     CombinedSpectrum,
+    DriftModel,
     ExposureSpectra,
     FrameMeta,
     MasterCalib,
@@ -198,10 +199,6 @@ def _optional_card(value: float | bool | None) -> float | bool | str:
 
 def _optional_float(value: Any) -> float | None:
     return None if isinstance(value, str) and value == NONE else float(value)
-
-
-def _optional_bool(value: Any) -> bool | None:
-    return None if isinstance(value, str) and value == NONE else bool(value)
 
 
 def _native(array: Any) -> np.ndarray:
@@ -440,16 +437,93 @@ def read_traceset(path: Path | str) -> tuple[TraceSet, Provenance]:
 # ---------------------------------------------------------------------------- spectra
 
 
+DUPLICATED_FIELDS = (
+    "wavelength_status",
+    "flux_status",
+    "telluric_status",
+    "reference_id",
+    "reference_hash",
+    "drift_arcs",
+)
+"""Fields :class:`~mastpipe.core.model.ExposureSpectra` and :class:`Provenance` both carry."""
+
+
+def _unset(value: Any) -> bool:
+    return value is None or value == NONE or (isinstance(value, list | tuple) and not value)
+
+
 def _exposure_provenance(prov: Provenance, es: ExposureSpectra) -> Provenance:
-    """``prov`` with the statuses, reference and drift arcs taken from the exposure."""
-    return replace(
-        prov,
-        wavelength_status=es.wavelength_status,
-        flux_status=es.flux_status,
-        telluric_status=es.telluric_status,
-        reference_id=es.reference_id,
-        reference_hash=es.reference_hash,
-        drift_arcs=list(es.drift_arcs),
+    """``prov`` with its unset duplicated fields filled from the exposure.
+
+    A field of :data:`DUPLICATED_FIELDS` that ``prov`` leaves unset (``None``, ``"none"`` or
+    empty) is taken from ``es``; one that is set must agree with ``es``, else
+    ``ValueError`` naming it: a provenance built with the wrong status is a bug upstream
+    that must not be papered over on disk.
+    """
+    filled: dict[str, Any] = {}
+    for name in DUPLICATED_FIELDS:
+        theirs = getattr(es, name)
+        ours = getattr(prov, name)
+        if name == "drift_arcs":
+            theirs, ours = list(theirs), list(ours)
+        if _unset(ours):
+            filled[name] = theirs
+        elif ours != theirs:
+            raise ValueError(f"provenance {name}={ours!r} disagrees with the exposure's {theirs!r}")
+    return replace(prov, **filled)
+
+
+DRIFT_SHIFT_SCHEME = ("MPDNSH", "MPDSH", 2)
+DRIFT_STRETCH_SCHEME = ("MPDNST", "MPDST", 2)
+"""Count card, prefix and digits of the drift shift / stretch polynomial coefficients."""
+
+
+def _add_coefficients(header: fits.Header, scheme: tuple[str, str, int], coeffs: Any) -> None:
+    count_key, prefix, digits = scheme
+    values = np.asarray(coeffs, dtype=float).reshape(-1)
+    if values.size >= 10**digits:
+        raise ValueError(f"{values.size} coefficients exceed the {prefix} cards")
+    _set(header, count_key, int(values.size), f"number of {prefix} coefficients")
+    for n, value in enumerate(values, 1):
+        _set(header, f"{prefix}{n:0{digits}d}", float(value), f"{prefix} coefficient {n}")
+
+
+def _read_coefficients(header: fits.Header, scheme: tuple[str, str, int]) -> np.ndarray:
+    count_key, prefix, digits = scheme
+    count = int(header[count_key])
+    return np.array([float(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, count + 1)])
+
+
+def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinTableHDU:
+    """``DriftModel.per_fiber`` plus a ``WEIGHT`` column (1.0 for a fiber ``weights`` lacks),
+    with the model's scalars and polynomials as cards."""
+    table = drift.per_fiber.copy()
+    fibers = table["fiber"].to_numpy()
+    table["weight"] = [1.0 if weights is None else float(weights.get(int(f), 1.0)) for f in fibers]
+    hdu = _table_from_frame("DRIFT", table)
+    header = hdu.header
+    _set(header, "MPDTIME", drift.arc_mid_time, "drift arc mid-time, UTC")
+    _set(header, "MPDSCAT", float(drift.scatter_px), "drift scatter, px")
+    _set(header, "MPDUSE", bool(drift.usable), "drift model usable")
+    _set(header, "MPDNPIX", int(drift.n_pix), "pixels along dispersion")
+    _add_coefficients(header, DRIFT_SHIFT_SCHEME, drift.shift_coeffs)
+    _add_coefficients(header, DRIFT_STRETCH_SCHEME, drift.stretch_coeffs)
+    return hdu
+
+
+def _read_drift(hdu: fits.BinTableHDU, arc_checksums: tuple[str, ...]) -> DriftModel:
+    """The inverse of :func:`_drift_hdu`; the checksums come from the provenance cards."""
+    header = hdu.header
+    per_fiber = _frame_from_table(hdu).drop(columns=["weight"])
+    return DriftModel(
+        arc_checksums=arc_checksums,
+        arc_mid_time=str(header["MPDTIME"]),
+        per_fiber=per_fiber,
+        shift_coeffs=_read_coefficients(header, DRIFT_SHIFT_SCHEME),
+        stretch_coeffs=_read_coefficients(header, DRIFT_STRETCH_SCHEME),
+        scatter_px=float(header["MPDSCAT"]),
+        usable=bool(header["MPDUSE"]),
+        n_pix=int(header["MPDNPIX"]),
     )
 
 
@@ -470,10 +544,8 @@ def write_spectra(
     path: Path | str,
     es: ExposureSpectra,
     prov: Provenance,
-    drift: pd.DataFrame | None = None,
-    *,
-    drift_scatter_px: float | None = None,
-    drift_usable: bool | None = None,
+    drift: DriftModel | None = None,
+    weights: dict[int, float] | None = None,
 ) -> Path:
     """Table ``SPECTRA``, one row per fiber: ``FIBER, ROLE, TELESCOPE, TARGET`` and the
     vector columns ``PIXEL, FLUX, ERROR, MASK``, the optional grids ``WAVELENGTH, SKY,
@@ -484,10 +556,14 @@ def write_spectra(
 
     The primary header carries the frame metadata (``MPMKnn`` / ``MPMVnn``), the exposure's
     free-form provenance dict (``MPXPKnn`` / ``MPXPVnn``, absent when ``None``) and the
-    provenance cards, whose statuses, reference and drift arcs are taken from ``es`` (the
-    exposure is the authority; ``prov`` supplies the rest). ``drift``, when given, is the
-    ``DRIFT`` table (the columns of ``DriftModel.per_fiber`` plus ``weight``) with the
-    cards ``MPDSCAT`` (``drift_scatter_px``) and ``MPDUSE`` (``drift_usable``).
+    provenance cards. The statuses, reference and drift arcs ``prov`` leaves unset are
+    filled from ``es``; set ones must agree with ``es`` (``ValueError`` naming the field).
+
+    ``drift``, when given, is written as the ``DRIFT`` table: ``DriftModel.per_fiber`` plus
+    a ``WEIGHT`` column (``weights`` by fiber, 1.0 when absent) with the cards ``MPDTIME``
+    (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE``, ``MPDNPIX`` and the shift / stretch
+    coefficients as ``MPDNSH`` / ``MPDSHnn`` and ``MPDNST`` / ``MPDSTnn``; the arc checksums
+    are the provenance's ``MPDARCnn`` cards.
 
     ``ValueError`` without spectra or when the spectra differ in pixel-grid length.
     """
@@ -551,10 +627,7 @@ def write_spectra(
     _add_provenance(primary.header, _exposure_provenance(prov, es))
     hdus: list[Any] = [primary, spectra_hdu]
     if drift is not None:
-        drift_hdu = _table_from_frame("DRIFT", drift)
-        _set(drift_hdu.header, "MPDSCAT", _optional_card(drift_scatter_px), "drift scatter, px")
-        _set(drift_hdu.header, "MPDUSE", _optional_card(drift_usable), "drift model usable")
-        hdus.append(drift_hdu)
+        hdus.append(_drift_hdu(drift, weights))
     return _write(path, hdus)
 
 
@@ -565,14 +638,14 @@ def _version_part(spectrum: Spectrum, version: str, part: str) -> np.ndarray | N
 
 def read_spectra(
     path: Path | str,
-) -> tuple[ExposureSpectra, Provenance, pd.DataFrame | None]:
+) -> tuple[ExposureSpectra, Provenance, DriftModel | None]:
     """The inverse of :func:`write_spectra`: ``(exposure, provenance, drift)``.
 
     ``versions`` and the optional grids are populated only where their presence card and
     the row's ``HAS_*`` flag are set; ``drift`` is ``None`` without a ``DRIFT`` table and
-    otherwise carries ``MPDSCAT`` / ``MPDUSE`` as ``attrs["scatter_px"]`` /
-    ``attrs["usable"]``. The exposure's statuses, reference and drift arcs are the
-    provenance's.
+    otherwise the :class:`~mastpipe.core.model.DriftModel` rebuilt from it (its
+    ``arc_checksums`` are the provenance's drift arcs; the ``WEIGHT`` column stays in the
+    file). The exposure's statuses, reference and drift arcs are the provenance's.
     """
     with fits.open(path) as hdul:
         header = hdul[0].header
@@ -642,11 +715,7 @@ def read_spectra(
             drift_arcs=tuple(prov.drift_arcs),
             provenance=_read_mapping(header, EXTRA_SCHEME),
         )
-        drift = None
-        if "DRIFT" in hdul:
-            drift = _frame_from_table(hdul["DRIFT"])
-            drift.attrs["scatter_px"] = _optional_float(hdul["DRIFT"].header["MPDSCAT"])
-            drift.attrs["usable"] = _optional_bool(hdul["DRIFT"].header["MPDUSE"])
+        drift = _read_drift(hdul["DRIFT"], tuple(prov.drift_arcs)) if "DRIFT" in hdul else None
         return es, prov, drift
 
 
