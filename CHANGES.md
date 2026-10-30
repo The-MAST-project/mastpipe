@@ -95,3 +95,11 @@
   file, or stored with the instrument, whose `trace:` is read by `load_anchor_trace`) and
   writing the reference product with `fiber_agreement.csv`, and `run_solve` seeded by a previous
   reference. matplotlib runs on the `Agg` backend.
+- Drift (`mastpipe.steps.drift`, `mastpipe.pipeline.arcs`): `fit_fiber_drift` (comb-shift
+  guess, one-to-one match within `tol_px`, clipped linear shift + stretch fit against the
+  reference's identified lines, stretch zeroed below `stretch_significance` sigma),
+  `fit_drift` (polynomial in `y_center` across the usable arc fibers into a `DriftModel`,
+  a constant for one fiber), `apply_drift` (weighted shift and stretch undone per fiber
+  before the reference model gives the wavelength), `pair_arcs` (`nearest_before`,
+  `nearest`, `interpolate` within `max_age_hours`, same configuration, usable, not before
+  the reference's `valid_from`) and `status_for`.
