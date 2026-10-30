@@ -307,3 +307,41 @@ def test_lines_summary_counts():
     assert row["use_y"] == 4
     assert row["median FWHM_x [px]"] == pytest.approx(FWHM_PX, abs=0.3)
     assert row["median FWHM_y [px]"] == pytest.approx(FWHM_PX, abs=0.5)
+
+
+def test_trace_near_detector_edge_still_usable():
+    # the default strip (halfwidth 9) around a trace at y = 8 reaches below row 0: the
+    # off-detector rows must not bar the lines from use_x
+    shape = (41, 300)
+    traceset = one_trace(shape, 8.0)
+    lines = [(60.0, 3000.0), (150.0, 3000.0), (240.0, 3000.0)]
+    image = synthetic_arc(shape, traceset.traces[0], lines)
+    params = LineParams(sigma_guess=SIGMA_PX)
+    tables, _ = find_lines(image, None, traceset, params)
+    table = tables[0]
+    assert len(table) == 3
+    assert table["fit_ok"].all() and table["on_trace"].all()
+    assert table["use_x"].all()
+    # with the whole strip as the measuring window the off-detector rows make it incomplete
+    assert not table["complete"].any()
+    assert not table["use_y"].any()
+    # measuring rows that stay on the detector make the lines complete and usable in y
+    tables, _ = find_lines(image, None, traceset, params.model_copy(update={"y_halfwidth": 3}))
+    assert tables[0]["complete"].all()
+    assert tables[0]["use_y"].all()
+
+
+def test_spike_next_to_line_not_deblended():
+    # a single-pixel spike 3 px from a line is a residual peak the deblender would fit as a
+    # component pinned at the sigma lower bound; it must be rejected on width
+    shape = (41, 300)
+    traceset = one_trace(shape, 20.0)
+    image = synthetic_arc(shape, traceset.traces[0], [(150.0, 3000.0)])
+    image[20, 153] += 400.0
+    params = LineParams(halfwidth=STRIP_HALFWIDTH, sigma_guess=SIGMA_PX)
+    tables, _ = find_lines(image, None, traceset, params)
+    table = tables[0]
+    assert len(table) == 1
+    assert table["n_in_group"].iloc[0] == 1
+    assert table["x_center"].iloc[0] == pytest.approx(150.0, abs=0.1)
+    assert table["use_x"].iloc[0]

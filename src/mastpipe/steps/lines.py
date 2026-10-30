@@ -15,8 +15,14 @@ a valid spatial width.
 
 Beyond the notebook, a ``saturated`` flag (raw strip peak above ``LineParams.saturation``)
 bars a line from ``use_x``, and a variance image, when given, provides the per-line
-``snr`` in place of the profile's robust noise. The notebook's figures and printing are
-not part of the step; the detilted strips come back for the caller's QA.
+``snr`` in place of the profile's robust noise. Two rules depart from the notebook:
+``complete`` is judged on the measuring rows (``y_halfwidth`` about the trace) rather than
+the whole strip and is a condition of ``use_y`` only, so a trace closer than ``halfwidth``
+rows to the detector edge keeps its lines usable along the dispersion; and the deblender
+rejects a new component whose fitted width is pinned at the lower sigma bound or narrower
+than half ``sigma_guess``, which is what a single-pixel spike next to a line produces. The
+notebook's figures and printing are not part of the step; the detilted strips come back for
+the caller's QA.
 """
 
 from __future__ import annotations
@@ -35,6 +41,10 @@ from mastpipe.steps.trace import robust_sigma
 
 GAUSSIAN_FWHM = 2.3548
 """FWHM of a Gaussian in units of its sigma, as the notebook rounds it."""
+SIGMA_BOUNDS = (0.4, 12.0)
+"""Bounds on the fitted Gaussian sigma, px (the notebook's ``sigma_bounds``)."""
+MIN_SIGMA_FRACTION = 0.5
+"""A deblended component narrower than this fraction of ``sigma_guess`` is a spike, not a line."""
 
 LINE_COLUMNS = (
     "id",
@@ -136,7 +146,7 @@ def _fit_group(
     centres: list[float],
     sigma_guess: float,
     max_shift: float = 3.0,
-    sigma_bounds: tuple[float, float] = (0.4, 12.0),
+    sigma_bounds: tuple[float, float] = SIGMA_BOUNDS,
 ) -> tuple[float, list[tuple[float, float, float]]] | None:
     """Fit ``len(centres)`` Gaussians on a shared baseline.
 
@@ -183,8 +193,9 @@ def _deblend_group(
     Gaussian, and if what is left over still has a peak worth ``add_sigma`` noise, put a
     component there and refit. A new component is kept only when it is that significant,
     sits at least ``min_split`` from every component already in the fit, stays inside the
-    window and cuts the residual scatter by at least ``gain``. Returns
-    ``(baseline, components)`` or ``None``.
+    window, cuts the residual scatter by at least ``gain`` and (beyond the notebook) is not
+    pinned at the lower sigma bound or narrower than :data:`MIN_SIGMA_FRACTION` of
+    ``sigma_guess``. Returns ``(baseline, components)`` or ``None``.
     """
     if min_split is None:
         min_split = 1.0 * sigma_guess
@@ -212,9 +223,14 @@ def _deblend_group(
         )
         outside = any(c < x[0] or c > x[-1] for c in centres_new)
         weakest = min(c[0] for c in trial[1])
+        # the component the trial added is the one nearest the residual peak; a width at
+        # the lower bound or well under the line width is a spike, not a line
+        added = min(trial[1], key=lambda c: abs(c[1] - x[i]))
+        spike = added[2] < SIGMA_BOUNDS[0] + 1e-6 or added[2] < MIN_SIGMA_FRACTION * sigma_guess
         if (
             too_close
             or outside
+            or spike
             or weakest < add_sigma * noise
             or rms(trial) > (1 - gain) * rms(best)
         ):
@@ -306,12 +322,13 @@ def find_lines(
     either side; ``x_center`` is the fitted centre where the fit converged, else the
     centroid. The flags: ``isolated`` (nearest neighbour at least ``isolation`` px away,
     default ``2 x_halfwidth``), ``near_edge`` (within ``edge_margin`` px of either end),
-    ``complete`` (the window holds no off-detector pixel and is not cut by the detector
-    edge), ``on_trace`` (spatial centroid within ``max_y_offset`` of the trace; ``None``
-    disables), ``fit_ok``, ``saturated`` (peak of the raw strip above ``saturation``;
-    ``None`` disables). ``use_x`` needs ``isolated or fit_ok``, not ``near_edge``,
-    ``complete``, ``on_trace`` and not ``saturated``; ``use_y`` needs not ``near_edge``,
-    ``complete``, a finite ``fwhm_y`` and ``on_trace``, and stays valid for a blend.
+    ``complete`` (the measuring window, ``y_halfwidth`` rows about the trace, holds no
+    off-detector pixel and is not cut by the detector edge along x), ``on_trace`` (spatial
+    centroid within ``max_y_offset`` of the trace; ``None`` disables), ``fit_ok``,
+    ``saturated`` (peak of the raw strip above ``saturation``; ``None`` disables). ``use_x``
+    needs ``isolated or fit_ok``, not ``near_edge``, ``on_trace`` and not ``saturated``;
+    ``use_y`` needs not ``near_edge``, ``complete``, a finite ``fwhm_y`` and ``on_trace``,
+    and stays valid for a blend.
 
     ``snr`` is ``height`` over the square root of the variance summed down the strip's
     column when ``variance`` is given, else over the profile's robust noise.
@@ -458,7 +475,7 @@ def find_lines(
                     "fwhm_x_fit": GAUSSIAN_FWHM * comp[2] if comp else np.nan,
                     "fwhm_y": y_fwhm,
                     "sigma_y_fit": sigma_y,
-                    "complete": bool(np.all(np.isfinite(strip[:, xlo:xhi]))) and not edge_cut,
+                    "complete": bool(np.all(np.isfinite(strip[ylo:yhi, xlo:xhi]))) and not edge_cut,
                     "fit_ok": comp is not None,
                     "saturated": bool(saturated),
                 }
@@ -495,7 +512,6 @@ def find_lines(
         tab["use_x"] = (
             (tab["isolated"] | tab["fit_ok"])
             & ~tab["near_edge"]
-            & tab["complete"]
             & tab["on_trace"]
             & ~tab["saturated"]
         )
