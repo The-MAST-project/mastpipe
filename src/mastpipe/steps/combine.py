@@ -219,8 +219,8 @@ def _weighted_mean(
     mean, combined_error, share = _average(flux, weight)
     if clip_sigma is not None and clip_sigma > 0:
         n_usable = usable.sum(axis=0)
-        with np.errstate(invalid="ignore"):
-            deviation = np.abs(flux - mean[None, :]) / error
+        safe_error = np.where(usable, error, 1.0)
+        deviation = np.where(usable, np.abs(flux - mean[None, :]) / safe_error, 0.0)
         outlier = usable & (deviation > clip_sigma) & (n_usable[None, :] >= MIN_CLIP_CONTRIBUTORS)
         outlier &= (outlier.sum(axis=0) < n_usable)[None, :]
         if outlier.any():
@@ -289,8 +289,11 @@ def combine_spectra(
     the raw combination's weights (``1 / n`` when no pixel was combined); ``source`` is
     empty, since a :class:`Spectrum` carries no file name. ``grouping`` is
     :data:`GROUPING` and ``barycentric`` a copy of the given terms. With no contributor
-    the grid is empty and ``versions`` holds an empty ``"raw"``.
+    the grid is empty and ``versions`` holds an empty ``"raw"``. ``ValueError`` when
+    ``version`` is neither ``None`` nor one of :data:`mastpipe.core.model.VERSIONS`.
     """
+    if version is not None and version not in VERSIONS:
+        raise ValueError(f"version must be None or one of {VERSIONS}, got {version!r}")
     candidates = [s for s in spectra if s.role == "science" and s.target == target]
     excluded: list[tuple[Spectrum, str]] = []
     kept: list[Spectrum] = []

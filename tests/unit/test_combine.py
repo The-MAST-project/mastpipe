@@ -196,6 +196,48 @@ def test_clip_sigma_rejects_outlier_pixel():
     assert not cs.versions["raw"].mask[120]
 
 
+def test_zero_error_pixel_does_not_warn_in_clipping():
+    rng = np.random.default_rng(11)
+    params = CombineParams(clip_sigma=4.0, log_grid=False)
+    unmasked = noisy_copies(rng)
+    unmasked[0].error[10] = 0.0
+    cs = combine_spectra(unmasked, "star", params)
+    raw = cs.versions["raw"]
+    assert not raw.mask[10]
+    assert raw.error[10] == pytest.approx(SIGMA / np.sqrt(3))
+    masked = noisy_copies(rng)
+    masked[0].error[10] = 0.0
+    masked[0].mask[10] = True
+    cs = combine_spectra(masked, "star", params)
+    assert not cs.versions["raw"].mask[10]
+    assert cs.versions["raw"].error[10] == pytest.approx(SIGMA / np.sqrt(3))
+
+
+def test_default_params_log_grid_fractional_offsets():
+    rng = np.random.default_rng(12)
+    spectra = [
+        make_spectrum(
+            fiber=i,
+            flux=CONTINUUM + rng.normal(0.0, SIGMA, N_PIX),
+            wavelength=grid() + 0.01 * (0.37 * i),
+            telescope=f"T{i}",
+        )
+        for i in range(4)
+    ]
+    cs = combine_spectra(spectra, "star", CombineParams())
+    assert np.allclose(np.diff(np.log(cs.wavelength)), np.diff(np.log(cs.wavelength))[0])
+    raw = cs.versions["raw"]
+    overlap = (cs.wavelength >= spectra[3].wavelength[0]) & (
+        cs.wavelength <= spectra[0].wavelength[-1]
+    )
+    assert overlap.sum() > 150
+    assert not raw.mask.any()  # every grid pixel is covered by at least one contributor
+    assert np.std(raw.flux[overlap]) == pytest.approx(SIGMA / 2, rel=0.25)
+    assert np.std(raw.flux[overlap]) < 0.6 * SIGMA
+    assert np.median(raw.error[overlap]) < 0.5 * SIGMA
+    assert np.allclose(cs.contributors["weight"], 0.25, atol=0.05)
+
+
 # ---------------------------------------------------------------------------- versions
 
 
@@ -227,6 +269,14 @@ def test_version_cap_limits_combined_versions():
     assert set(cs.versions) == {"raw", "skysub"}
     cs = combine_spectra(spectra, "star", CombineParams(log_grid=False))
     assert set(cs.versions) == {"raw", "skysub", "fluxcal"}
+
+
+def test_version_argument_validated():
+    rng = np.random.default_rng(13)
+    spectra = noisy_copies(rng)
+    for bad in ("raw", "latest", ""):
+        with pytest.raises(ValueError, match="skysub"):
+            combine_spectra(spectra, "star", CombineParams(), version=bad)
 
 
 # -------------------------------------------------------------------------- bookkeeping
