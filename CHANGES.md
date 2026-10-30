@@ -108,3 +108,11 @@
   into `versions["skysub"]`, the raw extraction kept and the resampled sky under `Spectrum.sky`)
   and `subtract_sky_all` (science/sky pairing per telescope, with the fibers left raw listed by
   reason: no sky fiber, sky fiber fully masked, no wavelength).
+- Within-exposure combination (`mastpipe.steps.combine`: `common_grid`, `combine_spectra`
+  with include/exclude lists, optional S/N, flux-ratio and drift rejection listed in
+  `excluded`, inverse-variance weighted mean with one-pass clipping, every shared version
+  combined separately with the raw extraction under `"raw"`, `group_by_target`) and the
+  flux-calibration and telluric-correction interfaces (`mastpipe.steps.fluxcal.apply_response`
+  / `flux_status`, `mastpipe.steps.telluric.correct_telluric` / `telluric_status`) with
+  pass-through defaults that add nothing and leave the statuses `"uncalibrated"` /
+  `"uncorrected"`.
