@@ -103,3 +103,8 @@
   before the reference model gives the wavelength), `pair_arcs` (`nearest_before`,
   `nearest`, `interpolate` within `max_age_hours`, same configuration, usable, not before
   the reference's `valid_from`) and `status_for`.
+- Sky subtraction (`mastpipe.steps.sky`): `subtract_sky` (the telescope's sky fiber scaled by
+  the throughput ratio, linearly resampled in wavelength onto the science grid and subtracted
+  into `versions["skysub"]`, the raw extraction kept and the resampled sky under `Spectrum.sky`)
+  and `subtract_sky_all` (science/sky pairing per telescope, with the fibers left raw listed by
+  reason: no sky fiber, sky fiber fully masked, no wavelength).

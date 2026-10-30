@@ -95,7 +95,8 @@ def sim_night_lab3(
 
 
 def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:
-    """Traces built from the simulator's polynomial coefficients, with the layout roles."""
+    """Traces built from the simulator's polynomial coefficients, with the layout's roles and
+    telescopes (``None`` for the arc fibers)."""
     traces = [
         Trace(
             index=i,
@@ -109,6 +110,7 @@ def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:
             y_samples=np.full(10, float(np.polyval(coeffs, shape[1] // 2))),
             kept=np.ones(10, dtype=bool),
             role=row["role"],
+            telescope=None if isinstance(row["telescope"], float) else row["telescope"],
         )
         for i, (coeffs, (_, row)) in enumerate(
             zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
