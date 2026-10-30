@@ -1,0 +1,1075 @@
+"""The quick-look recipe: a night folder to masters, traces, references, drift models,
+wavelength-calibrated and sky-subtracted spectra and per-target combinations, with QC.
+
+:func:`run_quicklook` scans the folder (manifest applied), drops the frames whose type is
+``unknown`` into ``skipped`` with their classification rule, and reduces every
+``(camera, configuration)`` group in turn:
+
+1. **masters** — bias, dark and background frames are stacked (dark and background one
+   exposure time at a time, the largest batch serving the night), the flats calibrated
+   and stacked, and every master is added to the calibration library (``out/calib`` or
+   ``options.library``); a kind the night lacks is taken from the library when it holds
+   one that applies;
+2. **traces** — found on the flat master, or on a full arc with the percentile collapse
+   when there is no flat, matched to the layout preset (``options.layout``, else the
+   frames' ``fiber_preset``, else the instrument's default) and written with a QC file;
+   the relative throughput comes from the flat (``{}`` without one);
+3. **arcs** — classified by their lit traces when the header does not say which kind they
+   are; a **full arc** is re-solved seeded by the latest reference of the configuration
+   and preset and added to the library (skipped with "run identify" when there is none,
+   and skipped when the library already holds a reference solved from that very frame);
+   a **calibration-fiber arc** is taken to its lines on the arc fibers and fitted for its
+   drift against the reference valid at its time, kept in memory and written as a QC file;
+4. **science frames** — calibrated with cosmic rays flagged, extracted, given wavelengths
+   by the time policy (``transferred`` through the paired drift arcs, ``reference`` from
+   the reference alone, ``nominal`` from the configuration's geometry when there is no
+   reference), sky-subtracted, passed through the flux and telluric stages, written with
+   their provenance and QC, and combined per target.
+
+A science product is identified by its idempotence key — the frame's checksum, the
+configuration hash, the reference identifier and the sorted drift-arc checksums; a product
+on disk with the same key is skipped unless ``options.force``. A product whose key changed
+(a ``reference`` product whose exposure now has a drift arc, a ``nominal`` one once a
+reference exists) is reduced again and listed in ``reduced_again``.
+
+Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is logged and
+recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
+its group with a recorded failure; with ``"raise"`` it propagates. The ``mastpipe``
+logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
+handlers are removed when it ends.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+import numpy as np
+import pandas as pd
+from astropy.io import fits
+
+from mastpipe.__version__ import __version__
+from mastpipe.config.loader import build_effective, config_hash
+from mastpipe.config.models import DriftParams, EffectiveConfig, InstrumentConfig, StepParams
+from mastpipe.core.model import (
+    PER_FIBER_COLUMNS,
+    CalibrationSet,
+    DriftModel,
+    ExposureSpectra,
+    Frame,
+    FrameMeta,
+    FrameRef,
+    MasterCalib,
+    QCReport,
+    ReferenceSolution,
+    Spectrum,
+    TraceSet,
+)
+from mastpipe.instruments.registry import load_header_map, load_instrument, load_layout
+from mastpipe.io import products
+from mastpipe.io.ingest import load_frame, read_manifest, scan_folder
+from mastpipe.pipeline.arcs import _timestamp, pair_arcs, status_for
+from mastpipe.pipeline.callib import CalibLibrary
+from mastpipe.pipeline.identify import CALIB_FOLDER, _arc_lines, _provenance, _solve_and_package
+from mastpipe.pipeline.provenance import Provenance
+from mastpipe.steps.calib import (
+    build_calibration_set,
+    build_master,
+    calibrate_frame,
+    calibration_steps,
+)
+from mastpipe.steps.combine import combine_spectra, group_by_target
+from mastpipe.steps.cosmics import flag_cosmic_rays
+from mastpipe.steps.drift import apply_drift, fit_drift
+from mastpipe.steps.extract import extract_aperture
+from mastpipe.steps.fluxcal import apply_response, flux_status
+from mastpipe.steps.geometry import GratingGeometry, grating_geometry
+from mastpipe.steps.sky import subtract_sky_all
+from mastpipe.steps.telluric import correct_telluric, telluric_status
+from mastpipe.steps.trace import (
+    classify_arc,
+    find_traces,
+    match_layout,
+    relative_throughput,
+    trace_source,
+)
+from mastpipe.steps.wavemodel import model_from_config
+
+log = logging.getLogger("mastpipe")
+
+SPEC_FOLDER = "spec"
+QC_FOLDER = "qa"
+LOG_FOLDER = "logs"
+MASTER_KINDS = ("bias", "dark", "background")
+"""The master kinds stacked from raw frames, in the order they are built."""
+TIME_POLICIES = ("nearest_before", "nearest", "interpolate")
+ALREADY_REDUCED = "already reduced"
+"""Start of the ``skipped`` reason of a science product whose idempotence key is unchanged."""
+
+
+# ------------------------------------------------------------------------------ options
+
+
+@dataclass
+class RunOptions:
+    """What a quick-look run is told from outside.
+
+    ``overrides`` are nested parameter mappings layered on the instrument configuration
+    (see :func:`~mastpipe.config.loader.parse_override`); ``layout`` names the fiber
+    preset (default: the frames' ``fiber_preset``, else the instrument's default);
+    ``reference_id`` pins the reference solution instead of the one valid at each frame's
+    time; ``time_policy`` overrides ``params.drift.time_policy``; ``library`` is the
+    calibration library folder (default ``out_dir/calib``).
+    """
+
+    instrument: str
+    configuration: str | None = None
+    camera: str | None = None
+    layout: str | None = None
+    overrides: Sequence[dict[str, Any]] = ()
+    on_error: Literal["continue", "raise"] = "continue"
+    force: bool = False
+    manifest: Path | None = None
+    reference_id: str | None = None
+    time_policy: str | None = None
+    library: Path | None = None
+
+
+@dataclass
+class RunSummary:
+    """What a run produced: product and QC paths, and the frames it skipped, failed on or
+    reduced again (``skipped`` holds ``"<source>: <reason>"`` strings, ``failed`` pairs of
+    source and error, ``reduced_again`` the sources of rewritten science products)."""
+
+    products: list[Path] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    qc: list[Path] = field(default_factory=list)
+    reduced_again: list[str] = field(default_factory=list)
+
+
+@dataclass(eq=False)
+class _Group:
+    """The state of one ``(camera, configuration)`` group while it is reduced."""
+
+    effective: EffectiveConfig
+    instrument: InstrumentConfig
+    preset: str
+    layout: pd.DataFrame
+    library: CalibLibrary
+    out_dir: Path
+    options: RunOptions
+    summary: RunSummary
+    cfg_hash: str
+    binning: tuple[int, int]
+    readout_mode: str | None
+    temperature: float | None
+    near_time: str | None
+    masters: dict[str, tuple[MasterCalib, Path]] = field(default_factory=dict)
+    calib: CalibrationSet | None = None
+    traceset: TraceSet | None = None
+    traces_path: Path | None = None
+    throughput: dict[int, float] = field(default_factory=dict)
+    arcs: list[tuple[FrameMeta, DriftModel]] = field(default_factory=list)
+
+    @property
+    def params(self) -> StepParams:
+        return self.effective.params
+
+    @property
+    def geom(self) -> GratingGeometry:
+        return grating_geometry(self.effective.geometry, self.effective.detector.pixel_size_um)
+
+    @property
+    def drift_params(self) -> DriftParams:
+        policy = self.options.time_policy
+        if policy is None:
+            return self.params.drift
+        return self.params.drift.model_copy(update={"time_policy": policy})
+
+    @property
+    def spec_dir(self) -> Path:
+        return self.out_dir / SPEC_FOLDER
+
+    @property
+    def qc_dir(self) -> Path:
+        return self.out_dir / QC_FOLDER
+
+    def traces(self) -> TraceSet:
+        assert self.traceset is not None
+        return self.traceset
+
+    def calibration_names(self) -> list[str]:
+        """File names of the masters and the trace product a science frame was reduced with."""
+        names = [path.name for _, path in self.masters.values()]
+        if self.traces_path is not None:
+            names.append(self.traces_path.name)
+        return names
+
+    def injected_masters(self) -> dict[str, MasterCalib]:
+        """The bias and background masters for :func:`~mastpipe.pipeline.identify._arc_lines`,
+        each named after its file so the provenance lists the file."""
+        return {
+            kind: replace(master, provenance={**master.provenance, "name": path.name})
+            for kind, (master, path) in self.masters.items()
+            if kind in ("bias", "background")
+        }
+
+
+# ------------------------------------------------------------------------------ helpers
+
+
+def _describe(error: BaseException) -> str:
+    return f"{type(error).__name__}: {error}"
+
+
+def _time_key(ref: FrameRef) -> tuple[bool, str, str]:
+    return (ref.meta.mid_time is None, ref.meta.mid_time or "", ref.meta.source)
+
+
+def _skip(group: _Group, source: str, reason: str) -> None:
+    group.summary.skipped.append(f"{source}: {reason}")
+    log.info("skipped %s: %s", source, reason)
+
+
+def _per_frame(group: _Group, ref: FrameRef, action: Callable[[_Group, FrameRef], None]) -> None:
+    """Run ``action`` on one frame under the error policy."""
+    try:
+        action(group, ref)
+    except Exception as error:
+        if group.options.on_error == "raise":
+            raise
+        group.summary.failed.append((ref.meta.source, _describe(error)))
+        log.exception("failed %s", ref.meta.source)
+
+
+def _by_exposure(refs: list[FrameRef]) -> list[list[FrameRef]]:
+    """``refs`` batched by exposure time, shortest first (frames without one last)."""
+    batches: dict[float | None, list[FrameRef]] = {}
+    for ref in refs:
+        batches.setdefault(ref.meta.exposure_time, []).append(ref)
+    return [batches[t] for t in sorted(batches, key=lambda t: (t is None, t or 0.0))]
+
+
+def _median_snr(spectrum: Spectrum) -> float | None:
+    good = (
+        ~spectrum.mask
+        & np.isfinite(spectrum.flux)
+        & np.isfinite(spectrum.error)
+        & (spectrum.error > 0)
+    )
+    if not good.any():
+        return None
+    return float(np.median(spectrum.flux[good] / spectrum.error[good]))
+
+
+def _write_qc(group: _Group, name: str, stage: str, values: dict[str, Any]) -> Path:
+    path = products.write_qc(group.qc_dir / name, QCReport(stage, values))
+    group.summary.qc.append(path)
+    return path
+
+
+def _master_meta(group: _Group, master: MasterCalib) -> FrameMeta:
+    """A :class:`~mastpipe.core.model.FrameMeta` standing for a master (from the library,
+    whose frames are not at hand), for naming and for the frames built from it."""
+    validity = master.validity
+    binning = validity.get("binning") or group.binning
+    return FrameMeta(
+        instrument=group.effective.instrument,
+        camera=group.effective.camera,
+        exposure_type=master.kind,
+        configuration=group.effective.configuration,
+        exposure_time=validity.get("exposure_time"),
+        mid_time=validity.get("mid_time"),
+        binning=(int(binning[0]), int(binning[1])),
+        readout_mode=validity.get("readout_mode"),
+        detector_temperature=validity.get("detector_temperature"),
+        fiber_preset=group.preset,
+        source=f"master {master.kind}",
+    )
+
+
+def _calibrated(group: _Group, ref: FrameRef, cosmics: bool = False) -> tuple[Frame, list[str]]:
+    """``ref`` loaded and calibrated with the group's masters (background subtracted when
+    ``params.calib.subtract_background`` and a background master exists), cosmic rays
+    flagged into the mask when ``cosmics``; with the steps applied."""
+    detector, params = group.effective.detector, group.params
+    calib = group.calib
+    assert calib is not None
+    frame = load_frame(ref, detector)
+    subtract = params.calib.subtract_background and calib.background is not None
+    out = calibrate_frame(
+        frame, calib, subtract_background=subtract, saturation=detector.saturation
+    )
+    steps = calibration_steps(calib, float(ref.meta.exposure_time or 0.0), subtract)
+    if cosmics:
+        assert out.variance is not None
+        before = 0 if out.mask is None else int(out.mask.sum())
+        mask = flag_cosmic_rays(
+            out.data, out.variance, out.mask, params.calib.cosmic_sigma, params.calib.cosmic_size
+        )
+        out = Frame(data=out.data, meta=out.meta, variance=out.variance, mask=mask)
+        steps.append(
+            f"cosmic rays: {int(mask.sum()) - before} px flagged "
+            f"(sigma {params.calib.cosmic_sigma:g}, size {params.calib.cosmic_size})"
+        )
+    return out, steps
+
+
+# ------------------------------------------------------------------------------ masters
+
+
+def _master_provenance(
+    group: _Group, frames: list[Frame], calibrations: list[str], steps: list[str]
+) -> Provenance:
+    return Provenance(
+        pipeline_version=__version__,
+        config_hash=group.cfg_hash,
+        inputs=[frame.meta.checksum for frame in frames],
+        calibrations=calibrations,
+        steps=steps,
+    )
+
+
+def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
+    """Stage 1: stack the night's masters into the library and build the calibration set."""
+    detector, params, library = group.effective.detector, group.params, group.library
+    chosen: dict[str, tuple[MasterCalib, Path]] = {}
+    for kind in MASTER_KINDS:
+        refs = by_type.get(kind, [])
+        batches = [refs] if kind == "bias" and refs else _by_exposure(refs)
+        best: tuple[tuple[int, float], MasterCalib, Path] | None = None
+        for batch in batches:
+            frames = [load_frame(ref, detector) for ref in batch]
+            master = build_master(frames, kind, params.calib)
+            exposure = master.validity.get("exposure_time")
+            steps = [f"stack {params.calib.stack_method} of {len(frames)} {kind} frames"]
+            path = library.add(master, _master_provenance(group, frames, [], steps), frames[0].meta)
+            group.summary.products.append(path)
+            log.info("master %s: %d frames at %s s -> %s", kind, len(frames), exposure, path.name)
+            score = (len(frames), float(exposure or 0.0))
+            if best is None or score > best[0]:
+                best = (score, master, path)
+        if best is not None:
+            chosen[kind] = (best[1], best[2])
+            continue
+        found = library.find(
+            kind,
+            group.effective.camera,
+            group.binning,
+            group.readout_mode,
+            temperature=group.temperature,
+            near_time=group.near_time,
+        )
+        if found is not None:
+            chosen[kind] = found
+            log.info("master %s from the library: %s", kind, found[1].name)
+    if "bias" not in chosen:
+        raise RuntimeError("no bias frames in the night and no bias master in the library")
+    bias = chosen["bias"][0]
+    dark = chosen["dark"][0] if "dark" in chosen else None
+    background = chosen["background"][0] if "background" in chosen else None
+    group.calib = build_calibration_set(bias, dark, background, detector)
+    applied = [path.name for _, path in chosen.values()]
+
+    flats = by_type.get("flat", [])
+    if flats:
+        batch = max(_by_exposure(flats), key=lambda b: (len(b), b[0].meta.exposure_time or 0.0))
+        subtract = params.calib.flat_subtract_background and background is not None
+        frames = [
+            calibrate_frame(
+                load_frame(ref, detector),
+                group.calib,
+                subtract_background=subtract,
+                saturation=detector.saturation,
+            )
+            for ref in batch
+        ]
+        master = build_master(frames, "flat", params.calib)
+        steps = calibration_steps(group.calib, float(batch[0].meta.exposure_time or 0.0), subtract)
+        steps.append(f"stack {params.calib.stack_method} of {len(frames)} flat frames")
+        path = library.add(
+            master, _master_provenance(group, frames, applied, steps), frames[0].meta
+        )
+        group.summary.products.append(path)
+        chosen["flat"] = (master, path)
+        log.info("master flat: %d of %d frames -> %s", len(frames), len(flats), path.name)
+    else:
+        found = library.find(
+            "flat",
+            group.effective.camera,
+            group.binning,
+            group.readout_mode,
+            configuration=group.effective.configuration,
+            temperature=group.temperature,
+            near_time=group.near_time,
+        )
+        if found is not None:
+            chosen["flat"] = found
+            log.info("master flat from the library: %s", found[1].name)
+    group.masters = chosen
+
+
+# ------------------------------------------------------------------------------- traces
+
+
+def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]:
+    """Calibrated arcs that may serve as the trace source, the one lighting the most traces
+    first: the arcs the header calls full, else the arcs of unknown kind."""
+    known = [ref for ref in arc_refs if ref.meta.arc_kind == "full"]
+    candidates = known or [ref for ref in arc_refs if ref.meta.arc_kind is None]
+    trace_params = group.params.trace.model_copy(update={"collapse": "percentile"})
+    scored: list[tuple[int, int, Frame]] = []
+    for n, ref in enumerate(candidates):
+        frame, _ = _calibrated(group, ref)
+        scored.append((len(find_traces(frame.data, trace_params)), -n, frame))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [frame for _, _, frame in scored]
+
+
+def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
+    """Stage 2: find and match the traces, write the trace product and its QC."""
+    params = group.params
+    flat_frame: Frame | None = None
+    flat_name: list[str] = []
+    inputs: list[str] = []
+    if "flat" in group.masters:
+        master, path = group.masters["flat"]
+        flat_frame = Frame(
+            data=master.data, meta=_master_meta(group, master), variance=master.variance
+        )
+        flat_name = [path.name]
+        inputs = [str(c) for c in master.provenance.get("inputs", [])]
+    arcs = [] if flat_frame is not None else _full_arc_candidates(group, by_type.get("arc", []))
+    source, frame = trace_source({"flat": [flat_frame] if flat_frame else [], "arc_full": arcs})
+    if frame is None:
+        raise RuntimeError("no flat master and no full arc: nothing to find traces on")
+    trace_params = params.trace
+    if source == "arc_full":
+        trace_params = trace_params.model_copy(update={"collapse": "percentile"})
+        inputs = [frame.meta.checksum]
+    traceset = match_layout(
+        find_traces(frame.data, trace_params), group.layout, params.trace.layout_tolerance
+    )
+    if len(traceset) == 0:
+        raise RuntimeError(f"no trace found on the {source.replace('_', ' ')}")
+    path = group.out_dir / CALIB_FOLDER / products.product_name(frame.meta, "traces")
+    prov = Provenance(
+        pipeline_version=__version__,
+        config_hash=group.cfg_hash,
+        inputs=inputs,
+        calibrations=flat_name,
+        steps=[
+            f"traces from {source.replace('_', ' ')} ({len(traceset)} found, "
+            f"{len(traceset.missing)} missing, {len(traceset.extra)} extra) "
+            f"matched to layout {group.preset}"
+        ],
+    )
+    products.write_traceset(path, traceset, prov)
+    group.summary.products.append(path)
+    _write_qc(
+        group,
+        path.with_suffix(".json").name,
+        "trace",
+        {
+            "source": source,
+            "n_traces": len(traceset),
+            "layout": group.preset,
+            "layout_shift": traceset.layout_shift,
+            "missing": list(traceset.missing),
+            "extra": list(traceset.extra),
+            "index": [t.index for t in traceset],
+            "y_center": [t.y_center for t in traceset],
+            "rms": [t.rms for t in traceset],
+            "snr": [t.snr for t in traceset],
+            "roles": [t.role for t in traceset],
+            "telescopes": [t.telescope for t in traceset],
+        },
+    )
+    group.traceset = traceset
+    group.traces_path = path
+    group.throughput = (
+        relative_throughput(flat_frame, traceset, params.extract.halfwidth) if flat_frame else {}
+    )
+    log.info(
+        "traces from the %s: %d found, shift %s px, missing %s, extra %s -> %s",
+        source.replace("_", " "),
+        len(traceset),
+        "none" if traceset.layout_shift is None else f"{traceset.layout_shift:.2f}",
+        list(traceset.missing),
+        list(traceset.extra),
+        path.name,
+    )
+
+
+# --------------------------------------------------------------------------------- arcs
+
+
+def _reference_for(group: _Group, at_time: str | None) -> ReferenceSolution | None:
+    """The reference a frame at ``at_time`` uses: the pinned ``options.reference_id``
+    (``KeyError`` when the library lacks it), else the one valid at that time (the latest
+    overall for a frame without a time)."""
+    effective, library = group.effective, group.library
+    keys = (effective.instrument, effective.configuration, group.preset)
+    if group.options.reference_id is not None:
+        ref = library.find_reference(*keys, identifier=group.options.reference_id)
+        if ref is None:
+            raise KeyError(
+                f"reference {group.options.reference_id!r} is not in the library {library.root}"
+            )
+        return ref
+    return library.find_reference(*keys, at_time=at_time)
+
+
+def _arcs(group: _Group, arc_refs: list[FrameRef]) -> None:
+    """Stage 3: every arc in time order, under the error policy."""
+    for ref in sorted(arc_refs, key=_time_key):
+        _per_frame(group, ref, _arc)
+
+
+def _arc(group: _Group, ref: FrameRef) -> None:
+    meta = ref.meta
+    kind = meta.arc_kind
+    detail = "from the header"
+    if kind is None:
+        if group.instrument.arc_classification == "lit_traces":
+            frame, _ = _calibrated(group, ref)
+            kind, flags = classify_arc(frame, group.traces(), group.params.extract.halfwidth)
+            lit = sum(1 for value in flags.values() if value)
+            detail = f"lights {lit} of {len(flags)} traces"
+        else:
+            kind, detail = "unknown", "no arc kind in the header"
+    log.info("arc %s: %s (%s)", meta.source, kind, detail)
+    if kind == "full":
+        _full_arc(group, ref)
+    elif kind == "calfiber":
+        _cal_arc(group, ref)
+    else:
+        _skip(group, meta.source, f"arc kind unknown ({detail})")
+
+
+def _full_arc(group: _Group, ref: FrameRef) -> None:
+    """A full arc re-solved from the latest reference of its configuration and preset."""
+    meta, effective, library = ref.meta, group.effective, group.library
+    keys = (effective.instrument, effective.configuration, group.preset)
+    existing = library.reference_for_source(*keys, meta.checksum)
+    if existing is not None and not group.options.force:
+        _skip(group, meta.source, f"already solved into reference {existing['identifier']}")
+        return
+    previous = library.find_reference(*keys)
+    if previous is None:
+        _skip(group, meta.source, f"no reference for {'/'.join(keys)}; run identify")
+        return
+    lines = _arc_lines(
+        ref,
+        effective,
+        group.layout,
+        group.out_dir,
+        masters=group.injected_masters(),
+        traceset=group.traces(),
+    )
+    solution = _solve_and_package(lines, effective, group.preset, previous, 0)
+    prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"])
+    prov.reference_id = previous.identifier
+    prov.reference_hash = previous.hash or None
+    path = library.add_reference(solution, prov, effective.camera)
+    group.summary.products.append(path)
+    _write_qc(
+        group,
+        products.product_name(meta, "wref", ".json"),
+        "reference",
+        {
+            "source": meta.source,
+            "identifier": solution.identifier,
+            "valid_from": solution.valid_from,
+            "seeded_by": previous.identifier,
+            "n_fibers": len(solution.solutions),
+            "n_traces": len(lines.traceset),
+            "fibers": sorted(solution.solutions),
+            "rms_px": [solution.solutions[f].rms_px for f in sorted(solution.solutions)],
+            "n_lines": [solution.solutions[f].n_lines for f in sorted(solution.solutions)],
+        },
+    )
+    log.info(
+        "full arc %s: reference %s (%d of %d fibers solved, seeded by %s) -> %s",
+        meta.source,
+        solution.identifier,
+        len(solution.solutions),
+        len(lines.traceset),
+        previous.identifier,
+        path.name,
+    )
+
+
+def _cal_arc(group: _Group, ref: FrameRef) -> None:
+    """A calibration-fiber arc fitted for its drift against the reference valid at its time."""
+    meta, effective = ref.meta, group.effective
+    reference = _reference_for(group, meta.mid_time)
+    if reference is None:
+        _skip(group, meta.source, f"no reference valid at {meta.mid_time}; run identify")
+        return
+    arc_traces = group.traces().by_role("arc")
+    if not arc_traces:
+        _skip(group, meta.source, f"layout {group.preset} has no arc fiber")
+        return
+    lines = _arc_lines(
+        ref,
+        effective,
+        group.layout,
+        group.out_dir,
+        masters=group.injected_masters(),
+        traceset=TraceSet(traces=arc_traces, shape=group.traces().shape),
+    )
+    tables = {trace.index: table for trace, table in zip(arc_traces, lines.tables, strict=True)}
+    drift = fit_drift(tables, reference, group.traces(), meta, group.drift_params)
+    per_fiber = drift.per_fiber
+    shifts = per_fiber["shift_px"].to_numpy(dtype=float)
+    worst = float(np.nanmax(np.abs(shifts))) if len(shifts) and np.isfinite(shifts).any() else 0.0
+    if not drift.usable:
+        log.warning(
+            "drift arc %s: model not usable (%d of %d fibers usable, scatter %.3f px)",
+            meta.source,
+            int(per_fiber["usable"].sum()),
+            len(per_fiber),
+            drift.scatter_px,
+        )
+    elif worst > group.drift_params.warn_shift_px:
+        log.warning(
+            "drift arc %s: shift %.2f px exceeds warn_shift_px %.2f",
+            meta.source,
+            worst,
+            group.drift_params.warn_shift_px,
+        )
+    group.arcs.append((meta, drift))
+    _write_qc(
+        group,
+        products.product_name(meta, "drift", ".json"),
+        "drift",
+        {
+            "source": meta.source,
+            "arc_mid_time": drift.arc_mid_time,
+            "reference_id": reference.identifier,
+            "usable": bool(drift.usable),
+            "scatter_px": float(drift.scatter_px),
+            "max_abs_shift_px": worst,
+            "shift_coeffs": [float(c) for c in drift.shift_coeffs],
+            "stretch_coeffs": [float(c) for c in drift.stretch_coeffs],
+            "per_fiber": per_fiber.to_dict(orient="records"),
+        },
+    )
+    log.info(
+        "drift arc %s: shift %.3f px at the detector centre, scatter %.3f px, usable %s",
+        meta.source,
+        float(drift.shift_at(group.traces().shape[0] / 2.0)),
+        drift.scatter_px,
+        drift.usable,
+    )
+
+
+# ------------------------------------------------------------------------------ science
+
+
+def _blend_drifts(
+    pairs: list[tuple[DriftModel, float]],
+) -> tuple[DriftModel, dict[int, float] | None]:
+    """One :class:`~mastpipe.core.model.DriftModel` for the product: the model itself for a
+    single arc; for several, the weighted blend of their polynomials and per-fiber values,
+    the union of their checksums and the weighted mid-time, with every fiber's weight (the
+    summed weight of the models holding it) returned for the ``WEIGHT`` column."""
+    if len(pairs) == 1:
+        return pairs[0][0], None
+    total = sum(weight for _, weight in pairs)
+    pairs = [(model, weight / total) for model, weight in pairs]
+    n_shift = max(len(model.shift_coeffs) for model, _ in pairs)
+    n_stretch = max(len(model.stretch_coeffs) for model, _ in pairs)
+    shift = np.zeros(n_shift)
+    stretch = np.zeros(n_stretch)
+    for model, weight in pairs:
+        shift[n_shift - len(model.shift_coeffs) :] += weight * np.asarray(model.shift_coeffs)
+        stretch[n_stretch - len(model.stretch_coeffs) :] += weight * np.asarray(
+            model.stretch_coeffs
+        )
+    tables = [(model.per_fiber.set_index("fiber"), weight) for model, weight in pairs]
+    fibers = sorted({int(f) for table, _ in tables for f in table.index})
+    rows: list[dict[str, Any]] = []
+    fiber_weights: dict[int, float] = {}
+    for fiber in fibers:
+        present = [(table.loc[fiber], weight) for table, weight in tables if fiber in table.index]
+        weight_sum = sum(weight for _, weight in present)
+        fiber_weights[fiber] = float(weight_sum)
+        rows.append(
+            {
+                "fiber": fiber,
+                "y_center": float(present[0][0]["y_center"]),
+                "shift_px": sum(w * float(r["shift_px"]) for r, w in present) / weight_sum,
+                "stretch": sum(w * float(r["stretch"]) for r, w in present) / weight_sum,
+                "n_lines": int(min(int(r["n_lines"]) for r, _ in present)),
+                "rms_px": sum(w * float(r["rms_px"]) for r, w in present) / weight_sum,
+                "usable": bool(all(bool(r["usable"]) for r, _ in present)),
+            }
+        )
+    origin = _timestamp(pairs[0][0].arc_mid_time)
+    offset = sum(
+        (
+            (_timestamp(model.arc_mid_time) - origin).total_seconds() * weight
+            for model, weight in pairs
+        ),
+        0.0,
+    )
+    mid_time = (
+        (origin + pd.Timedelta(seconds=offset)).tz_convert(None).isoformat(timespec="seconds")
+    )
+    blended = DriftModel(
+        arc_checksums=tuple(sorted({c for model, _ in pairs for c in model.arc_checksums})),
+        arc_mid_time=mid_time,
+        per_fiber=pd.DataFrame(rows, columns=list(PER_FIBER_COLUMNS)),
+        shift_coeffs=shift,
+        stretch_coeffs=stretch,
+        scatter_px=max(float(model.scatter_px) for model, _ in pairs),
+        usable=all(model.usable for model, _ in pairs),
+        n_pix=pairs[0][0].n_pix,
+    )
+    return blended, fiber_weights
+
+
+def _wavelengths(
+    group: _Group,
+    reference: ReferenceSolution | None,
+    pairs: list[tuple[DriftModel, float]],
+    n_pix: int,
+) -> tuple[str, dict[int, np.ndarray], DriftModel | None, dict[int, float] | None]:
+    """``(status, wavelength by fiber, drift model, weights)`` of a science frame."""
+    if reference is None:
+        model = model_from_config(group.effective.geometry.model, group.geom, n_pix)
+        lam = np.asarray(model.wavelength(np.arange(n_pix, dtype=float)), dtype=float)
+        return "nominal", {trace.index: lam.copy() for trace in group.traces()}, None, None
+    wavelengths = apply_drift(reference, pairs, group.traces(), group.geom)
+    if not pairs:
+        return status_for(pairs), wavelengths, None, None
+    drift, weights = _blend_drifts(pairs)
+    return status_for(pairs), wavelengths, drift, weights
+
+
+def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
+    """The idempotence key and wavelength status of the product at ``path``; ``None`` when
+    there is none (an unreadable product counts as none and is rewritten)."""
+    if not path.is_file():
+        return None
+    try:
+        prov = Provenance.from_header(fits.getheader(path))
+    except (OSError, KeyError, ValueError) as error:
+        log.warning("%s cannot be read as a product (%s); it will be rewritten", path.name, error)
+        return None
+    key = (
+        prov.inputs[0] if prov.inputs else None,
+        prov.config_hash,
+        prov.reference_id,
+        tuple(sorted(prov.drift_arcs)),
+    )
+    return key, prov.wavelength_status
+
+
+def _science_frame(group: _Group, ref: FrameRef) -> None:
+    """Stage 4 for one science frame: wavelengths by the time policy, sky, products, QC."""
+    meta, params = ref.meta, group.params
+    reference = _reference_for(group, meta.mid_time)
+    pairs = [] if reference is None else pair_arcs(meta, group.arcs, reference, group.drift_params)
+    drift_arcs = sorted({c for model, _ in pairs for c in model.arc_checksums})
+    key = (
+        meta.checksum,
+        group.cfg_hash,
+        None if reference is None else reference.identifier,
+        tuple(drift_arcs),
+    )
+    path = group.spec_dir / products.product_name(meta, "spec")
+    stored = _stored_key(path)
+    if stored is not None:
+        if stored[0] == key and not group.options.force:
+            _skip(group, meta.source, f"{ALREADY_REDUCED} as {path.name}")
+            return
+        why = "forced" if stored[0] == key else f"its key changed (was {stored[1]})"
+        log.info("reducing %s again: %s", meta.source, why)
+
+    frame, steps = _calibrated(group, ref, cosmics=True)
+    traceset = group.traces()
+    spectra = extract_aperture(frame, traceset, params.extract)
+    steps.append(
+        f"extract {params.extract.aperture} aperture of halfwidth {params.extract.halfwidth:g} "
+        f"({params.extract.method})"
+    )
+    status, wavelengths, drift, weights = _wavelengths(group, reference, pairs, frame.shape[1])
+    for spectrum in spectra:
+        if spectrum.fiber in wavelengths:
+            spectrum.wavelength = wavelengths[spectrum.fiber]
+    if reference is None:
+        steps.append("wavelength nominal from the configuration geometry")
+    elif drift is None:
+        steps.append(f"wavelength from reference {reference.identifier} (no drift arc paired)")
+    else:
+        steps.append(
+            f"wavelength transferred from reference {reference.identifier} through "
+            f"{len(pairs)} drift arc(s) ({group.drift_params.time_policy})"
+        )
+    spectra, sky_reasons = subtract_sky_all(spectra, traceset, group.throughput, params.sky)
+    n_sky = sum(1 for spectrum in spectra if "skysub" in spectrum.versions)
+    steps.append(f"skysub: {n_sky} science fibers subtracted, {len(sky_reasons)} left raw")
+    spectra = [correct_telluric(apply_response(spectrum, None), None) for spectrum in spectra]
+    es = ExposureSpectra(
+        meta=meta,
+        spectra=spectra,
+        wavelength_status=status,
+        flux_status=flux_status(spectra),
+        telluric_status=telluric_status(spectra),
+        reference_id=None if reference is None else reference.identifier,
+        reference_hash=None if reference is None else (reference.hash or None),
+        drift_arcs=tuple(drift_arcs),
+    )
+    prov = Provenance(
+        pipeline_version=__version__,
+        config_hash=group.cfg_hash,
+        inputs=[meta.checksum],
+        calibrations=group.calibration_names(),
+        wavelength_status=es.wavelength_status,
+        flux_status=es.flux_status,
+        telluric_status=es.telluric_status,
+        reference_id=es.reference_id,
+        reference_hash=es.reference_hash,
+        drift_arcs=list(drift_arcs),
+        steps=steps,
+    )
+    products.write_spectra(path, es, prov, drift=drift, weights=weights)
+    group.summary.products.append(path)
+    if stored is not None:
+        group.summary.reduced_again.append(meta.source)
+    traces = {trace.index: trace for trace in traceset}
+    _write_qc(
+        group,
+        path.with_suffix(".json").name,
+        "science",
+        {
+            "source": meta.source,
+            "mid_time": meta.mid_time,
+            "target": meta.target,
+            "wavelength_status": status,
+            "reference_id": es.reference_id,
+            "drift_arcs": list(drift_arcs),
+            "drift_scatter_px": None if drift is None else float(drift.scatter_px),
+            "fibers": [s.fiber for s in spectra],
+            "roles": [s.role for s in spectra],
+            "telescopes": [s.telescope for s in spectra],
+            "median_snr": [_median_snr(s) for s in spectra],
+            "masked_fraction": [float(np.mean(s.mask)) for s in spectra],
+            "drift_shift_px": [
+                None if drift is None else float(drift.shift_at(traces[s.fiber].y_center))
+                for s in spectra
+            ],
+            "drift_stretch": [
+                None if drift is None else float(drift.stretch_at(traces[s.fiber].y_center))
+                for s in spectra
+            ],
+            "sky": sky_reasons,
+        },
+    )
+    log.info(
+        "science %s: %d spectra, wavelength %s, %d sky-subtracted -> %s",
+        meta.source,
+        len(spectra),
+        status,
+        n_sky,
+        path.name,
+    )
+    _combine_targets(group, es, prov)
+
+
+def _combine_targets(group: _Group, es: ExposureSpectra, prov: Provenance) -> None:
+    """Stage 5: one combined product per target of the exposure (fibers without a target
+    are not combined)."""
+    meta = es.meta
+    for target, members in group_by_target(es.spectra).items():
+        if any(spectrum.target is None for spectrum in members):
+            log.info(
+                "%s: %d science fibers without a target are not combined", meta.source, len(members)
+            )
+            continue
+        try:
+            cs = combine_spectra(es.spectra, target, group.params.combine, version=None)
+            path = group.spec_dir / products.combined_name(meta, target)
+            steps = [*prov.steps, f"combine {len(cs.contributors)} science fibers of {target}"]
+            products.write_combined(path, cs, meta, replace(prov, steps=steps))
+            group.summary.products.append(path)
+            log.info(
+                "combined %s: %d fibers, %d excluded -> %s",
+                target,
+                len(cs.contributors),
+                len(cs.excluded),
+                path.name,
+            )
+        except Exception as error:
+            if group.options.on_error == "raise":
+                raise
+            group.summary.failed.append((meta.source, f"combine {target}: {_describe(error)}"))
+            log.exception("failed combining %s of %s", target, meta.source)
+
+
+# ---------------------------------------------------------------------------- the run
+
+
+def _start_logging(out_dir: Path) -> tuple[list[logging.Handler], int]:
+    folder = out_dir / LOG_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    file_handler = logging.FileHandler(folder / f"quicklook_{stamp}.log", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    previous = log.level
+    log.setLevel(logging.INFO)
+    log.addHandler(file_handler)
+    log.addHandler(console)
+    return [file_handler, console], previous
+
+
+def _run_group(
+    refs: list[FrameRef],
+    instrument: InstrumentConfig,
+    camera: str,
+    configuration: str,
+    library: CalibLibrary,
+    out_dir: Path,
+    options: RunOptions,
+    summary: RunSummary,
+) -> None:
+    effective = build_effective(instrument, configuration, camera, options.overrides)
+    presets = {ref.meta.fiber_preset for ref in refs if ref.meta.fiber_preset}
+    if options.layout is not None:
+        preset = options.layout
+    elif len(presets) == 1:
+        preset = presets.pop()
+    else:
+        preset = instrument.default_layout
+        if presets:
+            log.warning("frames carry presets %s; using the default %s", sorted(presets), preset)
+    layout = load_layout(effective.instrument, preset)
+    by_type: dict[str, list[FrameRef]] = defaultdict(list)
+    for ref in refs:
+        by_type[ref.meta.exposure_type].append(ref)
+    science = sorted(by_type.get("science", []), key=_time_key)
+    first = science[0].meta if science else refs[0].meta
+    temperatures = [
+        m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None
+    ]
+    group = _Group(
+        effective=effective,
+        instrument=instrument,
+        preset=preset,
+        layout=layout,
+        library=library,
+        out_dir=out_dir,
+        options=options,
+        summary=summary,
+        cfg_hash=config_hash(effective),
+        binning=refs[0].meta.binning,
+        readout_mode=refs[0].meta.readout_mode,
+        temperature=float(np.mean(temperatures)) if temperatures else None,
+        near_time=first.mid_time,
+    )
+    log.info(
+        "group %s/%s: %s, layout %s, config %s",
+        camera,
+        configuration,
+        ", ".join(f"{len(v)} {k}" for k, v in sorted(by_type.items())),
+        preset,
+        group.cfg_hash,
+    )
+    _masters(group, by_type)
+    _traces(group, by_type)
+    _arcs(group, by_type.get("arc", []))
+    for ref in science:
+        _per_frame(group, ref, _science_frame)
+
+
+def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOptions) -> RunSummary:
+    """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring)."""
+    night_dir, out_dir = Path(night_dir), Path(out_dir)
+    if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
+        raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
+    if options.on_error not in ("continue", "raise"):
+        raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    handlers, level = _start_logging(out_dir)
+    summary = RunSummary()
+    try:
+        log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
+        instrument = load_instrument(options.instrument)
+        manifest = read_manifest(options.manifest) if options.manifest is not None else None
+        unreadable: list[Path] = []
+        refs = scan_folder(
+            night_dir,
+            options.instrument,
+            load_header_map(options.instrument),
+            manifest=manifest,
+            unreadable=unreadable,
+        )
+        for path in unreadable:
+            summary.failed.append((path.name, "unreadable FITS file"))
+            log.error("unreadable FITS file skipped: %s", path.name)
+        log.info("scanned %d frames in %s", len(refs), night_dir)
+        library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
+        default_conf = options.configuration
+        if default_conf is None and len(instrument.configurations) == 1:
+            default_conf = next(iter(instrument.configurations))
+        groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
+        for ref in refs:
+            meta = ref.meta
+            if meta.exposure_type == "unknown":
+                reason = f"exposure type unknown ({meta.classification_rule})"
+                summary.skipped.append(f"{meta.source}: {reason}")
+                log.warning("skipped %s: %s", meta.source, reason)
+                continue
+            groups[(meta.camera, meta.configuration or default_conf)].append(ref)
+        for (camera, configuration), group_refs in sorted(groups.items(), key=str):
+            label = f"group {camera}/{configuration}"
+            if options.camera is not None and camera != options.camera:
+                summary.skipped.append(f"{label}: not camera {options.camera}")
+                log.info("skipped %s: not camera %s", label, options.camera)
+                continue
+            if configuration is None:
+                summary.failed.append((label, "configuration unknown; pass --configuration"))
+                log.error("%s: configuration unknown, group skipped", label)
+                continue
+            try:
+                _run_group(
+                    group_refs,
+                    instrument,
+                    camera,
+                    configuration,
+                    library,
+                    out_dir,
+                    options,
+                    summary,
+                )
+            except Exception as error:
+                if options.on_error == "raise":
+                    raise
+                summary.failed.append((label, _describe(error)))
+                log.exception("%s failed", label)
+        log.info(
+            "done: %d products, %d QC files, %d skipped, %d reduced again, %d failed",
+            len(summary.products),
+            len(summary.qc),
+            len(summary.skipped),
+            len(summary.reduced_again),
+            len(summary.failed),
+        )
+    finally:
+        for handler in handlers:
+            log.removeHandler(handler)
+            handler.close()
+        log.setLevel(level)
+    return summary

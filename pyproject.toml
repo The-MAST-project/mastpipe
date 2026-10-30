@@ -71,3 +71,7 @@ known-first-party = ["mastpipe"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["error"]
+markers = [
+    "slow: end-to-end runs on simulated nights (minutes); selected by default",
+]

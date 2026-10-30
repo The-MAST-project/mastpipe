@@ -116,3 +116,22 @@
   / `flux_status`, `mastpipe.steps.telluric.correct_telluric` / `telluric_status`) with
   pass-through defaults that add nothing and leave the statuses `"uncalibrated"` /
   `"uncorrected"`.
+- Calibration library, quick-look runner and commands (`mastpipe.pipeline.callib`,
+  `mastpipe.pipeline.runner`, `mastpipe.pipeline.commands`): `CalibLibrary` keeps masters and
+  reference solutions under one folder with an `index.json` (`add`/`find` by camera, binning,
+  readout mode, configuration, temperature tolerance and nearest time; `add_reference` with the
+  camera, `find_reference` by the latest `valid_from` at or before a time or by identifier,
+  `reference_for_source`); `identify`/`solve` register their reference in the output folder's
+  library. `run_quicklook` reduces a night per `(camera, configuration)` group: masters (dark and
+  background stacked one exposure time at a time, library fallback), traces from the flat or a
+  full arc, arcs classified by lit traces, full arcs re-solved from the library's reference,
+  drift arcs fitted against the reference valid at their time, science frames calibrated with
+  cosmic rays flagged, extracted, given `transferred`/`reference`/`nominal` wavelengths by the
+  time policy, sky-subtracted, passed through the flux and telluric stages, written with
+  provenance, drift table and QC JSON, and combined per target; idempotence key (input checksum,
+  configuration hash, reference identifier, sorted drift-arc checksums) with `--force` and the
+  re-reduce of products whose key changed (`reduced_again`); `unknown` frames skipped with their
+  classification rule; `--on-error continue|raise`; `out/logs/quicklook_<stamp>.log`. Commands
+  `mastpipe quicklook`, `mastpipe solve` (exit 2 with "run identify first") and `mastpipe show`.
+  `_arc_lines` also accepts a scanned `FrameRef`, so manifest overrides reach the arc chain.
+  pytest now runs with `filterwarnings = error` and a registered `slow` marker.

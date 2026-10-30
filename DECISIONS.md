@@ -143,3 +143,30 @@ group.
   master is not used by `identify`, and without masters the frame is only
   given its variance and mask. The measured panel is mirrored when the
   configuration's `dispersion_sign` is negative.
+
+## 2026-10-30 — Calibration library and quick-look
+
+- **The idempotence key of a science product is the input checksum, the
+  configuration hash, the reference identifier and the sorted checksums of
+  the drift arcs it used** (revision 1 §2.2). A product on disk with the same
+  key is skipped; a product whose key changed is reduced again and listed in
+  `RunSummary.reduced_again` — this covers the planned case (a `reference`
+  product whose exposure now has a drift arc) and equally a `nominal` product
+  once a reference exists or any product after a reference change, since the
+  key, not the status, is what decides. `--force` reduces regardless.
+- **Full arcs are idempotent through the library**: a full arc whose checksum
+  is among a stored reference's `source_checksums` is not re-solved (its
+  reference is already there), unless forced. Re-solving the same arc gives
+  the same identifier (arc time), so a re-solve replaces the library entry
+  rather than adding a second one.
+- **The index is the library's source of truth** and every reference entry
+  carries its camera, because reading a reference back needs the camera's
+  pixel size for the grating geometry; `identify` and `solve` register the
+  references they write, so a following `quicklook` finds them without a
+  manual step. Reference validity is compared on parsed timestamps.
+- **Drift arcs are reduced on the arc fibers only** (a trace set restricted
+  to the `arc` role goes into the shared `_arc_lines` chain), which is both
+  the physics (nothing else is lit) and a five-fold saving in line finding.
+- **A night without a bias master** (in the night or the library) is a
+  group-level failure rather than a silent reduction without bias
+  subtraction; the other masters are optional.

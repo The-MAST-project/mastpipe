@@ -38,7 +38,14 @@ import pandas as pd
 from mastpipe.__version__ import __version__
 from mastpipe.config.loader import build_effective, config_hash, load_yaml, parse_override
 from mastpipe.config.models import EffectiveConfig
-from mastpipe.core.model import CalibrationSet, Frame, MasterCalib, ReferenceSolution, TraceSet
+from mastpipe.core.model import (
+    CalibrationSet,
+    Frame,
+    FrameRef,
+    MasterCalib,
+    ReferenceSolution,
+    TraceSet,
+)
 from mastpipe.instruments.registry import (
     load_anchor_trace,
     load_anchors,
@@ -50,6 +57,7 @@ from mastpipe.instruments.registry import (
 from mastpipe.io import products
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.io.qa import plot_anchor_panels
+from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.atlas import (
     catalogue_arrays,
@@ -152,7 +160,7 @@ def _frame_ref(full_arc: Path, instrument: str):
 
 
 def _arc_lines(
-    full_arc: Path,
+    full_arc: Path | FrameRef,
     effective: EffectiveConfig,
     layout: pd.DataFrame,
     out_dir: Path,
@@ -161,8 +169,11 @@ def _arc_lines(
 ) -> ArcLines:
     """Load, calibrate, trace, extract, continuum-fit and find the lines of a full arc.
 
-    Masters come from ``masters`` (keyed by kind, as a runner holding its library's choice
-    passes them) or, when that is ``None``, from ``out_dir/calib``: the latest
+    ``full_arc`` is the frame's path (scanned on its own through the instrument's header
+    map) or a :class:`~mastpipe.core.model.FrameRef` a runner has already scanned, whose
+    metadata (a manifest's overrides included) is then used as given. Masters come from
+    ``masters`` (keyed by kind, as a runner holding its library's choice passes them) or,
+    when that is ``None``, from ``out_dir/calib``: the latest
     ``*_bias.fits``, ``*_background.fits`` and ``*_flat.fits`` of the effective instrument,
     configuration and camera (:func:`_latest_master`). The bias and background calibrate the
     frame, the background only when ``params.calib.subtract_background`` is on (otherwise it
@@ -174,11 +185,13 @@ def _arc_lines(
     ``calibrations`` are the masters that were applied (file names when read from
     ``out_dir/calib``, :func:`_master_name` when injected).
     """
-    full_arc = Path(full_arc)
     out_dir = Path(out_dir)
     params = effective.params
     detector = effective.detector
-    ref = _frame_ref(full_arc, effective.instrument)
+    if isinstance(full_arc, FrameRef):
+        ref = full_arc
+    else:
+        ref = _frame_ref(Path(full_arc), effective.instrument)
     frame = load_frame(ref, detector)
     shape = (int(frame.shape[0]), int(frame.shape[1]))
 
@@ -235,7 +248,7 @@ def _arc_lines(
         traceset = find_traces(trace_frame.data, trace_params)
         traceset = match_layout(traceset, layout, params.trace.layout_tolerance)
     if len(traceset) == 0:
-        raise ValueError(f"{full_arc.name}: no trace found on the {source.replace('_', ' ')}")
+        raise ValueError(f"{ref.meta.source}: no trace found on the {source.replace('_', ' ')}")
     steps.append(f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing)")
 
     spectra = extract_aperture(arc, traceset, params.extract)
@@ -371,14 +384,15 @@ def _solve_and_package(
 
 
 def _write_reference_product(
-    out_dir: Path, ref: ReferenceSolution, prov: Provenance, write: bool
+    out_dir: Path, ref: ReferenceSolution, prov: Provenance, write: bool, camera: str
 ) -> Path:
-    """The reference at ``out_dir/calib/<identifier>_wref.fits`` with ``fiber_agreement.csv``
-    next to it; only the path when ``write`` is false."""
+    """The reference at ``out_dir/calib/<identifier>_wref.fits``, registered in the
+    :class:`~mastpipe.pipeline.callib.CalibLibrary` of that folder under ``camera``, with
+    ``fiber_agreement.csv`` next to it; only the path when ``write`` is false."""
     path = Path(out_dir) / CALIB_FOLDER / products.reference_name(ref)
     if not write:
         return path
-    products.write_reference(path, ref, prov)
+    CalibLibrary(path.parent).add_reference(ref, prov, camera)
     with (path.parent / AGREEMENT_FILE).open("w", encoding="utf-8", newline="") as handle:
         fiber_agreement(ref.solutions).to_csv(handle, index=False)
     return path
@@ -410,8 +424,9 @@ def run_identify(
     numbered candidates to ``out_dir/anchor_candidates.csv``; returns ``(None, png path)``.
 
     With anchors the anchor model seeds :func:`~mastpipe.steps.wavecal.solve_full_arc`,
-    and the reference is written to ``out_dir/calib/<identifier>_wref.fits`` with
-    ``fiber_agreement.csv`` beside it (``write_reference=False`` skips the writing);
+    and the reference is written to ``out_dir/calib/<identifier>_wref.fits``, registered in
+    that folder's calibration library, with ``fiber_agreement.csv`` beside it
+    (``write_reference=False`` skips the writing);
     returns ``(reference, reference path)``. ``ValueError`` when ``anchor_trace`` is not
     among the traces or no fiber solves.
     """
@@ -449,7 +464,7 @@ def run_identify(
     ref = _solve_and_package(lines, effective, layout, start, trace)
     pairs = ", ".join(f"{wl:.4f} nm at {px:.2f} px" for wl, px in anchors)
     prov = _provenance(effective, lines, [f"wavecal from anchors on trace {trace}: {pairs}"])
-    return ref, _write_reference_product(out_dir, ref, prov, write_reference)
+    return ref, _write_reference_product(out_dir, ref, prov, write_reference, effective.camera)
 
 
 def run_solve(
@@ -466,7 +481,8 @@ def run_solve(
     the same instrument, configuration and layout preset (``ValueError`` otherwise); its
     identifier and hash are recorded as the new product's ``reference_id`` /
     ``reference_hash`` provenance, naming the seed. Returns the new reference, written to
-    ``out_dir/calib/<identifier>_wref.fits`` with ``fiber_agreement.csv``.
+    ``out_dir/calib/<identifier>_wref.fits`` (registered in that folder's calibration
+    library) with ``fiber_agreement.csv``.
     """
     full_arc = Path(full_arc)
     out_dir = Path(out_dir)
@@ -482,7 +498,7 @@ def run_solve(
     prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"])
     prov.reference_id = previous.identifier
     prov.reference_hash = previous.hash or None
-    _write_reference_product(out_dir, ref, prov, True)
+    _write_reference_product(out_dir, ref, prov, True, effective.camera)
     return ref
 
 
