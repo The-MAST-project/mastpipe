@@ -48,7 +48,9 @@ def make_detector(**overrides) -> DetectorConfig:
     return DetectorConfig(**fields)
 
 
-def make_instrument(block_params=None, instrument_params=None) -> InstrumentConfig:
+def make_instrument(
+    block_params=None, instrument_params=None, layout_params=None
+) -> InstrumentConfig:
     if block_params is None:
         block_params = {"trace": {"trace_halfwidth": 4}}
     return InstrumentConfig(
@@ -67,6 +69,7 @@ def make_instrument(block_params=None, instrument_params=None) -> InstrumentConf
         params=StepParams(**(instrument_params or {})),
         default_layout="lab3",
         layouts=["lab3", "survey45"],
+        layout_params=layout_params or {},
     )
 
 
@@ -116,6 +119,42 @@ def test_build_effective_layers_block_over_instrument():
     # inputs are untouched by layering
     assert inst.params.trace.trace_halfwidth == 10
     assert inst.configurations["g518"].params == {"trace": {"trace_halfwidth": 4}}
+
+
+def test_build_effective_layers_layout_params_between_block_and_overrides():
+    inst = make_instrument(
+        block_params={"trace": {"trace_halfwidth": 7}, "extract": {"halfwidth": 9.0}},
+        layout_params={"survey45": {"trace": {"trace_halfwidth": 4}, "extract": {"halfwidth": 4}}},
+    )
+    plain = build_effective(inst, "g518", "main")
+    assert plain.params.trace.trace_halfwidth == 7 and plain.params.extract.halfwidth == 9.0
+    assert plain.layers == ["instrument:toy", "configuration:g518"]
+    lab = build_effective(inst, "g518", "main", layout="lab3")  # no block for this preset
+    assert lab.params == plain.params
+    assert lab.layers == ["instrument:toy", "configuration:g518", "layout:lab3"]
+    survey = build_effective(inst, "g518", "main", layout="survey45")
+    assert survey.params.trace.trace_halfwidth == 4 and survey.params.extract.halfwidth == 4.0
+    assert survey.layers == ["instrument:toy", "configuration:g518", "layout:survey45"]
+    # an override still wins over the preset block
+    forced = build_effective(
+        inst, "g518", "main", overrides=[{"trace": {"trace_halfwidth": 5}}], layout="survey45"
+    )
+    assert forced.params.trace.trace_halfwidth == 5 and forced.params.extract.halfwidth == 4.0
+    assert config_hash(survey) != config_hash(plain) and config_hash(lab) == config_hash(plain)
+    with pytest.raises(KeyError, match="layout"):
+        build_effective(inst, "g518", "main", layout="nope")
+    # a parameter block for a preset the instrument does not list is rejected
+    with pytest.raises(ValidationError, match="layout_params"):
+        make_instrument(layout_params={"nope": {"trace": {"trace_halfwidth": 4}}})
+    # the shipped HighSpec definition narrows the survey halfwidths to the 8.5 px pitch
+    from mastpipe.instruments.registry import load_instrument
+
+    highspec = load_instrument("highspec")
+    eff = build_effective(highspec, "mgb518", "main", layout="survey45")
+    assert eff.params.trace.trace_halfwidth == 4
+    assert eff.params.lines.halfwidth == 4 and eff.params.extract.halfwidth == 4.0
+    default = build_effective(highspec, "mgb518", "main", layout="lab3")
+    assert default.params.trace.trace_halfwidth == 8 and default.params.extract.halfwidth == 9.0
 
 
 def test_build_effective_unknown_configuration_or_camera():

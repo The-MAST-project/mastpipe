@@ -141,3 +141,54 @@ def test_no_matching_rule_is_unclassified():
 def test_invalid_map_is_rejected(bad):
     with pytest.raises(ValueError):
         HeaderMap.from_dict(bad)
+
+
+def test_missing_values_make_a_field_unresolved():
+    hmap = HeaderMap.from_dict(
+        {
+            "fields": {
+                "detector_temperature": {
+                    "keys": ["TEMP", "CCD-TEMP"],
+                    "type": "float",
+                    "missing_values": [-999],
+                },
+                "exposure_time": {"keys": ["EXPOSURE"], "type": "float"},
+            }
+        }
+    )
+    fields, unresolved = hmap.resolve({"TEMP": -999, "EXPOSURE": 1.0}, "x.fits")
+    assert fields["detector_temperature"] is None and "detector_temperature" in unresolved
+    # the sentinel is caught after conversion too, and the next key is tried
+    fields, unresolved = hmap.resolve({"TEMP": "-999.0", "CCD-TEMP": -60.5}, "x.fits")
+    assert fields["detector_temperature"] == pytest.approx(-60.5)
+    assert "detector_temperature" not in unresolved
+    fields, _ = hmap.resolve({"TEMP": -60.0}, "x.fits")
+    assert fields["detector_temperature"] == pytest.approx(-60.0)
+    # the HighSpec map lists the Andor sentinel
+    highspec = HeaderMap.from_dict(load_header_map("highspec"))
+    fields, unresolved = highspec.resolve({"TEMP": -999, "EXPOSURE": 300.0}, "x.fits")
+    assert fields["detector_temperature"] is None and "detector_temperature" in unresolved
+    with pytest.raises(ValueError, match="missing_values"):
+        HeaderMap.from_dict({"fields": {"t": {"keys": ["T"], "missing_values": 7}}})
+
+
+def test_time_reference_option_is_validated():
+    spec = HeaderMap.from_dict(
+        {"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", "reference": "end"}}}
+    ).fields["mid_time"]
+    assert spec.reference == "end"
+    plain = HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"]}}})
+    assert plain.fields["mid_time"].reference == "start"
+    with pytest.raises(ValueError, match="reference"):
+        HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"], "reference": "late"}}})
+    highspec = HeaderMap.from_dict(load_header_map("highspec"))
+    assert highspec.fields["mid_time"].reference == "start"
+
+
+def test_lt_on_a_non_numeric_value_does_not_match():
+    hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
+    base = {name: None for name in hmap.fields}
+    # an untyped string where a number is compared: the rule does not match, nothing raises
+    assert hmap.classify({**base, "exposure_time": "short"}) == ("unknown", "unclassified")
+    assert hmap.classify({**base, "exposure_time": 0.0}) == ("bias", "rule:0")
+    assert hmap.classify({**base, "exposure_time": True}) == ("unknown", "unclassified")

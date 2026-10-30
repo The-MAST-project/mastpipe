@@ -112,7 +112,7 @@ def night(lab_root: Path, tmp_path_factory: pytest.TempPathFactory) -> SimpleNam
 
 @pytest.fixture(scope="module")
 def effective():
-    return build_effective(load_instrument("highspec"), CONFIGURATION, "main")
+    return build_effective(load_instrument("highspec"), CONFIGURATION, "main", layout=PRESET)
 
 
 @pytest.fixture(scope="module")
@@ -224,7 +224,7 @@ def test_lab_reference_from_stored_anchors(reference, night, effective, out_dir)
     assert ref.instrument == "highspec" and ref.configuration == CONFIGURATION
     assert ref.fiber_preset == PRESET
     assert ref.source_checksums == (file_checksum(night.arc),)
-    assert len(ref.solutions) == 3
+    assert sorted(ref.solutions) == [0, 1, 2]  # the layout's trace ids
     for fiber, solution in sorted(ref.solutions.items()):
         assert solution.rms_px <= SOLUTION_RMS_MAX_PX, (fiber, solution.rms_px)
         assert solution.n_lines >= MIN_LINES, (fiber, solution.n_lines)
@@ -255,12 +255,12 @@ def test_lab_drift_against_itself_is_zero(reference, night, effective, out_dir):
     made from the very same frame: no shift, no stretch, every identified line matched."""
     ref = reference.ref
     lines = _arc_lines(night.arc, effective, load_layout("highspec", PRESET), out_dir)
+    # the two ambient-light features of the flat are dropped: layout fibers only, by id
+    assert [trace.index for trace in lines.traceset] == [0, 1, 2]
+    assert len(lines.traceset.extra) == 2
     fitted = 0
     for trace, table in zip(lines.traceset, lines.tables, strict=True):
-        solution = ref.solutions.get(trace.index)
-        if solution is None:
-            assert trace.role is None  # an ``extra`` trace of the flat, never solved
-            continue
+        solution = ref.solutions[trace.index]
         x_obs = table.loc[table["use_x"].astype(bool), "x_center"].to_numpy(dtype=float)
         result = fit_fiber_drift(x_obs, solution, effective.params.drift)
         assert abs(result["shift_px"]) < SELF_DRIFT_MAX_PX, (trace.index, result)
@@ -289,6 +289,8 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     qc = read_qc(out_dir / "qa" / traces[0].with_suffix(".json").name)
     assert qc.stage == "trace" and qc.values["source"] == "flat"
     assert qc.values["layout"] == PRESET and qc.values["missing"] == []
+    assert qc.values["index"] == [0, 1, 2] and qc.values["n_traces"] == 3
+    assert qc.values["n_detected"] == 5 and len(qc.values["extra_y_center"]) == 2
     rows = zip(qc.values["y_center"], qc.values["roles"], strict=True)
     arc_rows = [y for y, role in rows if role == "arc"]
     assert np.allclose(arc_rows, NOTEBOOK_Y_CENTERS, atol=Y_CENTER_TOL_PX)

@@ -4,8 +4,12 @@
 through the instrument's :class:`~mastpipe.io.headers.HeaderMap` and classifies it,
 producing one :class:`~mastpipe.core.model.FrameRef` per image HDU (the primary HDU
 when it carries data, else every image extension, each read with the primary header
-underneath its own). A manifest CSV can override any metadata field frame by frame; it
-is how laboratory data without instrument keywords enter the pipeline.
+underneath its own). The ``mid_time`` of a frame is derived from the header's time field
+and the exposure time according to the field's ``reference`` (``start``: plus half the
+exposure; ``end``: minus half; ``mid``: as given); when the exposure time is unknown the
+time stays as given and ``unresolved`` lists ``mid_time``. A manifest CSV can override
+any metadata field frame by frame (its ``mid_time`` is taken as the mid-time); it is how
+laboratory data without instrument keywords enter the pipeline.
 :func:`load_frame` reads one HDU as ``float32``, crops it and applies the detector's
 orientation. Downstream code sees only the pipeline vocabulary carried by
 :class:`~mastpipe.core.model.FrameMeta`.
@@ -17,6 +21,7 @@ import dataclasses
 import hashlib
 from collections import ChainMap
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +37,8 @@ CHECKSUM_LENGTH = 16
 CHUNK_SIZE = 1 << 20
 DEFAULT_CAMERA = "main"
 MANIFEST_RULE = "manifest"
+TIME_FIELD = "mid_time"
+"""The header-map field carrying the exposure's time, whose ``reference`` says which instant."""
 
 #: Header-map fields copied verbatim into :class:`FrameMeta` when they resolve.
 PASSTHROUGH_FIELDS = (
@@ -94,10 +101,14 @@ def scan_folder(
     """One :class:`FrameRef` per image HDU of every file matching ``pattern``, in name order.
 
     ``header_map`` is a parsed :class:`HeaderMap` or the raw mapping it is built from.
-    A file astropy cannot open raises ``OSError``, unless ``unreadable`` is a list: the
-    path is appended to it and scanning continues. ``manifest`` (a table from
-    :func:`read_manifest` or its path) is applied to the result.
+    ``FileNotFoundError`` when ``folder`` is not a directory; an empty list when it holds
+    no matching file. A file astropy cannot open raises ``OSError``, unless ``unreadable``
+    is a list: the path is appended to it and scanning continues. ``manifest`` (a table
+    from :func:`read_manifest` or its path) is applied to the result.
     """
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"{folder} is not a directory")
     if not isinstance(header_map, HeaderMap):
         header_map = HeaderMap.from_dict(header_map)
     refs: list[FrameRef] = []
@@ -146,6 +157,12 @@ def _build_meta(
 ) -> FrameMeta:
     fields, unresolved = header_map.resolve(header, filename)
     exposure_type, rule = header_map.classify(fields)
+    spec = header_map.fields.get(TIME_FIELD)
+    reference = "mid" if spec is None else spec.reference
+    mid_time, derived = _mid_time(fields.get(TIME_FIELD), fields.get("exposure_time"), reference)
+    fields[TIME_FIELD] = mid_time
+    if not derived:
+        unresolved.append(TIME_FIELD)
     arc_kind = fields.get("arc_kind")
     if arc_kind is not None and arc_kind not in ARC_KINDS:
         arc_kind = None
@@ -169,6 +186,30 @@ def _build_meta(
 
 def _axis_binning(value: Any) -> int:
     return 1 if value is None else int(value)
+
+
+def _mid_time(value: Any, exposure_time: Any, reference: str) -> tuple[str | None, bool]:
+    """``(mid_time, derived)``: the exposure's mid-time from the header's time ``value``
+    (an ISO-8601 string) and ``exposure_time`` in seconds, according to ``reference``.
+
+    ``derived`` is false when the time is given but could not be turned into a mid-time
+    (no exposure time, or a time that does not parse); the value is then passed on as it
+    came. ``None`` stays ``None`` (and counts as derived: there is nothing to note twice).
+    """
+    if value is None:
+        return None, True
+    text = str(value)
+    if reference == "mid":
+        return text, True
+    if exposure_time is None:
+        return text, False
+    try:
+        start_or_end = datetime.fromisoformat(text)
+        half = timedelta(seconds=float(exposure_time) / 2.0)
+    except (TypeError, ValueError):
+        return text, False
+    mid = start_or_end + half if reference == "start" else start_or_end - half
+    return mid.isoformat(), True
 
 
 def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:

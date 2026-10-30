@@ -15,7 +15,10 @@ the arc fibers a polynomial in the trace centre ``y`` models the shift and the s
 ``y``. :func:`apply_drift` undoes that drift: the observed column ``x`` of a fiber maps back
 to the reference column ``x_ref = (x - s + e n / 2) / (1 + e)``, where the reference model
 of the fiber gives the wavelength. Several drift models enter with weights, so that a
-science exposure between two arcs can interpolate them.
+science exposure between two arcs can interpolate them. Fibers are keyed by their layout
+id throughout (``Trace.index`` after :func:`~mastpipe.steps.trace.layout_indexed`); as a
+guard against a mis-keyed fiber, a trace whose centre sits farther from the reference's
+``trace_y_center`` than the caller's tolerance is not transferred but reported.
 
 Everything here is pure: arrays, tables, dataclasses and a parameter model in, dataclasses
 and arrays out; the time pairing of exposures with arcs lives in
@@ -255,7 +258,9 @@ def apply_drift(
     drifts: list[tuple[DriftModel, float]],
     traceset: TraceSet,
     geom: GratingGeometry,
-) -> dict[int, np.ndarray]:
+    tolerance: float | None = None,
+    n_pix: int | None = None,
+) -> tuple[dict[int, np.ndarray], dict[int, str]]:
     """The wavelength of every column of every fiber the reference solves, after the drift.
 
     ``drifts`` pairs drift models with weights (the time pairing of
@@ -263,13 +268,33 @@ def apply_drift(
     ``s = sum w_k shift_k(y)`` and the stretch ``e = sum w_k stretch_k(y)``, the observed
     column ``x`` maps back to the reference column ``x_ref = (x - s + e n / 2) / (1 + e)``
     and the fiber's reference model, rebuilt with ``geom``, gives ``wavelength(x_ref)``.
-    Without any drift the result is the reference map itself. Returns one array per fiber
-    of the reference, on the fiber's pixel grid ``0 .. n_pix - 1``.
+    Without any drift the result is the reference map itself. Returns ``(wavelengths,
+    skipped)``: one array per transferred fiber of the reference, on the fiber's pixel
+    grid ``0 .. n_pix - 1``, and the reason for every fiber that was not transferred.
+
+    A fiber is skipped when ``tolerance`` is given and its trace in ``traceset`` sits more
+    than ``tolerance`` rows from the solution's ``trace_y_center`` (the fiber is not the
+    one the solution was made for); a fiber the trace set lacks is mapped at the
+    reference's own centre. ``ValueError`` when ``n_pix`` is given and a solution's pixel
+    grid differs from it (a reference from another detector crop), naming the reference.
     """
     y_centers = _y_centers(traceset)
     out: dict[int, np.ndarray] = {}
+    skipped: dict[int, str] = {}
     for fiber, solution in reference.solutions.items():
+        if n_pix is not None and int(solution.n_pix) != int(n_pix):
+            raise ValueError(
+                f"reference {reference.identifier} solves fiber {fiber} on {solution.n_pix} "
+                f"pixels, the frame has {n_pix}: the reference is for another detector crop"
+            )
         y = y_centers.get(int(fiber), float(solution.trace_y_center))
+        offset = abs(y - float(solution.trace_y_center))
+        if tolerance is not None and offset > tolerance:
+            skipped[int(fiber)] = (
+                f"trace centre y = {y:.2f} is {offset:.1f} px from the reference's "
+                f"{solution.trace_y_center:.2f} (tolerance {tolerance:.1f} px)"
+            )
+            continue
         s = sum(weight * float(model.shift_at(y)) for model, weight in drifts)
         e = sum(weight * float(model.stretch_at(y)) for model, weight in drifts)
         n = solution.n_pix
@@ -277,4 +302,4 @@ def apply_drift(
         x_ref = (x - s + e * n / 2.0) / (1.0 + e)
         wavelength = np.asarray(model_from_solution(solution, geom).wavelength(x_ref), float)
         out[int(fiber)] = wavelength
-    return out
+    return out, skipped

@@ -7,8 +7,9 @@ spectra per fiber, combined spectra per target, and quality-assurance
 products. It runs as an unattended quick-look at the observatory and as a
 manual reduction tool.
 
-The design documents live outside the repository; the decision log is
-`DECISIONS.md` and the release history is `CHANGES.md`. The reduction steps
+The design documents are kept locally under `docs/design/` (git-ignored);
+the decision log is `DECISIONS.md` and the release history is `CHANGES.md`.
+The reduction steps
 are a port of the HighSpec laboratory reduction notebook,
 written as pure functions on arrays behind a declarative instrument layer.
 
@@ -29,7 +30,7 @@ package runs without it.
 ## Running the tests
 
 ```bash
-pytest                 # the whole suite, about seven minutes
+pytest                 # the whole suite, about six minutes
 pytest -m "not slow"   # the unit tests alone, under a minute
 ```
 
@@ -120,13 +121,31 @@ mastpipe --help
 mastpipe <command> --help
 ```
 
-Every command takes `--instrument` (e.g. `highspec`), `--configuration` where
-the frames' headers do not say which grating was used (e.g. `mgb518`),
-`--camera` when the instrument has several, `--layout` to name the fiber
-preset (`lab3`, `survey45`; default: the frames' preset, else the instrument's)
-and repeatable `--set group.key=value` overrides of any step parameter
-(`trace.trace_halfwidth=4`, `drift.time_policy=interpolate`, …). The
-configuration actually used is hashed into every product.
+The reduction commands (`identify`, `solve`, `quicklook`) take `--instrument`
+(e.g. `highspec`), `--configuration` where the frames' headers do not say which
+grating was used (e.g. `mgb518`), `--camera` when the instrument has several,
+`--layout` to name the fiber preset (`lab3`, `survey45`; default: the frames'
+preset, else the instrument's), `--out` for the output folder, `--library` for
+a calibration library elsewhere than `OUT/calib`, and repeatable
+`--set group.key=value` overrides of any step parameter
+(`trace.trace_halfwidth=4`, `drift.time_policy=interpolate`, …). `show` takes
+the product file alone. The configuration actually used is hashed into every
+product.
+
+Parameters are layered: the instrument's defaults, then the grating block,
+then the **layout preset's block** (`layout_params` in `config.yaml`; for
+`survey45`, whose 45 fibers sit at an 8.5 px pitch, the trace, line and
+extraction halfwidths narrow to 4 px, and the layout's `aperture` column fixes
+the extraction halfwidth per fiber), then the `--set` overrides. Choosing a
+layout therefore selects its parameters without any override.
+
+Fibers are identified by the layout's `trace` id throughout: traces are
+matched to the layout and re-keyed by that id, detections that match no layout
+row are dropped (logged, and listed as `extra` with their positions in the
+trace QC), and a fiber missing on a night is simply absent from its products.
+A science fiber whose trace centre lies farther than `trace.layout_tolerance`
+from the reference solution's is given no wavelength and listed under
+`wavelength_skipped` in the science QC.
 
 ### `identify` — bootstrap a reference solution
 
@@ -141,10 +160,11 @@ mastpipe identify night/arc_full.fits --out out --instrument highspec --configur
 #   candidates: out/anchor_candidates.csv
 ```
 
-With anchors — given on the command line, read from a YAML file
-(`pairs: [[nm, px], ...]` and `trace:`), or the pairs stored with the
-instrument for the configuration and layout — it solves every fiber from them
-and writes the reference:
+With anchors — given on the command line (`--anchors`), read from a YAML file
+(`--anchors-file`, with `pairs: [[nm, px], ...]` and `trace:`), or the pairs
+stored with the instrument for the configuration and layout
+(`--stored-anchors`) — it solves every fiber from them and writes the
+reference; `--trace` names the layout trace id the pairs were measured on:
 
 ```bash
 mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
@@ -190,19 +210,30 @@ calibrated with cosmic rays flagged, extracted, given wavelengths by the time
 policy, sky-subtracted with the telescope's sky fiber, passed through the flux
 and telluric stages, written with provenance and QC, and combined per target.
 A product already on disk with the same idempotence key (input checksum,
-configuration hash, reference identifier, drift-arc checksums) is skipped;
-one whose key changed is reduced again; `--force` reduces everything. Frames
-the headers cannot classify are skipped with their rule, failures are recorded
-and the run goes on (`--on-error continue`, the default). The exit status is 2
-when anything failed.
+configuration hash, reference identifier, drift-arc checksums, layout preset)
+is skipped; one whose key changed is reduced again; `--force` reduces
+everything. `--reference ID` pins one reference solution instead of the one
+valid at each frame's time. Frames the headers cannot classify are skipped
+with their rule, failures are recorded and the run goes on (`--on-error
+continue`, the default). The exit status is 2 when anything failed, when the
+night folder holds no readable frame, or when it does not exist.
+
+Frame times: the header map declares which instant a time keyword records
+(`reference: start | mid | end`; HighSpec's `DATE-OBS` / `DATE` is the exposure
+start) and ingest derives each frame's mid-time from it and the exposure time;
+a frame without an exposure time keeps the header time as given and notes
+`mid_time` among its unresolved fields. A header value listed under a field's
+`missing_values` (the Andor `TEMP = -999` of an unread sensor) counts as
+absent.
 
 A **manifest** (`--manifest`) is a CSV keyed by file name (`source`, optional
 `extension`) whose non-empty cells override any metadata field: `exposure_type`
 (`bias`, `dark`, `flat`, `arc`, `science`, `background`, `unknown`),
 `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`, `target`,
-`exposure_time`, `mid_time`, `binning`, `readout_mode`, `detector_temperature`,
-`lamp_state`, `camera`, `instrument`. It is how frames without instrument
-keywords, such as the laboratory data, enter the pipeline:
+`exposure_time`, `mid_time` (taken as the mid-exposure time), `binning`,
+`readout_mode`, `detector_temperature`, `lamp_state`, `camera`, `instrument`,
+`classification_rule`. It is how frames without instrument keywords, such as
+the laboratory data, enter the pipeline:
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind
@@ -251,8 +282,8 @@ identifier.
 Every FITS product carries its provenance as `MP*` header cards: pipeline
 version (`MPVER`), configuration hash (`MPCFGH`), the wavelength, flux and
 telluric statuses, the reference identifier and hash (`MPWREF`, `MPWREFH`),
-and numbered lists of inputs, calibrations, drift arcs and steps. No raw
-instrument keyword reaches a product header.
+the layout preset (`MPLAYOUT`), and numbered lists of inputs, calibrations,
+drift arcs and steps. No raw instrument keyword reaches a product header.
 
 ### The spectra table
 

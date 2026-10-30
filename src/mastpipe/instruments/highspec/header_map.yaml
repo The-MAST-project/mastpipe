@@ -4,11 +4,15 @@
 # when the keywords change. Interpreted by mastpipe.io.headers.
 #
 # fields: pipeline name -> {keys: header keywords tried in order, type, lower, map, default,
-#         filename_regex (named group `value`, used when no keyword is present)}
+#         filename_regex (named group `value`, used when no keyword is present),
+#         missing_values (sentinels that count as "not written"),
+#         reference (start | mid | end: the instant a time keyword records)}
+# Andor Solis stamps DATE / DATE-OBS with the exposure start; ingest adds half the exposure
+# time to reach the mid-time. TEMP is -999 while the sensor has not been read.
 fields:
   exposure_time: {keys: [EXPOSURE, EXPTIME], type: float}
-  mid_time: {keys: [DATE-OBS, DATE], type: str}
-  detector_temperature: {keys: [TEMP, CCD-TEMP], type: float}
+  mid_time: {keys: [DATE-OBS, DATE], type: str, reference: start}
+  detector_temperature: {keys: [TEMP, CCD-TEMP], type: float, missing_values: [-999]}
   binning_x: {keys: [HBIN], type: int}
   binning_y: {keys: [VBIN], type: int}
   readout_mode: {keys: [READMODE, OUTPTAMP], lower: true}

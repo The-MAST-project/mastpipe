@@ -6,8 +6,9 @@ eight characters, so lists are numbered schemes with a count card: ``MPNIN`` /
 / ``MPDARC01``… (drift-arc checksums) and ``MPNSTEP`` / ``MPSTEP01``… (steps applied). The
 scalar cards are ``MPVER`` (pipeline version), ``MPCFGH`` (effective-configuration hash),
 ``MPWSTAT`` / ``MPFSTAT`` / ``MPTSTAT`` (wavelength, flux and telluric status), ``MPWREF``
-and ``MPWREFH`` (reference-solution identifier and hash). Counts are written as integers,
-everything else as strings; an unset value is the string ``"none"``.
+and ``MPWREFH`` (reference-solution identifier and hash) and ``MPLAYOUT`` (the fiber layout
+preset the product was reduced with). Counts are written as integers, everything else as
+strings; an unset value is the string ``"none"``.
 
 :meth:`Provenance.to_header_cards` and :meth:`Provenance.from_header` are each other's
 inverse. Nothing here touches a file.
@@ -52,7 +53,8 @@ class Provenance:
 
     ``inputs`` are the checksums of the raw frames, ``calibrations`` the identifiers of the
     masters used, ``drift_arcs`` the checksums of the calibration-fiber arcs whose drift was
-    transferred and ``steps`` the operations applied, in order. The three statuses follow
+    transferred, ``steps`` the operations applied, in order, and ``layout`` the fiber
+    layout preset (part of a science product's idempotence key). The three statuses follow
     the vocabularies of :mod:`mastpipe.core.model`. Lists are stored as lists, so a tuple
     given here compares equal after a round trip.
     """
@@ -68,6 +70,7 @@ class Provenance:
     reference_hash: str | None = None
     drift_arcs: list[str] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)
+    layout: str | None = None
 
     def __post_init__(self) -> None:
         _check_choice("wavelength_status", self.wavelength_status, WAVELENGTH_STATUSES)
@@ -89,6 +92,7 @@ class Provenance:
             ("MPTSTAT", self.telluric_status, "telluric status"),
             ("MPWREF", _to_card(self.reference_id), "reference solution identifier"),
             ("MPWREFH", _to_card(self.reference_hash), "reference solution hash"),
+            ("MPLAYOUT", _to_card(self.layout), "fiber layout preset"),
         ]
         for count_key, prefix, digits, attribute, comment in NUMBERED:
             items = getattr(self, attribute)
@@ -103,7 +107,8 @@ class Provenance:
     def from_header(cls, header: Any) -> Provenance:
         """The inverse of :meth:`to_header_cards` on a FITS header (or any mapping).
 
-        ``KeyError`` when a scalar card or a numbered card the count announces is missing.
+        ``KeyError`` when a scalar card or a numbered card the count announces is missing;
+        ``MPLAYOUT``, added later than the others, reads as unset when absent.
         """
         lists: dict[str, list[str]] = {}
         for count_key, prefix, digits, attribute, _ in NUMBERED:
@@ -121,4 +126,5 @@ class Provenance:
             reference_hash=_from_card(header["MPWREFH"]),
             drift_arcs=lists["drift_arcs"],
             steps=lists["steps"],
+            layout=_from_card(header["MPLAYOUT"]) if "MPLAYOUT" in header else None,
         )

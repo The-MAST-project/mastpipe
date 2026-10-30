@@ -24,9 +24,13 @@ is a noise estimate.
 
 :func:`match_layout` finds one global offset between the detected traces and the layout's
 nominal rows with :func:`comb_shift`, then assigns layout rows to detections one-to-one by
-distance within a tolerance. :func:`classify_arc` decides from the lit traces whether an
-arc frame is a full arc or a calibration-fiber arc. Everything here is pure: arrays,
-dataclasses, a parameter model and the layout table in, dataclasses and plain values out.
+distance within a tolerance. :func:`layout_indexed` then re-keys the matched traces by the
+layout's stable ``trace`` id and drops the detections without a layout row, so that every
+per-fiber key downstream (spectra, reference solutions, drift models, throughput) names
+the same physical fiber from night to night whatever was detected. :func:`classify_arc`
+decides from the lit traces whether an arc frame is a full arc or a calibration-fiber arc.
+Everything here is pure: arrays, dataclasses, a parameter model and the layout table in,
+dataclasses and plain values out.
 """
 
 from __future__ import annotations
@@ -406,6 +410,32 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
         layout_shift=float(shift),
         missing=missing,
         extra=extra,
+    )
+
+
+def layout_indexed(traceset: TraceSet) -> TraceSet:
+    """The matched traces of ``traceset`` keyed by their layout id, the unmatched dropped.
+
+    Each trace with a ``role`` (a layout row matched it) is kept with ``index`` set to its
+    ``layout_index``, the layout's ``trace`` id, and the result is sorted by that index;
+    traces whose ``role`` is ``None`` are left out. ``missing`` (layout ids without a
+    detection) and ``layout_shift`` are carried over unchanged, and so is ``extra``, which
+    still lists the *detection* indices of the dropped traces as :func:`match_layout` numbered
+    them (the caller holding the matched set can look their positions up). Applied to a set
+    that is already layout-indexed it returns an equal set. The input is not modified.
+    """
+    traces = [
+        replace(trace, index=int(trace.layout_index))
+        for trace in traceset.traces
+        if trace.role is not None and trace.layout_index is not None
+    ]
+    traces.sort(key=lambda trace: trace.index)
+    return TraceSet(
+        traces=traces,
+        shape=traceset.shape,
+        layout_shift=traceset.layout_shift,
+        missing=tuple(traceset.missing),
+        extra=tuple(traceset.extra),
     )
 
 

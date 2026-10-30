@@ -12,7 +12,8 @@ cameras:
     read_noise: 5.0             # e-      PLACEHOLDER: not yet measured (bias pairs)
     pixel_size_um: 16.0
     saturation: 65000.0         # ADU, 16-bit readout
-    crop: [1, 1599, 1, 399]     # [x_min, x_max, y_min, y_max], end exclusive: drops the edge row and column
+    crop: [1, 1599, 1, 399]     # [x_min, x_max, y_min, y_max], end exclusive: drops the first and
+                                # last row and column, leaving 398 x 1598 pixels
     dispersion_axis: 1
 
 # Step parameters; anything not listed keeps the defaults of mastpipe.config.models.
@@ -28,4 +29,12 @@ params:
 
 default_layout: lab3
 layouts: [lab3, survey45]       # one layouts/<preset>.csv per entry
+# Per-preset parameters, layered over the grating block when a layout is chosen. The
+# survey head packs 45 fibers at an 8.5 px pitch, so the three halfwidths narrow to 4 px
+# (the layout's aperture column fixes the extraction halfwidth as well).
+layout_params:
+  survey45:
+    trace: {trace_halfwidth: 4}
+    lines: {halfwidth: 4}
+    extract: {halfwidth: 4}
 arc_classification: lit_traces  # a full arc lights every fiber; a drift arc only the arc fibers

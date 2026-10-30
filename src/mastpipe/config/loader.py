@@ -2,8 +2,9 @@
 
 The effective configuration of a run is built per (camera, configuration) by layering,
 in order, the instrument's step parameters, the configuration block's partial
-parameters and any command-line overrides; later layers win key by key. The result is
-validated as :class:`~mastpipe.config.models.StepParams` and hashed for provenance.
+parameters, the chosen layout preset's parameters and any command-line overrides; later
+layers win key by key. The result is validated as
+:class:`~mastpipe.config.models.StepParams` and hashed for provenance.
 """
 
 from __future__ import annotations
@@ -60,11 +61,15 @@ def build_effective(
     configuration: str,
     camera: str,
     overrides: Iterable[dict[str, Any]] = (),
+    layout: str | None = None,
 ) -> EffectiveConfig:
-    """Layer instrument params -> configuration-block params -> overrides, in that order.
+    """Layer instrument params -> configuration-block params -> layout-preset params ->
+    overrides, in that order.
 
-    Raises ``KeyError`` for an unknown configuration or camera and a Pydantic
-    ``ValidationError`` when the merged parameters contain an unknown key or a bad value.
+    ``layout`` names the fiber layout preset whose ``instrument.layout_params`` block (if
+    any) is merged in; ``None`` merges no preset block. Raises ``KeyError`` for an unknown
+    configuration, camera or layout and a Pydantic ``ValidationError`` when the merged
+    parameters contain an unknown key or a bad value.
     """
     if configuration not in instrument.configurations:
         known = sorted(instrument.configurations)
@@ -72,9 +77,14 @@ def build_effective(
     if camera not in instrument.cameras:
         known = sorted(instrument.cameras)
         raise KeyError(f"unknown camera {camera!r} for {instrument.name}: {known}")
+    if layout is not None and layout not in instrument.layouts:
+        raise KeyError(f"unknown layout {layout!r} for {instrument.name}: {instrument.layouts}")
     block = instrument.configurations[configuration]
     layers = [f"instrument:{instrument.name}", f"configuration:{configuration}"]
     merged = deep_merge(instrument.params.model_dump(), block.params)
+    if layout is not None:
+        merged = deep_merge(merged, instrument.layout_params.get(layout, {}))
+        layers.append(f"layout:{layout}")
     for override in overrides:
         merged = deep_merge(merged, override)
         layers.extend(f"override:{key}={json.dumps(value)}" for key, value in _flatten(override))

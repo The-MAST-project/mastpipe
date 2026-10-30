@@ -2,6 +2,19 @@
 
 ## 0.0.1 (unreleased)
 
+- Final fix wave of Plan 1: fibers are keyed by the layout's trace id
+  (`steps.trace.layout_indexed`, used by the runner and `identify`; detections
+  outside the layout are dropped, logged and listed in the trace QC), with a
+  trace-centre guard in `apply_drift` (`wavelength_skipped` in the science QC)
+  and a pixel-grid check against the reference; header-map options
+  `missing_values` (Andor `TEMP = -999`) and `reference` (`start | mid | end`)
+  with the mid-time derived by ingest from the exposure start, the simulator
+  stamping `DATE-OBS` with the start; per-preset parameters
+  (`InstrumentConfig.layout_params`, `build_effective(layout=...)`,
+  `survey45` halfwidths and aperture of 4 px); a non-existent night folder
+  raises and an empty one records a failure; the layout preset joins the
+  science idempotence key (`MPLAYOUT`); the `lt` classification operator
+  ignores non-numeric values; README, crop comment and `slow` marker corrected.
 - Package skeleton: `pyproject.toml` with the `src` layout, `mastpipe` console
   script (`--version`, help), CI matrix (Linux, Windows, macOS × Python 3.11,
   3.12) and the privacy scan for tracked files.

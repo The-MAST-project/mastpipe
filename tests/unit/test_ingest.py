@@ -100,7 +100,7 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     bias = refs[0].meta
     assert bias.exposure_type == "bias" and bias.classification_rule == "header"
     assert bias.exposure_time == 0.0
-    assert bias.mid_time == "2026-10-01T18:00:00"
+    assert bias.mid_time == "2026-10-01T18:00:00"  # a zero-second exposure: start is mid
     assert bias.binning == (2, 1)  # VBIN absent: the missing axis defaults to 1
     assert bias.target is None and bias.arc_kind is None
     assert "target" in bias.unresolved and "exposure_time" not in bias.unresolved
@@ -127,6 +127,46 @@ def test_missing_exposure_time_is_unknown(tmp_path: Path, highspec_map: HeaderMa
     assert ref.meta.classification_rule == "rule:4"
     assert ref.meta.exposure_time is None
     assert "exposure_time" in ref.meta.unresolved
+
+
+def test_mid_time_is_derived_from_the_start_time(tmp_path: Path, highspec_map: HeaderMap):
+    """HighSpec writes the exposure start; a 300 s frame's mid-time is 150 s later. Without
+    an exposure time the time stays as given and ``unresolved`` says so."""
+    cards = {"IMAGETYP": "light", "EXPOSURE": 300.0, "DATE-OBS": "2026-10-01T20:00:00"}
+    write_fits(tmp_path / "sci.fits", np.zeros((2, 2), dtype=np.uint16), cards)
+    write_fits(
+        tmp_path / "fraction.fits",
+        np.zeros((2, 2), dtype=np.uint16),
+        {"IMAGETYP": "flat", "EXPOSURE": 5.0, "DATE-OBS": "2026-10-01T20:00:00.5"},
+    )
+    write_fits(
+        tmp_path / "notime.fits",
+        np.zeros((2, 2), dtype=np.uint16),
+        {"LAMP": "thar", "DATE-OBS": "2026-10-01T21:00:00"},
+    )
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert refs["sci.fits"].mid_time == "2026-10-01T20:02:30"
+    assert "mid_time" not in refs["sci.fits"].unresolved
+    assert refs["fraction.fits"].mid_time == "2026-10-01T20:00:03"
+    assert refs["notime.fits"].exposure_time is None
+    assert refs["notime.fits"].mid_time == "2026-10-01T21:00:00"
+    assert "mid_time" in refs["notime.fits"].unresolved
+
+    # the reference of the time field decides the arithmetic
+    for reference, expected in (("mid", "2026-10-01T20:00:00"), ("end", "2026-10-01T19:57:30")):
+        raw = load_header_map("highspec")
+        raw["fields"]["mid_time"] = {**raw["fields"]["mid_time"], "reference": reference}
+        (ref,) = scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw), pattern="sci.fits")
+        assert ref.meta.mid_time == expected, reference
+
+
+def test_scan_folder_rejects_a_missing_folder(tmp_path: Path, highspec_map: HeaderMap):
+    with pytest.raises(FileNotFoundError, match="nope"):
+        scan_folder(tmp_path / "nope", "highspec", highspec_map)
+    (tmp_path / "file.fits").write_bytes(b"")
+    with pytest.raises(FileNotFoundError):
+        scan_folder(tmp_path / "file.fits", "highspec", highspec_map)
+    assert scan_folder(tmp_path, "highspec", highspec_map, unreadable=[]) == []
 
 
 def test_unreadable_file_collected_not_raised(night: Path, highspec_map: HeaderMap):

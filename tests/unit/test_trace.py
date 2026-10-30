@@ -18,6 +18,7 @@ from mastpipe.steps.trace import (
     classify_arc,
     comb_shift,
     find_traces,
+    layout_indexed,
     match_layout,
     relative_throughput,
     robust_sigma,
@@ -274,7 +275,7 @@ def test_match_layout_with_global_shift_and_missing(night, survey_layout):
         row = survey_layout.iloc[trace.layout_index]
         assert trace.role == row["role"]
         assert trace.telescope == row["telescope"]
-        assert trace.aperture is None  # the survey layout leaves the aperture to the parameters
+        assert trace.aperture == 4.0  # the survey layout fixes the aperture halfwidth
         assert abs(trace.y_center - (row["y_nominal"] + matched.layout_shift)) < 1.0
     assert [trace.layout_index for trace in matched] == [
         i for i in range(len(survey_layout)) if i != dropped
@@ -334,6 +335,32 @@ def test_match_layout_perturbed_periodic_layout_does_not_alias(survey_traces, su
         assert matched.missing == () and matched.extra == ()
         assert [t.layout_index for t in matched] == list(range(45))
         assert [t.role for t in matched] == survey_layout["role"].tolist()
+
+
+def test_layout_indexed_keys_traces_by_layout_id_and_drops_extras(lab3_layout):
+    x_center = 799.0
+    nominal = lab3_layout["y_nominal"].to_numpy()
+    # fiber 1 missing, one spurious detection between fibers 0 and 2
+    ys = np.sort([nominal[0], 100.0, nominal[2]])
+    traces = [make_trace(i, y, x_center) for i, y in enumerate(ys)]
+    matched = match_layout(TraceSet(traces=traces, shape=(398, 1598)), lab3_layout, 3.0)
+    assert matched.missing == (1,) and matched.extra == (1,)
+    assert [t.index for t in matched] == [0, 1, 2]  # detection order
+
+    keyed = layout_indexed(matched)
+    assert [t.index for t in keyed] == [0, 2]  # the layout's trace ids
+    assert [t.layout_index for t in keyed] == [0, 2]
+    assert [t.role for t in keyed] == ["arc", "arc"]
+    assert [t.y_center for t in keyed] == pytest.approx([nominal[0], nominal[2]])
+    assert keyed.missing == (1,) and keyed.extra == (1,)
+    assert keyed.shape == matched.shape and keyed.layout_shift == matched.layout_shift
+    assert len(keyed) == 2 and keyed.by_role("arc") == keyed.traces
+    # the input is left untouched
+    assert [t.index for t in matched] == [0, 1, 2]
+    # without a layout match nothing survives, and an already keyed set is unchanged
+    assert len(layout_indexed(TraceSet(traces=traces, shape=(398, 1598)))) == 0
+    again = layout_indexed(keyed)
+    assert [t.index for t in again] == [0, 2]
 
 
 # ----------------------------------------------------------------------------- classify_arc

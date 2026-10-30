@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Strict(BaseModel):
@@ -178,7 +178,13 @@ class ConfigurationBlock(_Strict):
 
 
 class InstrumentConfig(_Strict):
-    """An instrument: its cameras, configurations, step defaults and fiber layouts."""
+    """An instrument: its cameras, configurations, step defaults and fiber layouts.
+
+    ``layout_params`` holds, per layout preset, partial :class:`StepParams` overrides as a
+    plain mapping (the halfwidths a dense fiber head needs, say); ``build_effective`` layers
+    the chosen preset's block between the configuration block and the command-line
+    overrides. Every key must name a preset listed in ``layouts``.
+    """
 
     name: str
     cameras: dict[str, DetectorConfig]
@@ -186,7 +192,15 @@ class InstrumentConfig(_Strict):
     params: StepParams
     default_layout: str
     layouts: list[str]
+    layout_params: dict[str, dict[str, Any]] = Field(default_factory=dict)
     arc_classification: Literal["header", "lit_traces"] = "lit_traces"
+
+    @model_validator(mode="after")
+    def _layout_params_name_known_layouts(self) -> InstrumentConfig:
+        unknown = sorted(set(self.layout_params) - set(self.layouts))
+        if unknown:
+            raise ValueError(f"layout_params for presets not in layouts: {unknown}")
+        return self
 
 
 class EffectiveConfig(_Strict):

@@ -251,7 +251,9 @@ def _seed_models(
     ref_fiber: int,
     geom: GratingGeometry | None,
 ) -> dict[int, GratingModel]:
-    """The starting model of every requested fiber."""
+    """The starting model of every requested fiber; ``fibers`` and ``ref_fiber`` are trace
+    indices (``Trace.index``), the lists are in trace order."""
+    position = _positions(traceset)
     seeds: dict[int, GratingModel] = {}
     if isinstance(start, ReferenceSolution):
         if geom is None:
@@ -260,27 +262,42 @@ def _seed_models(
             raise ValueError("the previous reference holds no solutions to seed from")
         previous = start.solutions
         centres = {fiber: solution.trace_y_center for fiber, solution in previous.items()}
-        for k in fibers:
+        for fiber in fibers:
+            k = position[fiber]
             n_pix = len(flux_list[k])
-            if k in previous:
-                seeds[k] = _warm_start(previous[k], geom, n_pix)
+            if fiber in previous:
+                seeds[fiber] = _warm_start(previous[fiber], geom, n_pix)
                 continue
             # absent from the previous reference: the nearest solved fiber, slid
             y = traceset.traces[k].y_center
-            j = min(centres, key=lambda fiber: abs(centres[fiber] - y))
+            j = min(centres, key=lambda other: abs(centres[other] - y))
             seed = _warm_start(previous[j], geom, n_pix)
-            shift = shift_to_reference(flux_list[k], flux_list[j]) if j < len(flux_list) else 0.0
-            seeds[k] = GratingModel(seed.x_c + shift, seed.B, seed.alpha, None, n_pix, geom)
+            shift = (
+                shift_to_reference(flux_list[k], flux_list[position[j]]) if j in position else 0.0
+            )
+            seeds[fiber] = GratingModel(seed.x_c + shift, seed.B, seed.alpha, None, n_pix, geom)
         return seeds
     if not isinstance(start, GratingModel):
         raise NotImplementedError("solve_full_arc seeds from a grating model only")
-    if not 0 <= ref_fiber < len(flux_list):
-        raise ValueError(f"ref_fiber {ref_fiber} is not among the {len(flux_list)} fibers")
-    for k in fibers:
+    if ref_fiber not in position:
+        raise ValueError(f"ref_fiber {ref_fiber} is not among the traces {sorted(position)}")
+    reference_flux = flux_list[position[ref_fiber]]
+    for fiber in fibers:
+        k = position[fiber]
         n_pix = len(flux_list[k])
-        shift = 0.0 if k == ref_fiber else shift_to_reference(flux_list[k], flux_list[ref_fiber])
-        seeds[k] = GratingModel(start.x_c + shift, start.B, start.alpha, None, n_pix, start.geom)
+        shift = 0.0 if fiber == ref_fiber else shift_to_reference(flux_list[k], reference_flux)
+        seeds[fiber] = GratingModel(
+            start.x_c + shift, start.B, start.alpha, None, n_pix, start.geom
+        )
     return seeds
+
+
+def _positions(traceset: TraceSet) -> dict[int, int]:
+    """Trace index -> position in ``traceset`` (``ValueError`` when an index repeats)."""
+    position = {int(trace.index): k for k, trace in enumerate(traceset.traces)}
+    if len(position) != len(traceset.traces):
+        raise ValueError("solve_full_arc needs unique trace indices")
+    return position
 
 
 def solve_full_arc(
@@ -299,12 +316,15 @@ def solve_full_arc(
 
     ``line_tables`` are the ``find_lines`` tables and ``flux_list`` the continuum-subtracted
     fluxes (``flux - continuum``), one per trace of ``traceset`` in trace order; a fiber's
-    measured columns are the ``x_center`` of its ``use_x`` rows. ``fibers`` restricts the
-    solve (default: every trace).
+    measured columns are the ``x_center`` of its ``use_x`` rows. Fibers are named by their
+    trace index (``Trace.index``, the layout id after
+    :func:`~mastpipe.steps.trace.layout_indexed`): the result is keyed by it, ``fibers``
+    (default: every trace) restricts the solve to those indices and ``ref_fiber`` is the
+    index of the anchored trace.
 
-    Seeding: when ``start`` is a single grating model it belongs to fiber ``ref_fiber`` (the
-    anchored trace) and every other fiber starts from it slid by :func:`shift_to_reference`
-    of its flux against the reference fiber's. When ``start`` is a previous
+    Seeding: when ``start`` is a single grating model it belongs to fiber ``ref_fiber`` and
+    every other fiber starts from it slid by :func:`shift_to_reference` of its flux against
+    the reference fiber's. When ``start`` is a previous
     :class:`~mastpipe.core.model.ReferenceSolution`, each fiber warm-starts from its own
     earlier ``x_c, B, alpha`` (rebuilt with ``geom``, which is then required); a fiber the
     previous reference lacks starts from the solved fiber nearest in ``trace_y_center``,
@@ -322,23 +342,25 @@ def solve_full_arc(
             f"line_tables ({len(line_tables)}) and flux_list ({len(flux_list)}) must have one "
             f"entry per trace ({n})"
         )
-    fibers = list(range(n)) if fibers is None else [int(k) for k in fibers]
-    for k in fibers:
-        if not 0 <= k < n:
-            raise ValueError(f"fiber {k} is not among the {n} traces")
+    position = _positions(traceset)
+    fibers = sorted(position) if fibers is None else [int(k) for k in fibers]
+    for fiber in fibers:
+        if fiber not in position:
+            raise ValueError(f"fiber {fiber} is not among the traces {sorted(position)}")
     seeds = _seed_models(start, fibers, flux_list, traceset, ref_fiber, geom)
     solutions: dict[int, WavelengthSolution] = {}
-    for k in fibers:
+    for fiber in fibers:
+        k = position[fiber]
         x_obs = _usable_columns(line_tables[k])
         if x_obs.size == 0:
             continue
-        model, ident = solve_fiber(x_obs, seeds[k], cat_wl, cat_sp, params)
+        model, ident = solve_fiber(x_obs, seeds[fiber], cat_wl, cat_sp, params)
         if model is None:
             continue
         resid = ident["dx_px"].to_numpy(dtype=float)
         g = model.geom
-        solutions[k] = WavelengthSolution(
-            fiber=k,
+        solutions[fiber] = WavelengthSolution(
+            fiber=fiber,
             kind=model.kind,
             params=model.params,
             n_pix=model.n_pix,

@@ -3,7 +3,9 @@
 :func:`simulate_night` writes raw-shaped ``uint16`` FITS frames (bias, dark, flat,
 one full arc, a background, calibration-fiber arcs and science frames) whose headers the HighSpec
 header map classifies, together with ``truth.npz`` + ``truth.json`` that
-:func:`load_truth` reads back as a :class:`SimTruth`. The simulation model:
+:func:`load_truth` reads back as a :class:`SimTruth`. As the instrument does, the headers
+stamp the exposure *start*; the truth table records the mid-time, which ingest derives by
+adding half the exposure time. The simulation model:
 
 - the detector reads ``bias_level`` plus Poisson photon/dark noise and Gaussian read
   noise; dark current is ``dark_rate`` ADU per second inside the cropped area, the padded
@@ -430,7 +432,7 @@ def _drift_at(seconds: float, origin: float, end: float, endpoints: tuple[float,
 def _cards(
     exposure_type: str,
     exposure: float,
-    mid_time: str,
+    start_time: str,
     configuration: str,
     fiber_preset: str,
     target: str,
@@ -438,7 +440,7 @@ def _cards(
     return {
         "IMAGETYP": IMAGE_TYPES[exposure_type],
         "EXPOSURE": exposure,
-        "DATE-OBS": mid_time,
+        "DATE-OBS": start_time,
         "TEMP": TEMPERATURE_C,
         "HBIN": 1,
         "VBIN": 1,
@@ -493,9 +495,11 @@ def simulate_night(
     minutes from ``night_start`` in the order bias, dark, flat, full arc, background, then
     one calibration-fiber arc followed by its share of the science frames, repeated
     ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). The
-    drift law runs from the (first) full arc's mid-time to the last frame's; without a
-    full arc it runs from ``night_start``. Every random number comes from
-    ``numpy.random.default_rng(seed)``.
+    cadence sets each frame's mid-time (the truth table's ``mid_time``); the header's
+    ``DATE-OBS`` is the exposure start, half the exposure time earlier, as the control
+    software writes it. The drift law runs from the (first) full arc's mid-time to the
+    last frame's; without a full arc it runs from ``night_start``. Every random number
+    comes from ``numpy.random.default_rng(seed)``.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -521,7 +525,9 @@ def simulate_night(
         shift = _drift_at(seconds, origin_seconds, end_seconds, drift_px)
         stretch = _drift_at(seconds, origin_seconds, end_seconds, drift_stretch)
         exposure = exposures[exposure_type]
-        mid_time = (start + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        mid = start + timedelta(seconds=seconds)
+        mid_time = mid.isoformat(timespec="seconds")
+        start_time = (mid - timedelta(seconds=exposure / 2.0)).isoformat()
         index = counters.get(exposure_type, 0)
         counters[exposure_type] = index + 1
         name = f"sim_{exposure_type}_{index:02d}.fits"
@@ -530,7 +536,7 @@ def simulate_night(
         )
         target = science_object if exposure_type == "science" else exposure_type
         cards = _cards(
-            exposure_type, exposure, mid_time, effective.configuration, fiber_preset, target
+            exposure_type, exposure, start_time, effective.configuration, fiber_preset, target
         )
         _write_fits(out_dir / name, data, cards)
         if exposure_type == "science":

@@ -88,6 +88,7 @@ def make_provenance() -> Provenance:
         reference_hash="0011223344aa",
         drift_arcs=[CHECKSUMS[1], CHECKSUMS[2]],
         steps=["bias", "background", "extract"],
+        layout="survey45",
     )
 
 
@@ -166,8 +167,12 @@ def test_provenance_cards_roundtrip():
     assert header["MPNDARC"] == 2 and header["MPDARC02"] == CHECKSUMS[2]
     assert header["MPSTEP03"] == "extract"
     assert header["MPWREF"] == prov.reference_id and header["MPWREFH"] == prov.reference_hash
+    assert header["MPLAYOUT"] == "survey45"
     assert all(len(key) <= 8 for key in keys)
     assert Provenance.from_header(header) == prov
+    # a product written before the layout card existed reads back with no layout
+    del header["MPLAYOUT"]
+    assert Provenance.from_header(header).layout is None
 
     bare = Provenance(
         pipeline_version="0.0.1", config_hash="abcdef012345", inputs=[], calibrations=[]
@@ -176,10 +181,12 @@ def test_provenance_cards_roundtrip():
     for key, value, comment in bare.to_header_cards():
         header[key] = (value, comment)
     assert header["MPWREF"] == "none" and header["MPWREFH"] == "none"
+    assert header["MPLAYOUT"] == "none"
     assert header["MPNIN"] == 0 and "MPIN0001" not in header
     back = Provenance.from_header(header)
     assert back == bare
     assert back.reference_id is None and back.drift_arcs == [] and back.steps == []
+    assert back.layout is None
 
 
 def test_product_name_format():

@@ -99,6 +99,11 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
         assert card in header
     assert header["IMAGETYP"] == "light" and header["LAMP"] == "off"
     assert header["EXPOSURE"] == pytest.approx(300.0) and header["SHUTTER"] == "open"
+    # the header stamps the exposure start; the truth table records the mid-time
+    science_row = frames.loc[frames.file == science.name].iloc[0]
+    assert pd.Timestamp(header["DATE-OBS"]) == pd.Timestamp(science_row.mid_time) - pd.Timedelta(
+        seconds=150
+    )
     assert header["FIBPRE"] == "survey45" and header["GRATING"] == "mgb518"
     assert fits.getheader(frame_path(out_dir, truth, "arc"))["LAMP"] == "thar"
     assert fits.getheader(frame_path(out_dir, truth, "flat"))["LAMP"] == "flat"

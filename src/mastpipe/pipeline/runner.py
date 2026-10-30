@@ -12,8 +12,12 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
    one that applies;
 2. **traces** — found on the flat master, or on a full arc with the percentile collapse
    when there is no flat, matched to the layout preset (``options.layout``, else the
-   frames' ``fiber_preset``, else the instrument's default) and written with a QC file;
-   the relative throughput comes from the flat (``{}`` without one);
+   frames' ``fiber_preset``, else the instrument's default) and keyed by the layout's
+   trace id (detections matching no layout row are dropped, logged and listed in the
+   trace QC as ``extra``), then written with a QC file; the relative throughput comes
+   from the flat (``{}`` without one). Every per-fiber key downstream (spectra, reference
+   solutions, drift models, throughput) is that layout id, so a fiber missing on one
+   night is simply absent rather than shifting its neighbours' identities;
 3. **arcs** — classified by their lit traces when the header does not say which kind they
    are; a **full arc** is re-solved seeded by the latest reference of the configuration
    and preset and added to the library (skipped with "run identify" when there is none,
@@ -26,19 +30,25 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
    by the time policy (``transferred`` through the paired drift arcs, ``reference`` from
    the reference alone, ``nominal`` from the configuration's geometry when there is no
    reference), sky-subtracted, passed through the flux and telluric stages, written with
-   their provenance and QC, and combined per target.
+   their provenance and QC, and combined per target. A fiber whose trace centre sits
+   farther than ``trace.layout_tolerance`` from the reference solution's is not given a
+   wavelength (a warning, and ``wavelength_skipped`` in the QC); a reference on another
+   pixel grid than the frame's is refused with ``ValueError``.
 
 A science product is identified by its idempotence key — the frame's checksum, the
-configuration hash, the reference identifier and the sorted drift-arc checksums; a product
-on disk with the same key is skipped unless ``options.force``. A product whose key changed
-(a ``reference`` product whose exposure now has a drift arc, a ``nominal`` one once a
-reference exists) is reduced again and listed in ``reduced_again``.
+configuration hash, the reference identifier, the sorted drift-arc checksums and the
+layout preset (``MPLAYOUT`` in the product header); a product on disk with the same key is
+skipped unless ``options.force``. A product whose key changed (a ``reference`` product
+whose exposure now has a drift arc, a ``nominal`` one once a reference exists) is reduced
+again and listed in ``reduced_again``.
 
 Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is logged and
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
-its group with a recorded failure; with ``"raise"`` it propagates. The ``mastpipe``
-logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
-handlers are removed when it ends.
+its group with a recorded failure; with ``"raise"`` it propagates. A night folder that is
+not a directory raises ``FileNotFoundError`` before anything is written; one without a
+readable frame records a failure for the night. The ``mastpipe`` logger writes
+``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both handlers are
+removed when it ends.
 """
 
 from __future__ import annotations
@@ -96,6 +106,7 @@ from mastpipe.steps.telluric import correct_telluric, telluric_status
 from mastpipe.steps.trace import (
     classify_arc,
     find_traces,
+    layout_indexed,
     match_layout,
     relative_throughput,
     trace_source,
@@ -112,6 +123,8 @@ MASTER_KINDS = ("bias", "dark", "background")
 TIME_POLICIES = ("nearest_before", "nearest", "interpolate")
 ALREADY_REDUCED = "already reduced"
 """Start of the ``skipped`` reason of a science product whose idempotence key is unchanged."""
+NO_FRAMES = "no readable frame in the night folder"
+"""The failure recorded for a night folder that holds nothing to reduce."""
 
 
 # ------------------------------------------------------------------------------ options
@@ -456,11 +469,24 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     if source == "arc_full":
         trace_params = trace_params.model_copy(update={"collapse": "percentile"})
         inputs = [frame.meta.checksum]
-    traceset = match_layout(
+    matched = match_layout(
         find_traces(frame.data, trace_params), group.layout, params.trace.layout_tolerance
     )
+    extras = [trace for trace in matched if trace.role is None]
+    traceset = layout_indexed(matched)
+    where = source.replace("_", " ")
     if len(traceset) == 0:
-        raise RuntimeError(f"no trace found on the {source.replace('_', ' ')}")
+        raise RuntimeError(
+            f"no trace of layout {group.preset} found on the {where} ({len(matched)} detected)"
+        )
+    if extras:
+        log.warning(
+            "%d detection(s) on the %s match no row of layout %s and are dropped: y = %s",
+            len(extras),
+            where,
+            group.preset,
+            ", ".join(f"{trace.y_center:.1f}" for trace in extras),
+        )
     path = group.out_dir / CALIB_FOLDER / products.product_name(frame.meta, "traces")
     prov = Provenance(
         pipeline_version=__version__,
@@ -468,10 +494,10 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         inputs=inputs,
         calibrations=flat_name,
         steps=[
-            f"traces from {source.replace('_', ' ')} ({len(traceset)} found, "
-            f"{len(traceset.missing)} missing, {len(traceset.extra)} extra) "
-            f"matched to layout {group.preset}"
+            f"traces from {where} ({len(matched)} detected, {len(traceset)} matched to layout "
+            f"{group.preset}, {len(traceset.missing)} missing, {len(extras)} extra dropped)"
         ],
+        layout=group.preset,
     )
     products.write_traceset(path, traceset, prov)
     group.summary.products.append(path)
@@ -481,11 +507,14 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         "trace",
         {
             "source": source,
+            "n_detected": len(matched),
             "n_traces": len(traceset),
             "layout": group.preset,
             "layout_shift": traceset.layout_shift,
             "missing": list(traceset.missing),
             "extra": list(traceset.extra),
+            "extra_y_center": [t.y_center for t in extras],
+            "extra_snr": [t.snr for t in extras],
             "index": [t.index for t in traceset],
             "y_center": [t.y_center for t in traceset],
             "rms": [t.rms for t in traceset],
@@ -500,12 +529,15 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         relative_throughput(flat_frame, traceset, params.extract.halfwidth) if flat_frame else {}
     )
     log.info(
-        "traces from the %s: %d found, shift %s px, missing %s, extra %s -> %s",
-        source.replace("_", " "),
+        "traces from the %s: %d of %d detections matched to layout %s, shift %s px, "
+        "missing %s, %d extra dropped -> %s",
+        where,
         len(traceset),
+        len(matched),
+        group.preset,
         "none" if traceset.layout_shift is None else f"{traceset.layout_shift:.2f}",
         list(traceset.missing),
-        list(traceset.extra),
+        len(extras),
         path.name,
     )
 
@@ -577,7 +609,12 @@ def _full_arc(group: _Group, ref: FrameRef) -> None:
         traceset=group.traces(),
     )
     solution = _solve_and_package(lines, effective, group.preset, previous, 0)
-    prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"])
+    prov = _provenance(
+        effective,
+        lines,
+        [f"wavecal seeded by reference {previous.identifier}"],
+        layout=group.preset,
+    )
     prov.reference_id = previous.identifier
     prov.reference_hash = previous.hash or None
     path = library.add_reference(solution, prov, effective.camera)
@@ -767,17 +804,36 @@ def _wavelengths(
     reference: ReferenceSolution | None,
     pairs: list[tuple[DriftModel, float]],
     n_pix: int,
-) -> tuple[str, dict[int, np.ndarray], DriftModel | None, dict[int, float] | None]:
-    """``(status, wavelength by fiber, drift model, weights)`` of a science frame."""
+) -> tuple[str, dict[int, np.ndarray], DriftModel | None, dict[int, float] | None, dict[int, str]]:
+    """``(status, wavelength by fiber, drift model, weights, skipped)`` of a science frame.
+
+    ``skipped`` maps the fibers that keep no wavelength to the reason (a trace centre
+    beyond ``trace.layout_tolerance`` from the reference solution's, see
+    :func:`~mastpipe.steps.drift.apply_drift`). ``ValueError`` when the reference was
+    solved on another pixel grid than the frame's ``n_pix`` columns.
+    """
     if reference is None:
         model = model_from_config(group.effective.geometry.model, group.geom, n_pix)
         lam = np.asarray(model.wavelength(np.arange(n_pix, dtype=float)), dtype=float)
-        return "nominal", {trace.index: lam.copy() for trace in group.traces()}, None, None
-    wavelengths = apply_drift(reference, pairs, group.traces(), group.geom)
+        return "nominal", {trace.index: lam.copy() for trace in group.traces()}, None, None, {}
+    grids = sorted({int(solution.n_pix) for solution in reference.solutions.values()})
+    if grids and grids != [int(n_pix)]:
+        raise ValueError(
+            f"reference {reference.identifier} is solved on {grids} pixels, the frame has "
+            f"{n_pix} columns: the reference belongs to another detector crop"
+        )
+    wavelengths, skipped = apply_drift(
+        reference,
+        pairs,
+        group.traces(),
+        group.geom,
+        tolerance=group.params.trace.layout_tolerance,
+        n_pix=n_pix,
+    )
     if not pairs:
-        return status_for(pairs), wavelengths, None, None
+        return status_for(pairs), wavelengths, None, None, skipped
     drift, weights = _blend_drifts(pairs)
-    return status_for(pairs), wavelengths, drift, weights
+    return status_for(pairs), wavelengths, drift, weights, skipped
 
 
 def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
@@ -795,6 +851,7 @@ def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
         prov.config_hash,
         prov.reference_id,
         tuple(sorted(prov.drift_arcs)),
+        prov.layout,
     )
     return key, prov.wavelength_status
 
@@ -811,6 +868,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         group.cfg_hash,
         None if reference is None else reference.identifier,
         tuple(drift_arcs),
+        group.preset,
     )
     path = group.spec_dir / products.product_name(meta, "spec")
     stored = _stored_key(path)
@@ -828,10 +886,21 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         f"extract {params.extract.aperture} aperture of halfwidth {params.extract.halfwidth:g} "
         f"({params.extract.method})"
     )
-    status, wavelengths, drift, weights = _wavelengths(group, reference, pairs, frame.shape[1])
+    status, wavelengths, drift, weights, skipped = _wavelengths(
+        group, reference, pairs, frame.shape[1]
+    )
     for spectrum in spectra:
         if spectrum.fiber in wavelengths:
             spectrum.wavelength = wavelengths[spectrum.fiber]
+    withheld = [
+        {"fiber": int(fiber), "reason": reason}
+        for fiber, reason in sorted(skipped.items())
+        if any(spectrum.fiber == fiber for spectrum in spectra)
+    ]
+    for item in withheld:
+        log.warning(
+            "%s: fiber %d is given no wavelength: %s", meta.source, item["fiber"], item["reason"]
+        )
     if reference is None:
         steps.append("wavelength nominal from the configuration geometry")
     elif drift is None:
@@ -840,6 +909,11 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         steps.append(
             f"wavelength transferred from reference {reference.identifier} through "
             f"{len(pairs)} drift arc(s) ({group.drift_params.time_policy})"
+        )
+    if withheld:
+        steps.append(
+            f"wavelength withheld from {len(withheld)} fiber(s) whose trace is off the "
+            "reference's centre"
         )
     spectra, sky_reasons = subtract_sky_all(spectra, traceset, group.throughput, params.sky)
     n_sky = sum(1 for spectrum in spectra if "skysub" in spectrum.versions)
@@ -867,6 +941,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         reference_hash=es.reference_hash,
         drift_arcs=list(drift_arcs),
         steps=steps,
+        layout=group.preset,
     )
     products.write_spectra(path, es, prov, drift=drift, weights=weights)
     group.summary.products.append(path)
@@ -886,6 +961,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
             "drift_arcs": list(drift_arcs),
             "drift_weights": _arc_weights(pairs, drift_arcs),
             "drift_scatter_px": None if drift is None else float(drift.scatter_px),
+            "wavelength_skipped": withheld,
             "fibers": [s.fiber for s in spectra],
             "roles": [s.role for s in spectra],
             "telescopes": [s.telescope for s in spectra],
@@ -972,7 +1048,6 @@ def _run_group(
     options: RunOptions,
     summary: RunSummary,
 ) -> None:
-    effective = build_effective(instrument, configuration, camera, options.overrides)
     presets = {ref.meta.fiber_preset for ref in refs if ref.meta.fiber_preset}
     if options.layout is not None:
         preset = options.layout
@@ -982,7 +1057,8 @@ def _run_group(
         preset = instrument.default_layout
         if presets:
             log.warning("frames carry presets %s; using the default %s", sorted(presets), preset)
-    layout = load_layout(effective.instrument, preset)
+    layout = load_layout(instrument.name, preset)
+    effective = build_effective(instrument, configuration, camera, options.overrides, layout=preset)
     by_type: dict[str, list[FrameRef]] = defaultdict(list)
     for ref in refs:
         by_type[ref.meta.exposure_type].append(ref)
@@ -1028,6 +1104,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
         raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
     if options.on_error not in ("continue", "raise"):
         raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
+    if not night_dir.is_dir():
+        raise FileNotFoundError(f"night folder {night_dir} is not a directory")
     out_dir.mkdir(parents=True, exist_ok=True)
     handlers, level = _start_logging(out_dir)
     summary = RunSummary()
@@ -1047,6 +1125,9 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             summary.failed.append((path.name, "unreadable FITS file"))
             log.error("unreadable FITS file skipped: %s", path.name)
         log.info("scanned %d frames in %s", len(refs), night_dir)
+        if not refs:
+            summary.failed.append((f"night {night_dir.name}", NO_FRAMES))
+            log.error("%s: %s", night_dir, NO_FRAMES)
         library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
         default_conf = options.configuration
         if default_conf is None and len(instrument.configurations) == 1:

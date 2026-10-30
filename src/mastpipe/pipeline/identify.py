@@ -71,7 +71,7 @@ from mastpipe.steps.calib import calibrate_frame, calibration_steps
 from mastpipe.steps.extract import continuum_subtract_all, extract_aperture
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.lines import find_lines
-from mastpipe.steps.trace import find_traces, match_layout, trace_source
+from mastpipe.steps.trace import find_traces, layout_indexed, match_layout, trace_source
 from mastpipe.steps.wavecal import build_reference, fiber_agreement, solve_full_arc
 from mastpipe.steps.wavemodel import anchor_model
 
@@ -180,8 +180,10 @@ def _arc_lines(
     serves the saturation mask alone, which the steps record and ``calibrations`` does not);
     without them the frame only gains its variance and mask. ``traceset`` is used as given
     (a runner's night traces); otherwise the traces are found on the flat master when there
-    is one and on the arc itself with ``collapse="percentile"`` when not, and matched to the
-    layout with ``params.trace.layout_tolerance``. Returns an :class:`ArcLines`; its
+    is one and on the arc itself with ``collapse="percentile"`` when not, matched to the
+    layout with ``params.trace.layout_tolerance`` and keyed by the layout's trace id
+    (:func:`~mastpipe.steps.trace.layout_indexed`: detections matching no layout row are
+    dropped, so ``traceset`` holds layout fibers only). Returns an :class:`ArcLines`; its
     ``calibrations`` are the masters that were applied (file names when read from
     ``out_dir/calib``, :func:`_master_name` when injected).
     """
@@ -245,11 +247,16 @@ def _arc_lines(
         if source == "arc_full":
             trace_params = trace_params.model_copy(update={"collapse": "percentile"})
         assert trace_frame is not None
-        traceset = find_traces(trace_frame.data, trace_params)
-        traceset = match_layout(traceset, layout, params.trace.layout_tolerance)
+        matched = match_layout(
+            find_traces(trace_frame.data, trace_params), layout, params.trace.layout_tolerance
+        )
+        traceset = layout_indexed(matched)
     if len(traceset) == 0:
         raise ValueError(f"{ref.meta.source}: no trace found on the {source.replace('_', ' ')}")
-    steps.append(f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing)")
+    dropped = f", {len(traceset.extra)} extra dropped" if traceset.extra else ""
+    steps.append(
+        f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing{dropped})"
+    )
 
     spectra = extract_aperture(arc, traceset, params.extract)
     spectra = continuum_subtract_all(spectra, params.extract)
@@ -333,7 +340,9 @@ def _write_candidates(path: Path, template: pd.DataFrame, measured: pd.DataFrame
 # ----------------------------------------------------------------------- the reference
 
 
-def _provenance(effective: EffectiveConfig, lines: ArcLines, steps: list[str]) -> Provenance:
+def _provenance(
+    effective: EffectiveConfig, lines: ArcLines, steps: list[str], layout: str | None = None
+) -> Provenance:
     return Provenance(
         pipeline_version=__version__,
         config_hash=config_hash(effective),
@@ -341,6 +350,7 @@ def _provenance(effective: EffectiveConfig, lines: ArcLines, steps: list[str]) -
         calibrations=list(lines.calibrations),
         wavelength_status="solved",
         steps=[*lines.steps, *steps],
+        layout=layout,
     )
 
 
@@ -416,8 +426,9 @@ def run_identify(
     ``layout`` is the fiber layout preset name (the table is loaded from the instrument
     definition; the name also selects the stored anchors and names the reference's
     preset). ``anchors`` are ``(wavelength nm, pixel)`` pairs measured on trace
-    ``anchor_trace``; when ``None`` the instrument's stored pairs for the configuration and
-    preset are used, and ``anchor_trace`` defaults to the trace they were measured on.
+    ``anchor_trace``, the layout's trace id of that fiber (``0`` by default); when ``None``
+    the instrument's stored pairs for the configuration and preset are used, and
+    ``anchor_trace`` defaults to the trace they were measured on.
 
     Without any anchors the two-panel figure is written to ``out_dir/anchor_panels.png``
     (template from the atlas in ``atlas_dir`` when given, else synthetic) and the
@@ -428,7 +439,7 @@ def run_identify(
     that folder's calibration library, with ``fiber_agreement.csv`` beside it
     (``write_reference=False`` skips the writing);
     returns ``(reference, reference path)``. ``ValueError`` when ``anchor_trace`` is not
-    among the traces or no fiber solves.
+    among the matched traces or no fiber solves.
     """
     full_arc = Path(full_arc)
     out_dir = Path(out_dir)
@@ -439,8 +450,12 @@ def run_identify(
             anchor_trace = load_anchor_trace(instrument, configuration, layout)
     trace = 0 if anchor_trace is None else int(anchor_trace)
     lines = _arc_lines(full_arc, effective, load_layout(instrument, layout), out_dir)
-    if not 0 <= trace < len(lines.traceset):
-        raise ValueError(f"anchor trace {trace} is not among the {len(lines.traceset)} traces")
+    positions = {int(t.index): k for k, t in enumerate(lines.traceset.traces)}
+    if trace not in positions:
+        raise ValueError(
+            f"anchor trace {trace} is not among the matched traces {sorted(positions)}"
+        )
+    at = positions[trace]
 
     if not anchors:
         wave, conv, usable = _template(effective, atlas_dir)
@@ -450,8 +465,8 @@ def run_identify(
             wave,
             conv,
             usable,
-            lines.fluxes[trace],
-            lines.tables[trace],
+            lines.fluxes[at],
+            lines.tables[at],
             effective.band_nm,
             flip_x=effective.geometry.dispersion_sign < 0,
             out=png,
@@ -463,7 +478,9 @@ def run_identify(
     start = anchor_model(list(anchors), geom, int(lines.frame.shape[1]))
     ref = _solve_and_package(lines, effective, layout, start, trace)
     pairs = ", ".join(f"{wl:.4f} nm at {px:.2f} px" for wl, px in anchors)
-    prov = _provenance(effective, lines, [f"wavecal from anchors on trace {trace}: {pairs}"])
+    prov = _provenance(
+        effective, lines, [f"wavecal from anchors on trace {trace}: {pairs}"], layout=layout
+    )
     return ref, _write_reference_product(out_dir, ref, prov, write_reference, effective.camera)
 
 
@@ -495,7 +512,9 @@ def run_solve(
         )
     lines = _arc_lines(full_arc, effective, load_layout(effective.instrument, layout), out_dir)
     ref = _solve_and_package(lines, effective, layout, previous, 0)
-    prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"])
+    prov = _provenance(
+        effective, lines, [f"wavecal seeded by reference {previous.identifier}"], layout=layout
+    )
     prov.reference_id = previous.identifier
     prov.reference_hash = previous.hash or None
     _write_reference_product(out_dir, ref, prov, True, effective.camera)
@@ -571,7 +590,9 @@ def register_identify(subparsers: argparse._SubParsersAction) -> None:
         help="use the anchor pairs stored with the instrument for this configuration and layout",
     )
     parser.add_argument(
-        "--trace", type=int, help="trace the anchors were measured on (default: the file's, else 0)"
+        "--trace",
+        type=int,
+        help="layout trace id the anchors were measured on (default: the file's, else 0)",
     )
     parser.add_argument(
         "--atlas-dir",
@@ -606,7 +627,7 @@ def identify_command(args: argparse.Namespace) -> int:
         camera = next(iter(instrument.cameras))
     layout = args.layout or instrument.default_layout
     overrides = [parse_override(text) for text in args.set]
-    effective = build_effective(instrument, args.configuration, camera, overrides)
+    effective = build_effective(instrument, args.configuration, camera, overrides, layout=layout)
 
     anchors: list[tuple[float, float]] | None = []
     trace = args.trace

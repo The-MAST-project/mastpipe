@@ -179,6 +179,46 @@ group.
   of the models holding that fiber in its `WEIGHT` column; the per-arc weights
   are in the science QC JSON (`drift_weights`, aligned with `drift_arcs`).
 
+## 2026-10-30 — Final fix wave of Plan 1
+
+- **Fibers are keyed by the layout's trace id, not by detection order**
+  (reverses the trace-index keying the trace step started with). `find_traces`
+  still numbers detections by position, but `layout_indexed` re-keys the
+  matched traces so that `Trace.index == layout_index` and drops the
+  detections that match no layout row; the runner and `identify` both use it,
+  so every per-fiber key downstream — `Spectrum.fiber`, the reference's
+  `solutions`, the drift model's `per_fiber`, the throughput table — names the
+  same physical fiber on every night. A fiber missing from one night's flat is
+  absent from its products instead of shifting every fiber above it onto its
+  neighbour's solution; an ambient-light detection (the lab flat shows two) is
+  dropped, logged and listed in the trace QC with its position. As a guard,
+  `apply_drift` withholds the wavelength of a fiber whose trace centre sits
+  farther than `trace.layout_tolerance` from the solution's `trace_y_center`
+  and the runner records it under `wavelength_skipped`; a reference solved on
+  another pixel grid is refused with a `ValueError` naming it. `solve_full_arc`
+  and `identify --trace` name fibers by that id as well.
+- **Header-map options `missing_values` and `reference`**: a keyword whose raw
+  or converted value is a listed sentinel (`TEMP = -999` on the Andor camera)
+  counts as absent, and a time field declares the instant it records
+  (`start`, `mid` or `end`; HighSpec's `DATE-OBS` / `DATE` is the start).
+  Ingest derives `mid_time` from the start (or end) and the exposure time;
+  without an exposure time the time is kept as given and `mid_time` is listed
+  as unresolved. The simulator writes `DATE-OBS` as the start, so the truth's
+  `mid_time` is reached the way the pipeline reaches it.
+- **Per-preset parameters** live in `config.yaml` under `layout_params`
+  (`preset -> partial StepParams`), layered by `build_effective(layout=...)`
+  between the grating block and the command-line overrides; `survey45` narrows
+  the trace, line and extraction halfwidths to 4 px for its 8.5 px pitch, and
+  its layout table fixes the extraction aperture at 4 px. The tests no longer
+  pass those values as overrides: the default path is what runs.
+- **A night folder is validated**: a path that is not a directory raises
+  `FileNotFoundError` before anything is written (the CLI exits 2), and a
+  folder without a readable frame records a night-level failure instead of
+  logging "scanned 0 frames" and exiting 0.
+- **The layout preset joins the idempotence key** of a science product and is
+  stored as `MPLAYOUT` in every product header: two layouts can share an
+  effective configuration (and hence a hash) and still name different fibers.
+
 ## 2026-10-30 — Rulings made during Plan 1 and recorded at its close
 
 - **`config_hash` covers the values of the effective configuration only**:

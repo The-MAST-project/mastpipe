@@ -73,5 +73,5 @@ known-first-party = ["mastpipe"]
 testpaths = ["tests"]
 filterwarnings = ["error"]
 markers = [
-    "slow: end-to-end runs on simulated nights (minutes); selected by default",
+    "slow: end-to-end runs on simulated nights and the laboratory regression (minutes); selected by default",
 ]

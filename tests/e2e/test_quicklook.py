@@ -1,7 +1,8 @@
 """End-to-end quick-look on the simulated night: nominal wavelengths without a reference,
 transferred wavelengths against the simulator truth once ``identify`` has made one, the
-reference-only night, idempotence with the re-reduce rule, the error policy, and the
-``quicklook`` / ``solve`` / ``show`` commands.
+reference-only night, idempotence with the re-reduce rule, fibers keyed by layout id when
+a fiber is missing or an extra detection appears, the error policy, and the ``quicklook``
+/ ``solve`` / ``show`` commands.
 
 The runs are slow (line finding on every arc), so one module-scoped output folder carries
 the nominal run, the reference made by ``run_identify`` and the transferred run, and the
@@ -9,6 +10,7 @@ tests share them read-only.
 """
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,38 +32,35 @@ from mastpipe.io.products import (
 )
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import run_identify
-from mastpipe.pipeline.runner import RunOptions, RunSummary, run_quicklook
-from mastpipe.sim.simulator import simulate_night, undrift_x
+from mastpipe.pipeline.runner import NO_FRAMES, RunOptions, RunSummary, run_quicklook
+from mastpipe.sim.simulator import BIAS_LEVEL_ADU, simulate_night, undrift_x
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.combine import group_by_target
 from mastpipe.steps.geometry import grating_geometry
+from mastpipe.steps.wavecal import build_reference
 from mastpipe.steps.wavemodel import GratingModel
 
 pytestmark = pytest.mark.slow
 
 ANCHOR_LOG_INTENSITY = 2.0
 MAX_MAP_ERROR_DISP = 0.3
-SURVEY_OVERRIDES = {
-    "trace": {"trace_halfwidth": 4},
-    "extract": {"halfwidth": 4},
-    "lines": {"halfwidth": 4},
-}
-"""The 45-trace survey layout has an 8.5 px pitch; the HighSpec defaults span the
-neighbours, so the survey runs narrow the three halfwidths (as the identify tests do)."""
-SURVEY_SET = ["trace.trace_halfwidth=4", "extract.halfwidth=4", "lines.halfwidth=4"]
-"""The same overrides as ``--set`` arguments, so the command line hashes the same config."""
 SHORT_AGE = {"drift": {"max_age_hours": 0.3}}
 """An age limit of 18 minutes: a copied arc pairs with the science frames next to it only."""
 N_SCIENCE = 4
+DROPPED_FIBER = 16
+"""The survey fiber (a science fiber of T08) whose light the missing-fiber night lacks."""
+DARK_ROWS = 4
+"""Rows on either side of the dropped trace set to the bias level in the flats."""
+EXTRA_ROW = 100.0
+"""Cropped row of the spurious ridge added between fibers 0 and 1 of the lab3 night."""
 
 
 # ------------------------------------------------------------------------------- helpers
 
 
 def options(*extra_overrides: dict, **kwargs) -> RunOptions:
-    return RunOptions(
-        instrument="highspec", overrides=[SURVEY_OVERRIDES, *extra_overrides], **kwargs
-    )
+    """The survey night runs on the instrument's own per-preset parameters: nothing to set."""
+    return RunOptions(instrument="highspec", overrides=list(extra_overrides), **kwargs)
 
 
 def truth_anchors(truth, cat_wl) -> list[tuple[float, float]]:
@@ -102,7 +101,7 @@ def map_error_in_dispersions(lam: np.ndarray, night, shift: float, stretch: floa
 @pytest.fixture(scope="module")
 def night(sim_night, mgb518_lines) -> SimpleNamespace:
     night_dir, truth = sim_night
-    effective = build_effective(load_instrument("highspec"), "mgb518", "main", [SURVEY_OVERRIDES])
+    effective = build_effective(load_instrument("highspec"), "mgb518", "main", layout="survey45")
     geom = grating_geometry(effective.geometry, effective.detector.pixel_size_um)
     n_pix = truth.extras["n_pix"]
     cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
@@ -377,6 +376,150 @@ def test_quicklook_interpolate_blends_the_two_arcs(
     assert between == 2
 
 
+# ------------------------------------------------------------------ fibers keyed by layout
+
+
+def copy_frames(night_dir: Path, truth, folder: Path, types: list[str], arc_kinds=()) -> None:
+    frames = truth.frames
+    keep = frames["exposure_type"].isin(types) | frames["arc_kind"].isin(list(arc_kinds))
+    for name in frames.loc[keep, "file"]:
+        shutil.copy(night_dir / name, folder / name)
+
+
+def edit_flats(folder: Path, truth, change) -> None:
+    """Apply ``change(data, x_min, y_min)`` in place to every raw flat of the copied night."""
+    x_min, _, y_min, _ = truth.crop
+    for name in truth.frames.loc[truth.frames["exposure_type"] == "flat", "file"]:
+        with fits.open(folder / name, mode="update") as hdul:
+            change(hdul[0].data, x_min, y_min)
+
+
+def layout_rows(truth) -> dict[int, tuple[str, str | None]]:
+    """Layout trace id -> ``(role, telescope)`` of the simulated night."""
+    rows = {}
+    for _, row in truth.layout.iterrows():
+        telescope = row["telescope"]
+        if telescope is None or (isinstance(telescope, float) and np.isnan(telescope)):
+            telescope = None
+        rows[int(row["trace"])] = (str(row["role"]), telescope)
+    return rows
+
+
+def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
+    tmp_path, transferred_run, identified, night, out_dir
+):
+    """A night whose flat lacks one fiber's light, reduced against the reference of the
+    complete night: the traces are keyed by the layout's trace id, so every other fiber
+    keeps its own solution (wavelengths match the truth) and the missing fiber is simply
+    absent from the products, with nothing shifted or skipped."""
+    truth = night.truth
+    folder = tmp_path / "night"
+    folder.mkdir()
+    copy_frames(
+        night.dir, truth, folder, ["bias", "dark", "flat", "background", "science"], ["calfiber"]
+    )
+    coeffs = truth.trace_coeffs[DROPPED_FIBER]
+    x = np.arange(int(truth.extras["n_pix"]))
+
+    def darken(data, x_min, y_min):
+        rows = np.rint(np.polyval(coeffs, x)).astype(int) + y_min
+        for offset in range(-DARK_ROWS, DARK_ROWS + 1):
+            data[rows + offset, x + x_min] = BIAS_LEVEL_ADU
+
+    edit_flats(folder, truth, darken)
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options(library=out_dir / "calib"))
+    assert summary.failed == []
+
+    trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
+    assert trace_qc.values["missing"] == [DROPPED_FIBER]
+    assert trace_qc.values["n_traces"] == len(truth.layout) - 1
+    assert DROPPED_FIBER not in trace_qc.values["index"]
+    assert trace_qc.values["extra"] == [] and trace_qc.values["extra_y_center"] == []
+    expected = set(truth.layout["trace"].astype(int)) - {DROPPED_FIBER}
+    rows = layout_rows(truth)
+    products = spec_products(out)
+    assert len(products) == N_SCIENCE
+    for path in products:
+        es, prov, drift = read_spectra(path)
+        assert es.wavelength_status == "transferred" and drift is not None
+        assert prov.reference_id == identified.ref.identifier and prov.layout == "survey45"
+        assert {s.fiber for s in es.spectra} == expected
+        row = truth.frames.loc[truth.frames["file"] == es.meta.source].iloc[0]
+        shift, stretch = float(row["shift_px"]), float(row["stretch"])
+        for spectrum in es.spectra:
+            assert (spectrum.role, spectrum.telescope) == rows[spectrum.fiber]
+            assert spectrum.wavelength is not None
+            error = map_error_in_dispersions(spectrum.wavelength, night, shift, stretch)
+            assert error < MAX_MAP_ERROR_DISP, (es.meta.source, spectrum.fiber, error)
+        qc = read_qc(out / "qa" / path.with_suffix(".json").name)
+        assert qc.values["wavelength_skipped"] == []
+        assert DROPPED_FIBER not in qc.values["fibers"]
+        # the dropped science fiber's telescope keeps its sky fiber, which has nothing to serve
+        assert qc.values["sky"] == []
+
+
+def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3):
+    """A bright ridge between two fibers of the three-fiber night is detected on the flat
+    but matches no layout row: it is dropped from the traces and the products, logged, and
+    listed in the trace QC with its position."""
+    night_dir, truth = sim_night_lab3
+    folder = tmp_path / "night"
+    folder.mkdir()
+    copy_frames(night_dir, truth, folder, ["bias", "dark", "flat", "background", "science"])
+    sigma = truth.fwhm_px / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+
+    def ridge(data, x_min, y_min):
+        rows = np.arange(-5, 6)
+        profile = 15000.0 * np.exp(-0.5 * (rows / sigma) ** 2)
+        centre = int(round(EXTRA_ROW)) + y_min
+        data[centre - 5 : centre + 6, x_min : data.shape[1] - x_min] += profile[:, None].astype(
+            data.dtype
+        )
+
+    edit_flats(folder, truth, ridge)
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, RunOptions("highspec"))
+    assert summary.failed == []
+    trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
+    assert trace_qc.values["layout"] == "lab3"
+    assert trace_qc.values["n_detected"] == 4 and trace_qc.values["n_traces"] == 3
+    assert trace_qc.values["index"] == [0, 1, 2] and trace_qc.values["missing"] == []
+    assert len(trace_qc.values["extra"]) == 1
+    assert trace_qc.values["extra_y_center"] == [pytest.approx(EXTRA_ROW, abs=1.0)]
+    assert len(trace_qc.values["extra_snr"]) == 1
+    for path in spec_products(out):
+        es, prov, _ = read_spectra(path)
+        assert [s.fiber for s in es.spectra] == [0, 1, 2] and prov.layout == "lab3"
+    log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
+    assert "match no row of layout lab3" in log and f"y = {EXTRA_ROW:.1f}" in log
+
+
+def test_reference_on_another_pixel_grid_is_refused(
+    tmp_path, night, survey_layout, mgb518_lines, identified
+):
+    """A reference solved on another detector crop names itself and the frame width in the
+    recorded failure instead of breaking inside the product writer."""
+    folder = no_cal_night(tmp_path, night, survey_layout, mgb518_lines, identified)
+    ref = identified.ref
+    narrow = build_reference(
+        ref.instrument,
+        ref.configuration,
+        ref.fiber_preset,
+        {fiber: replace(s, n_pix=1000) for fiber, s in ref.solutions.items()},
+        "2026-10-01T17:00:00",
+        ref.source_checksums,
+    )
+    CalibLibrary(tmp_path / "out" / "calib").add_reference(narrow, identified.prov, "main")
+    summary = run_quicklook(folder, tmp_path / "out", options(reference_id=narrow.identifier))
+    assert len(summary.failed) == N_SCIENCE
+    for source, reason in summary.failed:
+        assert source.startswith("sim_science_")
+        assert "ValueError" in reason and narrow.identifier in reason
+        assert "1000" in reason and str(night.n_pix) in reason
+    assert spec_products(tmp_path / "out") == []
+
+
 # ------------------------------------------------------------------------ error policy
 
 
@@ -384,6 +527,29 @@ def write_frame(path: Path, data: np.ndarray, **cards) -> None:
     hdu = fits.PrimaryHDU(data)
     hdu.header.update(cards)
     hdu.writeto(path, overwrite=True)
+
+
+def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
+    nowhere = tmp_path / "nowhere"
+    with pytest.raises(FileNotFoundError, match="nowhere"):
+        run_quicklook(nowhere, tmp_path / "out", RunOptions("highspec"))
+    assert not (tmp_path / "out").exists()  # nothing is written for a mistyped path
+    argv = ["quicklook", str(nowhere), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main(argv) == 2
+    assert "nowhere" in capsys.readouterr().out
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
+    assert summary.products == [] and summary.skipped == []
+    assert summary.failed == [("night empty", NO_FRAMES)]
+    argv = ["quicklook", str(empty), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main(argv) == 2
+    assert NO_FRAMES in capsys.readouterr().out
+    # a folder whose only file cannot be read is as empty
+    (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
+    assert [source for source, _ in summary.failed] == ["junk.fits", "night empty"]
 
 
 def test_unknown_frames_are_skipped_with_reason(tmp_path):
@@ -457,8 +623,9 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     assert set(failed) == {"sim_science_bad.fits", "sim_science_garbage.fits"}
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
     assert produced == set(good)
+    # the stub frame's product (its 300 s start at 23:00 gives a mid-time of 23:02:30)
     assert not (
-        tmp_path / "out" / "spec" / "highspec_mgb518_main_20261001T230000_spec.fits"
+        tmp_path / "out" / "spec" / "highspec_mgb518_main_20261001T230230_spec.fits"
     ).exists()
 
     with pytest.raises(ValueError, match="shape"):
@@ -470,12 +637,11 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
 
 def test_cli_quicklook_and_show(transferred_run, identified, night, out_dir, capsys):
     argv = ["quicklook", str(night.dir), "--out", str(out_dir), "--instrument", "highspec"]
-    for item in SURVEY_SET:
-        argv += ["--set", item]
     assert main(argv) == 0
     out = capsys.readouterr().out
     assert "skipped" in out and "0 failed" in out
-    # the command line hashes the same configuration: everything is already reduced
+    # the command line reaches the same configuration (the frames' preset picks the survey
+    # parameters) and the same layout: everything is already reduced
     assert len(spec_products(out_dir)) == N_SCIENCE
     assert "already reduced" in out
 

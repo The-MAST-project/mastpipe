@@ -88,7 +88,8 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
 
 
 def quicklook_command(args: argparse.Namespace) -> int:
-    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed."""
+    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed or the
+    night folder does not exist."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -102,7 +103,11 @@ def quicklook_command(args: argparse.Namespace) -> int:
         time_policy=args.time_policy,
         library=args.library,
     )
-    summary = run_quicklook(args.night_dir, args.out, options)
+    try:
+        summary = run_quicklook(args.night_dir, args.out, options)
+    except FileNotFoundError as error:
+        print(f"FAILED: {error}")
+        return 2
     print(
         f"{len(summary.products)} products, {len(summary.qc)} QC files, "
         f"{len(summary.skipped)} skipped, {len(summary.reduced_again)} reduced again, "
@@ -147,7 +152,7 @@ def solve_command(args: argparse.Namespace) -> int:
     camera = _resolve_camera(instrument, args.camera)
     layout = args.layout or instrument.default_layout
     overrides = [parse_override(text) for text in args.set]
-    effective = build_effective(instrument, args.configuration, camera, overrides)
+    effective = build_effective(instrument, args.configuration, camera, overrides, layout=layout)
     root = Path(args.library) if args.library is not None else Path(args.out) / CALIB_FOLDER
     library = CalibLibrary(root)
     keys = (effective.instrument, effective.configuration, layout)

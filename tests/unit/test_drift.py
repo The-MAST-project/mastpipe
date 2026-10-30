@@ -3,6 +3,7 @@ the fit on a simulated calibration-fiber arc against the simulator's drift law, 
 transfer of that drift to the science fibers against the science frame's truth, and the
 degenerate cases of the across-detector model."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,6 +18,7 @@ from mastpipe.core.model import (
     Frame,
     FrameMeta,
     ReferenceSolution,
+    TraceSet,
     WavelengthSolution,
 )
 from mastpipe.instruments.registry import load_header_map
@@ -286,8 +288,10 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     n_pix = sim_full_arc.n_pix
     truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
 
-    wavelengths = apply_drift(reference, [(drift, 1.0)], sim_full_arc.traces, geom)
-    assert set(wavelengths) == set(reference.solutions)
+    wavelengths, skipped = apply_drift(
+        reference, [(drift, 1.0)], sim_full_arc.traces, geom, tolerance=3.0, n_pix=n_pix
+    )
+    assert set(wavelengths) == set(reference.solutions) and skipped == {}
     x = np.arange(n_pix, dtype=float)
     lam_true = truth_model.wavelength(undrift_x(x, shift, stretch, n_pix))
     dispersion = truth_model.dispersion(x)
@@ -302,7 +306,7 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
         assert np.all(np.abs(lam_at_dips - dips) / np.interp(x_dips, x, dispersion) < 0.3)
 
     # no drift at all is the reference map itself
-    plain = apply_drift(reference, [], sim_full_arc.traces, geom)
+    plain, _ = apply_drift(reference, [], sim_full_arc.traces, geom)
     for fiber, solution in reference.solutions.items():
         assert np.allclose(plain[fiber], model_from_solution(solution, geom).wavelength(x))
     # the transfer undoes the drift: the reference map evaluated at the undrifted column
@@ -314,5 +318,30 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     )
     assert np.allclose(wavelengths[fiber], expected)
     # weights combine linearly
-    halves = apply_drift(reference, [(drift, 0.5), (drift, 0.5)], sim_full_arc.traces, geom)
+    halves, _ = apply_drift(reference, [(drift, 0.5), (drift, 0.5)], sim_full_arc.traces, geom)
     assert np.allclose(halves[fiber], wavelengths[fiber])
+
+
+def test_apply_drift_skips_a_fiber_whose_trace_moved_and_checks_the_grid(reference, sim_full_arc):
+    """A trace centre far from the reference's ``trace_y_center`` (a fiber keyed to the
+    wrong solution) is not transferred but reported; a reference on another pixel grid
+    is refused outright."""
+    geom = sim_full_arc.geom
+    traces = sim_full_arc.traces
+    moved = next(iter(reference.solutions))
+    shifted = TraceSet(
+        traces=[replace(t, y_center=t.y_center + 5.0) if t.index == moved else t for t in traces],
+        shape=traces.shape,
+    )
+    wavelengths, skipped = apply_drift(reference, [], shifted, geom, tolerance=3.0)
+    assert moved not in wavelengths and set(wavelengths) == set(reference.solutions) - {moved}
+    assert list(skipped) == [moved]
+    assert "5.0" in skipped[moved] and "3.0" in skipped[moved]
+    # within the tolerance, or without one, the fiber is transferred
+    assert moved in apply_drift(reference, [], shifted, geom, tolerance=6.0)[0]
+    assert moved in apply_drift(reference, [], shifted, geom)[0]
+    # a fiber the reference solves but the night did not trace is still mapped (unused)
+    fewer = TraceSet(traces=[t for t in traces if t.index != moved], shape=traces.shape)
+    assert moved in apply_drift(reference, [], fewer, geom, tolerance=3.0)[0]
+    with pytest.raises(ValueError, match=f"{reference.identifier}.*{sim_full_arc.n_pix}.*1000"):
+        apply_drift(reference, [], traces, geom, n_pix=1000)

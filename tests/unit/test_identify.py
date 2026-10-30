@@ -38,13 +38,6 @@ from mastpipe.steps.wavemodel import GratingModel
 MIN_SOLVED = 43
 MAX_MAP_ERROR_DISP = 0.3
 ANCHOR_LOG_INTENSITY = 2.0
-SURVEY_OVERRIDES = {
-    "trace": {"trace_halfwidth": 4},
-    "extract": {"halfwidth": 4},
-    "lines": {"halfwidth": 4},
-}
-"""The 45-trace survey layout has an 8.5 px pitch; the HighSpec defaults (8, 9, 9) span
-the neighbours, so the survey tests narrow the three halfwidths."""
 
 
 # ------------------------------------------------------------------------------- fixtures
@@ -52,7 +45,9 @@ the neighbours, so the survey tests narrow the three halfwidths."""
 
 @pytest.fixture(scope="module")
 def survey_effective():
-    return build_effective(load_instrument("highspec"), "mgb518", "main", [SURVEY_OVERRIDES])
+    """The HighSpec configuration with the ``survey45`` preset's parameters (the 8.5 px
+    pitch narrows the three halfwidths to 4 px)."""
+    return build_effective(load_instrument("highspec"), "mgb518", "main", layout="survey45")
 
 
 @pytest.fixture(scope="module")

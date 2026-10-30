@@ -4,14 +4,18 @@ A header map is the ``header_map.yaml`` of an instrument, interpreted here. It h
 sections:
 
 ``fields``
-    pipeline name -> ``{keys, type, lower, map, default, filename_regex}``. ``keys`` are
-    raw keywords tried in order (the first present wins); the value is then converted to
-    ``type`` (``float``, ``int`` or ``str``), lower-cased when ``lower`` is true and
-    translated through ``map`` (an unmapped value is left as is). When no keyword is
-    present ``filename_regex`` is searched in the file name (its ``value`` group is the
-    value, transformed the same way), and ``default`` is used when that fails too. A field
-    that still has no value is *unresolved*: ``None`` in the result and listed by name. A
-    value that cannot be converted counts as unresolved as well.
+    pipeline name -> ``{keys, type, lower, map, default, filename_regex, missing_values,
+    reference}``. ``keys`` are raw keywords tried in order (the first present wins); the
+    value is then converted to ``type`` (``float``, ``int`` or ``str``), lower-cased when
+    ``lower`` is true and translated through ``map`` (an unmapped value is left as is). A
+    keyword whose raw or converted value is listed in ``missing_values`` (a sentinel such
+    as the ``-999`` of an unread sensor) counts as absent and the next keyword is tried.
+    When no keyword is present ``filename_regex`` is searched in the file name (its
+    ``value`` group is the value, transformed the same way), and ``default`` is used when
+    that fails too. A field that still has no value is *unresolved*: ``None`` in the result
+    and listed by name. A value that cannot be converted counts as unresolved as well.
+    ``reference`` (``start``, ``mid`` or ``end``; default ``start``) says which instant of
+    the exposure a time field records; ingest derives the mid-time from it.
 
 ``classification``
     an ordered list of rules ``{when: {<field>: {lt: v} | {eq: v} | {missing: true}}, type}``
@@ -33,8 +37,19 @@ from astropy.io.fits.card import Undefined
 from mastpipe.core.model import EXPOSURE_TYPES
 
 TYPES: dict[str, type] = {"float": float, "int": int, "str": str}
-FIELD_OPTIONS = ("keys", "type", "lower", "map", "default", "filename_regex")
+FIELD_OPTIONS = (
+    "keys",
+    "type",
+    "lower",
+    "map",
+    "default",
+    "filename_regex",
+    "missing_values",
+    "reference",
+)
 OPERATORS = ("lt", "eq", "missing")
+TIME_REFERENCES = ("start", "mid", "end")
+"""Which instant of the exposure a time field records (the ``reference`` option)."""
 UNCLASSIFIED = "unknown"
 
 _NO_DEFAULT = object()
@@ -51,10 +66,19 @@ class FieldSpec:
     map: Mapping[Any, Any] | None = None
     default: Any = _NO_DEFAULT
     filename_regex: re.Pattern[str] | None = None
+    missing_values: tuple[Any, ...] = ()
+    reference: str = "start"
 
     @property
     def has_default(self) -> bool:
         return self.default is not _NO_DEFAULT
+
+    def is_missing(self, value: Any) -> bool:
+        """Whether ``value`` is one of the field's ``missing_values`` sentinels."""
+        try:
+            return any(value == sentinel for sentinel in self.missing_values)
+        except (TypeError, ValueError):  # incomparable value: not a sentinel
+            return False
 
     def transform(self, value: Any) -> Any:
         """Apply ``type``, ``lower`` and ``map`` in that order; ``ValueError`` when the
@@ -85,6 +109,10 @@ class Rule:
         return all(_holds(fields.get(name), op, value) for name, op, value in self.conditions)
 
 
+def _numeric(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def _holds(actual: Any, op: str, expected: Any) -> bool:
     if op == "missing":
         return (actual is None) == bool(expected)
@@ -92,7 +120,10 @@ def _holds(actual: Any, op: str, expected: Any) -> bool:
         return False
     if op == "eq":
         return actual == expected
-    return actual < expected  # "lt"
+    # "lt": an untyped string (or anything else that is not a number) never matches
+    if not _numeric(actual) or not _numeric(expected):
+        return False
+    return actual < expected
 
 
 def _present(value: Any) -> bool:
@@ -169,6 +200,15 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
     mapping = spec.get("map")
     if mapping is not None and not isinstance(mapping, Mapping):
         raise ValueError(f"header map field {name!r}: map must be a mapping")
+    missing = spec.get("missing_values") or ()
+    if isinstance(missing, str) or not isinstance(missing, list | tuple):
+        raise ValueError(f"header map field {name!r}: missing_values must be a list")
+    reference = spec.get("reference", "start")
+    if reference not in TIME_REFERENCES:
+        raise ValueError(
+            f"header map field {name!r}: reference must be one of {TIME_REFERENCES}, "
+            f"got {reference!r}"
+        )
     return FieldSpec(
         name=name,
         keys=keys,
@@ -177,6 +217,8 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         map=dict(mapping) if mapping is not None else None,
         default=spec["default"] if "default" in spec else _NO_DEFAULT,
         filename_regex=regex,
+        missing_values=tuple(missing),
+        reference=str(reference),
     )
 
 
@@ -212,8 +254,12 @@ def _resolve_field(spec: FieldSpec, header: Mapping[str, Any], filename: str) ->
     for key in spec.keys:
         if key in header:
             value = header[key]
-            if _present(value):
-                return _convert(spec, value)
+            if not _present(value) or spec.is_missing(value):
+                continue
+            converted = _convert(spec, value)
+            if converted is not None and spec.is_missing(converted):
+                continue
+            return converted
     if spec.filename_regex is not None:
         match = spec.filename_regex.search(filename)
         if match is not None:
