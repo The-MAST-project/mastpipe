@@ -124,3 +124,22 @@ group.
   `collapse="percentile"`, which recovers all 45 simulated survey traces within
   0.2 px at the detector centre. The detection threshold and the centroid
   threshold use the chosen statistic's own standard error.
+
+## 2026-10-30 — `identify` command
+
+- **The anchor panels rank template lines by their height in the convolved
+  template**, not by an `snr` column of the usable-line table: the panels take
+  either the atlas (`flag_usable_lines` output) or the shipped line table (no
+  `snr`) as the template, and the height at the catalogue wavelength is what
+  the eye matches on the figure in both cases. The measured panel keeps the
+  notebook's `height` ranking.
+- **`run_identify` / `run_solve` take the layout preset name**, not the layout
+  table: the name selects the stored anchors and is the reference's
+  `fiber_preset`; the shared `_arc_lines` chain, which the runner reuses, takes
+  the table. The anchors file carries the trace its pairs were measured on
+  (`trace:`), read by `load_anchor_trace`, so a command without `--trace` uses it.
+- **Masters are picked up from `out/calib` by kind** (`*_bias.fits`,
+  `*_background.fits`, `*_flat.fits`, the latest of each by name); a dark
+  master is not used by `identify`, and without masters the frame is only
+  given its variance and mask. The measured panel is mirrored when the
+  configuration's `dispersion_sign` is negative.

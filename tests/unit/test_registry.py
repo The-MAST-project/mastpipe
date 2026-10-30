@@ -11,6 +11,7 @@ from mastpipe.instruments.registry import (
     LINE_TABLE_COLUMNS,
     instrument_dir,
     list_instruments,
+    load_anchor_trace,
     load_anchors,
     load_header_map,
     load_instrument,
@@ -115,3 +116,8 @@ def test_extra_grating_file_is_picked_up(tmp_path, monkeypatch):
     inst = registry.load_instrument("highspec")
     assert set(inst.configurations) >= {"mgb518", "halpha"}
     assert inst.configurations["halpha"].geometry.central_wavelength_nm == pytest.approx(656.3)
+
+
+def test_anchor_trace_loads_with_default():
+    assert load_anchor_trace("highspec", "mgb518", "lab3") == 0
+    assert load_anchor_trace("highspec", "mgb518", "survey45") == 0  # no file: default

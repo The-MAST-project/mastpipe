@@ -11,12 +11,13 @@ import argparse
 from collections.abc import Callable, Sequence
 
 from mastpipe.__version__ import __version__
+from mastpipe.pipeline.identify import register_identify
 
 CommandRegistrar = Callable[[argparse._SubParsersAction], None]
 """Adds one sub-parser to the sub-parsers action and sets its ``func`` default,
 a callable taking the parsed ``argparse.Namespace`` and returning the exit code."""
 
-COMMANDS: list[CommandRegistrar] = []
+COMMANDS: list[CommandRegistrar] = [register_identify]
 """Registrars applied, in order, by :func:`build_parser`."""
 
 

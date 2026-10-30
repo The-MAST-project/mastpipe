@@ -122,13 +122,18 @@ def load_line_table(name: str, configuration: str) -> pd.DataFrame:
     return table.sort_values("wavelength_nm", kind="stable").reset_index(drop=True)
 
 
+def _anchors_path(name: str, configuration: str, preset: str) -> Path:
+    return instrument_dir(name) / "anchors" / f"{configuration}_{preset}.yaml"
+
+
 def load_anchors(name: str, configuration: str, preset: str) -> list[tuple[float, float]]:
     """Stored ``(wavelength nm, pixel)`` anchor pairs for a configuration and layout preset.
 
     Read from ``anchors/<configuration>_<preset>.yaml``; an empty list when the file does
-    not exist. Pixels are in the cropped frame of the layout.
+    not exist. Pixels are in the cropped frame of the layout, measured on the trace that
+    :func:`load_anchor_trace` names.
     """
-    path = instrument_dir(name) / "anchors" / f"{configuration}_{preset}.yaml"
+    path = _anchors_path(name, configuration, preset)
     if not path.is_file():
         return []
     data = load_yaml(path)
@@ -139,3 +144,15 @@ def load_anchors(name: str, configuration: str, preset: str) -> list[tuple[float
             raise ValueError(f"{path.name}: each anchor pair must be [wavelength_nm, pixel]")
         anchors.append((float(pair[0]), float(pair[1])))
     return anchors
+
+
+def load_anchor_trace(name: str, configuration: str, preset: str) -> int:
+    """The trace index the stored anchor pairs were measured on (the file's ``trace:``).
+
+    ``0`` when the anchors file does not exist or does not name a trace.
+    """
+    path = _anchors_path(name, configuration, preset)
+    if not path.is_file():
+        return 0
+    trace = load_yaml(path).get("trace")
+    return 0 if trace is None else int(trace)

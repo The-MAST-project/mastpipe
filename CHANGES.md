@@ -87,3 +87,11 @@
   solutions (`SOLUTIONS`, `LINES`; hash and geometry checked on read) and combined spectra
   (`COMBINED`, `CONTRIB`, `EXCLUDED`, barycentric as `MPBCKnn`/`MPBCVnn`); `write_qc`/`read_qc`
   JSON. No raw instrument keyword reaches a product header.
+- `identify` and `solve` (`mastpipe.pipeline.identify`, `mastpipe.io.qa`, the `mastpipe identify`
+  command): one shared frame-to-lines chain (masters from `out/calib` when present, traces from
+  the flat master or the arc itself), the notebook's two-panel anchor figure with numbered
+  candidates (`anchor_panels.png`, `anchor_candidates.csv`; atlas template with `--atlas-dir`,
+  synthetic otherwise), `run_identify` solving every fiber from anchor pairs (given, from a YAML
+  file, or stored with the instrument, whose `trace:` is read by `load_anchor_trace`) and
+  writing the reference product with `fiber_agreement.csv`, and `run_solve` seeded by a previous
+  reference. matplotlib runs on the `Agg` backend.
