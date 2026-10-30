@@ -170,3 +170,12 @@ group.
 - **A night without a bias master** (in the night or the library) is a
   group-level failure rather than a silent reduction without bias
   subtraction; the other masters are optional.
+- **A drift model is tied to the reference it was fitted against**: the runner
+  keeps the reference identifier with every drift model and pairs a frame only
+  with the arcs fitted against its own reference. A full arc solved mid-night
+  starts a new reference; under `nearest` or `interpolate` an arc fitted against
+  it could otherwise be applied to a frame still using the earlier one. The
+  blended model of `interpolate` carries per fiber the summed normalised weight
+  of the models holding that fiber in its `WEIGHT` column; the per-arc weights
+  are in the science QC JSON (`drift_weights`, aligned with `drift_arcs`).
+

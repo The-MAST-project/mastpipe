@@ -19,7 +19,9 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
    and preset and added to the library (skipped with "run identify" when there is none,
    and skipped when the library already holds a reference solved from that very frame);
    a **calibration-fiber arc** is taken to its lines on the arc fibers and fitted for its
-   drift against the reference valid at its time, kept in memory and written as a QC file;
+   drift against the reference valid at its time, kept in memory (tagged with that
+   reference, so that only arcs fitted against a frame's own reference are ever paired
+   with it) and written as a QC file;
 4. **science frames** — calibrated with cosmic rays flagged, extracted, given wavelengths
    by the time policy (``transferred`` through the paired drift arcs, ``reference`` from
    the reference alone, ``nominal`` from the configuration's geometry when there is no
@@ -175,7 +177,8 @@ class _Group:
     traceset: TraceSet | None = None
     traces_path: Path | None = None
     throughput: dict[int, float] = field(default_factory=dict)
-    arcs: list[tuple[FrameMeta, DriftModel]] = field(default_factory=list)
+    arcs: list[tuple[FrameMeta, DriftModel, str]] = field(default_factory=list)
+    """The night's drift models with the identifier of the reference each was fitted against."""
 
     @property
     def params(self) -> StepParams:
@@ -645,7 +648,7 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
             worst,
             group.drift_params.warn_shift_px,
         )
-    group.arcs.append((meta, drift))
+    group.arcs.append((meta, drift, reference.identifier))
     _write_qc(
         group,
         products.product_name(meta, "drift", ".json"),
@@ -674,13 +677,35 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
 # ------------------------------------------------------------------------------ science
 
 
+def _arcs_for(
+    arcs: list[tuple[FrameMeta, DriftModel, str]], reference: ReferenceSolution
+) -> list[tuple[FrameMeta, DriftModel]]:
+    """The drift models fitted against ``reference``: a shift measured against another
+    reference (a full arc solved mid-night) must never be applied to this one's map."""
+    return [(meta, drift) for meta, drift, identifier in arcs if identifier == reference.identifier]
+
+
+def _arc_weights(pairs: list[tuple[DriftModel, float]], checksums: list[str]) -> list[float]:
+    """The pairing weight of every checksum of ``checksums`` (the arcs' union), for QC."""
+    weights = {c: 0.0 for c in checksums}
+    for model, weight in pairs:
+        for checksum in model.arc_checksums:
+            weights[checksum] = weights.get(checksum, 0.0) + float(weight)
+    return [weights[c] for c in checksums]
+
+
 def _blend_drifts(
     pairs: list[tuple[DriftModel, float]],
 ) -> tuple[DriftModel, dict[int, float] | None]:
     """One :class:`~mastpipe.core.model.DriftModel` for the product: the model itself for a
-    single arc; for several, the weighted blend of their polynomials and per-fiber values,
-    the union of their checksums and the weighted mid-time, with every fiber's weight (the
-    summed weight of the models holding it) returned for the ``WEIGHT`` column."""
+    single arc (weights ``None``: every fiber 1.0); for several, the weighted blend of their
+    polynomials (right-aligned when the degrees differ) and per-fiber values (``n_lines`` the
+    smallest, ``usable`` when all are), the sorted union of their checksums, the weighted
+    mid-time, the largest scatter and ``usable`` when every model is. The returned weights
+    feed the product's ``WEIGHT`` column: per fiber, the summed normalised weight of the
+    models that hold the fiber (1.0 when all do), which says how much of the blend that row
+    represents; the per-arc weights themselves are recorded in the science QC JSON
+    (``drift_weights``, aligned with ``drift_arcs``)."""
     if len(pairs) == 1:
         return pairs[0][0], None
     total = sum(weight for _, weight in pairs)
@@ -778,7 +803,8 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
     """Stage 4 for one science frame: wavelengths by the time policy, sky, products, QC."""
     meta, params = ref.meta, group.params
     reference = _reference_for(group, meta.mid_time)
-    pairs = [] if reference is None else pair_arcs(meta, group.arcs, reference, group.drift_params)
+    arcs = [] if reference is None else _arcs_for(group.arcs, reference)
+    pairs = [] if reference is None else pair_arcs(meta, arcs, reference, group.drift_params)
     drift_arcs = sorted({c for model, _ in pairs for c in model.arc_checksums})
     key = (
         meta.checksum,
@@ -858,6 +884,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
             "wavelength_status": status,
             "reference_id": es.reference_id,
             "drift_arcs": list(drift_arcs),
+            "drift_weights": _arc_weights(pairs, drift_arcs),
             "drift_scatter_px": None if drift is None else float(drift.scatter_px),
             "fibers": [s.fiber for s in spectra],
             "roles": [s.role for s in spectra],

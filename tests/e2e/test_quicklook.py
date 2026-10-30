@@ -332,6 +332,51 @@ def test_quicklook_idempotent_then_reduced_again(
     assert not any("already reduced" in item for item in forced.skipped)
 
 
+def test_quicklook_interpolate_blends_the_two_arcs(
+    tmp_path, transferred_run, identified, night, out_dir
+):
+    """Under ``interpolate`` a science frame between the two drift arcs carries both: the
+    product's DRIFT table reads back as one blended model with both checksums and the
+    QC lists the two weights. The run shares the module library but writes elsewhere."""
+    out = tmp_path / "interp"
+    summary = run_quicklook(
+        night.dir, out, options(time_policy="interpolate", library=out_dir / "calib")
+    )
+    assert summary.failed == []
+    truth = night.truth
+    arcs = truth.frames.loc[truth.frames["arc_kind"] == "calfiber"]
+    t_first, t_last = (
+        pd.Timestamp(arcs.iloc[0]["mid_time"]),
+        pd.Timestamp(arcs.iloc[-1]["mid_time"]),
+    )
+    checksums = {file_checksum(night.dir / name) for name in night.cal_arcs}
+    between = 0
+    for path in spec_products(out):
+        es, prov, drift = read_spectra(path)
+        assert es.wavelength_status == "transferred" and drift is not None
+        t = pd.Timestamp(es.meta.mid_time)
+        qc = read_qc(out / "qa" / path.with_suffix(".json").name)
+        if t_first < t < t_last:
+            between += 1
+            assert set(prov.drift_arcs) == checksums and len(prov.drift_arcs) == 2
+            assert drift.arc_checksums == tuple(sorted(checksums))
+            weights = qc.values["drift_weights"]
+            assert len(weights) == 2 and sum(weights) == pytest.approx(1.0)
+            assert all(0.0 < w < 1.0 for w in weights)
+            assert t_first < pd.Timestamp(drift.arc_mid_time) < t_last
+            assert len(drift.per_fiber) == len(truth.layout.query("role == 'arc'"))
+            row = truth.frames.loc[truth.frames["file"] == es.meta.source].iloc[0]
+            for spectrum in es.spectra:
+                if spectrum.role == "science":
+                    error = map_error_in_dispersions(
+                        spectrum.wavelength, night, float(row["shift_px"]), float(row["stretch"])
+                    )
+                    assert error < MAX_MAP_ERROR_DISP
+        else:
+            assert len(prov.drift_arcs) == 1 and qc.values["drift_weights"] == [1.0]
+    assert between == 2
+
+
 # ------------------------------------------------------------------------ error policy
 
 

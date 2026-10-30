@@ -135,3 +135,7 @@
   `mastpipe quicklook`, `mastpipe solve` (exit 2 with "run identify first") and `mastpipe show`.
   `_arc_lines` also accepts a scanned `FrameRef`, so manifest overrides reach the arc chain.
   pytest now runs with `filterwarnings = error` and a registered `slow` marker.
+- Quick-look: drift models are tied to the reference they were fitted against and only
+  those are paired with a frame; the `interpolate` blend is tested and the per-arc blend
+  weights are written to the science QC JSON (`drift_weights`).
+
