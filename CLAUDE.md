@@ -86,8 +86,8 @@ or collaborators.
   Never `git reset --hard`, `git clean -fd`, `git checkout -- .`, `git
   restore`, or rebase published commits without explicit approval.
 - No hook-bypass flags (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix
-  the cause. The pre-commit privacy scan (paths, e-mails, IPs, tokens) must
-  pass.
+  the cause. The privacy scan (`python scripts/privacy_scan.py`: paths, e-mails,
+  IPs, tokens) must pass; CI runs it on every push.
 - Use the machine's existing git identity; do not pass `-c user.*` overrides.
 
 ## Stack
@@ -102,12 +102,14 @@ what and why first.**
 ```bash
 pip install -e ".[dev]"          # development install
 pytest                           # tiers 1–2, offline, synthetic data only
-MASTPIPE_TEST_DATA=<folder> pytest tests/regression   # tier 3, real lab frames
-ruff check src tests && ruff format --check src tests
-mastpipe quicklook <night-folder>
-mastpipe reduce --config run.yaml --manifest frames.csv
-mastpipe focus <scan-folder>
+MASTPIPE_TEST_DATA=<folder> MASTPIPE_ATLAS_DIR=<folder> pytest tests/regression   # tier 3, real lab frames
+ruff check src tests scripts && ruff format --check src tests scripts
+python scripts/privacy_scan.py
+mastpipe identify <full-arc.fits> --out <dir> --instrument highspec --configuration mgb518 --stored-anchors
+mastpipe solve <full-arc.fits> --out <dir> --instrument highspec --configuration mgb518
+mastpipe quicklook <night-folder> --out <dir> --instrument highspec [--layout lab3|survey45] [--manifest frames.csv]
 mastpipe show <product.fits>
+# `mastpipe reduce` (manual mode, --force <stage>) and `mastpipe focus` are later plans.
 ```
 
 ## Architecture invariants
