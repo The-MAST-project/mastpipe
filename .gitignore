@@ -28,3 +28,6 @@ htmlcov/
 # throwaway spikes (kept locally, never committed)
 spike/
 .superpowers/
+
+# documentation build
+docs/_build/

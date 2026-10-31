@@ -37,6 +37,14 @@ dev = [
     "ruff>=0.6",
     "nbstripout",
 ]
+docs = [
+    "sphinx>=7.3",
+    "furo>=2024.1",
+    "myst-parser>=3",
+    "sphinx-autodoc-typehints>=2",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 pypeit = [
     "pypeit>=2.0",
 ]

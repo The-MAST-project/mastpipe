@@ -31,7 +31,7 @@ package runs without it.
 
 ```bash
 pytest                 # the whole suite, about six minutes
-pytest -m "not slow"   # the unit tests alone, under a minute
+pytest -m "not slow"   # the unit tests alone, about three minutes
 ```
 
 The suite is offline and uses synthetic data (a simulated HighSpec night) by

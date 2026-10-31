@@ -2,6 +2,14 @@
 
 ## 0.0.1 (unreleased)
 
+- Documentation site (`docs/`, Sphinx with MyST and Furo; `pip install -e ".[docs]"`,
+  `sphinx-build -W -b html docs docs/_build/html`): an observer guide (install, night
+  folder and manifest, first reference, quick-look, products, troubleshooting), a
+  description of the method (stages, three-cadence wavelengths, traces and extraction,
+  sky and combination, products policy, limits), a developer guide (architecture, data
+  model, adding a grating or an instrument, simulator and tests, conventions) and an
+  autodoc API reference; `.readthedocs.yaml`; a CI job building with warnings as errors;
+  `scripts/make_doc_figures.py` producing the two committed figures from the simulator.
 - Final fix wave of Plan 1: fibers are keyed by the layout's trace id
   (`steps.trace.layout_indexed`, used by the runner and `identify`; detections
   outside the layout are dropped, logged and listed in the trace QC), with a
