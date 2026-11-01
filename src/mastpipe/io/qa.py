@@ -6,22 +6,19 @@ resolution above, the measured continuum-subtracted arc spectrum of one trace be
 normalised to their peak and numbered on their strongest well-separated lines, so that a
 few template-measured pairs can be read off by pattern and typed back as anchors.
 
-matplotlib is used with the ``Agg`` backend, selected before pyplot is imported: the
-command runs unattended and on machines without a display, and every figure is closed
-after it is written.
+Figures are drawn with matplotlib's object-oriented interface on an ``Agg`` canvas and
+written straight to file, so the command runs unattended and on machines without a
+display, never touches the global pyplot state, and leaves a notebook's own backend alone.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt  # noqa: E402  (the backend must be set first)
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import numpy as np
+import pandas as pd
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 FIGURE_SIZE = (13.0, 7.2)
 """Inches, the notebook's ``figwidth`` and height."""
@@ -121,7 +118,9 @@ def plot_anchor_panels(
     atlas_flux_conv = np.asarray(atlas_flux_conv, dtype=float).ravel()
     obs_flux = np.asarray(obs_flux, dtype=float).ravel()
     n_pix = obs_flux.size
-    fig, axes = plt.subplots(2, 1, figsize=FIGURE_SIZE, layout="constrained")
+    fig = Figure(figsize=FIGURE_SIZE, layout="constrained")
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(2, 1)
 
     ax = axes[0]
     inside = (atlas_wave >= band[0]) & (atlas_wave <= band[1])
@@ -171,8 +170,5 @@ def plot_anchor_panels(
     ax.grid(alpha=0.25)
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fig.savefig(out, dpi=DPI)
-    finally:
-        plt.close(fig)
+    fig.savefig(out, dpi=DPI)
     return template, measured

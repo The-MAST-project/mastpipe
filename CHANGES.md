@@ -2,6 +2,14 @@
 
 ## 0.0.1 (unreleased)
 
+- Tutorial notebooks under `docs/tutorials/` (committed without outputs, executed by the
+  documentation build through `myst-nb`): *The pipeline step by step* walks the Python API on
+  a simulated night with a hand-made nine-fiber layout, from raw frames to a written product;
+  *Inspecting a night's products* reduces a simulated survey night with `identify` and
+  `quicklook` and reads back the spectra, drift, combined spectra, reference, QC and log.
+- `io.qa` draws the anchor panels on an `Agg` canvas through matplotlib's object-oriented
+  interface instead of switching the global backend, so importing the pipeline no longer
+  disables inline figures in a notebook.
 - Documentation site (`docs/`, Sphinx with MyST and Furo; `pip install -e ".[docs]"`,
   `sphinx-build -W -b html docs docs/_build/html`): an observer guide (install, night
   folder and manifest, first reference, quick-look, products, troubleshooting), a

@@ -11,7 +11,7 @@ The reduction steps descend from the HighSpec laboratory
 reduction notebook, written as pure functions behind a declarative instrument
 layer. This release covers HighSpec end to end; DeepSpec follows.
 
-::::{grid} 1 1 3 3
+::::{grid} 1 2 2 4
 :gutter: 2
 
 :::{grid-item-card} Running the pipeline
@@ -19,6 +19,13 @@ layer. This release covers HighSpec end to end; DeepSpec follows.
 :link-type: doc
 Install, prepare a night folder, make the first reference solution, run
 `quicklook`, read the products. For observers.
+:::
+
+:::{grid-item-card} Tutorials
+:link: tutorials/index
+:link-type: doc
+Two notebooks run at build time: the API step by step on a simulated night, and
+inspecting a night's products. For hands-on readers.
 :::
 
 :::{grid-item-card} How it works
@@ -57,6 +64,7 @@ each later version.
 :maxdepth: 2
 
 running/index
+tutorials/index
 how-it-works/index
 extending/index
 api/index

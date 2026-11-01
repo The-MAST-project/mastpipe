@@ -11,7 +11,7 @@ release = __version__
 version = __version__
 
 extensions = [
-    "myst_parser",
+    "myst_nb",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
@@ -24,6 +24,12 @@ extensions = [
 
 myst_enable_extensions = ["colon_fence", "deflist", "fieldlist", "substitution"]
 myst_heading_anchors = 3
+
+# Tutorial notebooks are committed without outputs and executed at build time.
+nb_execution_mode = "cache"
+nb_execution_timeout = 900
+nb_execution_raise_on_error = True
+nb_merge_streams = True
 
 autodoc_default_options = {
     "members": True,
@@ -57,7 +63,14 @@ suppress_warnings = [
 nitpicky = False
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "design"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "design",
+    "jupyter_execute",
+    "**.ipynb_checkpoints",
+]
 
 html_theme = "furo"
 html_title = f"mastpipe {release}"
