@@ -19,7 +19,7 @@ troubleshooting
 ## The short version
 
 ```bash
-pip install -e ".[dev]"
+pip install "git+<repository>"
 # once per grating and fiber layout: the first reference solution from a full arc
 mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 --stored-anchors
 # every night

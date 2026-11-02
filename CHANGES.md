@@ -2,6 +2,10 @@
 
 ## 0.0.1 (unreleased)
 
+- Install documentation (`docs/running/install.md`, README) separates a plain install
+  (`pip install "git+<repository>"` into a venv or conda environment) from the developer
+  install (clone, `pip install -e ".[dev]"`), and says the tests run from the root of the
+  clone or with the `tests/` path, since the suite is not installed with the package.
 - Tutorial notebooks under `docs/tutorials/` (committed without outputs, executed by the
   documentation build through `myst-nb`): *The pipeline step by step* walks the Python API on
   a simulated night with a hand-made nine-fiber layout, from raw frames to a written product;

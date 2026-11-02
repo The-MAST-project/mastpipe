@@ -59,6 +59,8 @@ assertions:
 
 ## Tiers and markers
 
+All from the root of the clone, where `pyproject.toml` configures pytest:
+
 ```bash
 pytest -m "not slow"   # unit tests on small arrays and the shared fixtures, about three minutes
 pytest                 # plus the simulated-night end-to-end tests, about six minutes

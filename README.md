@@ -15,19 +15,47 @@ written as pure functions on arrays behind a declarative instrument layer.
 
 ## Installation
 
-Python 3.11 or newer is required.
+Python 3.11 or newer is required. The package is not on PyPI yet; pip
+installs it from the repository into a fresh environment:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate          # on Windows: .venv\Scripts\activate
+python -m venv mastpipe-env
+source mastpipe-env/bin/activate   # on Windows: mastpipe-env\Scripts\activate
+pip install "git+<repository>"
+mastpipe --version
+```
+
+or, with conda,
+
+```bash
+conda create -n mastpipe python=3.12
+conda activate mastpipe
+pip install "git+<repository>"
+mastpipe --version
+```
+
+(`pip install .` from a downloaded copy does the same.) The optional `pypeit`
+extra installs PypeIt for the adapter module; the package runs without it.
+
+### Developer install
+
+To work on the code or run the tests, clone and install in editable mode:
+
+```bash
+git clone <repository>
+cd mastpipe
+python -m venv .venv                # or: conda create -n mastpipe python=3.12
+source .venv/bin/activate           #     conda activate mastpipe
 pip install -e ".[dev]"
 ```
 
-The `dev` extra installs `pytest`, `pytest-cov`, `ruff` and `nbstripout`.
-The optional `pypeit` extra installs PypeIt for the adapter module; the
-package runs without it.
+The `dev` extra installs `pytest`, `pytest-cov`, `ruff` and `nbstripout`;
+the `docs` extra builds the documentation.
 
 ## Running the tests
+
+From the root of the clone (the tests are not installed with the package; from
+another folder pass the path, `pytest path/to/mastpipe/tests`):
 
 ```bash
 pytest                 # the whole suite, about six minutes
