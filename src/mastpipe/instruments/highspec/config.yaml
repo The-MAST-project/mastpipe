@@ -1,5 +1,5 @@
 # HighSpec: fiber-fed R ~ 20 000 spectrograph with one Andor camera and interchangeable
-# narrow-band gratings. Numbers come from the HighSpec laboratory reduction notebook
+# narrow-band gratings. Numbers come from the HighSpec laboratory reduction notebook.
 # The grating blocks live in gratings/*.yaml, one file per grating,
 # and are merged into `configurations` by mastpipe.instruments.registry.
 name: highspec

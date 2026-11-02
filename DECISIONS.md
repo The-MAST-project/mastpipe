@@ -7,7 +7,7 @@ entries rather than by editing old ones.
 ## 2026-09-24 — Independent package
 
 - **Build mastpipe as an independent package** seeded from the team's
-  HighSpec reduction notebook, with reduction steps as pure functions on arrays
+  HighSpec laboratory reduction notebook, with reduction steps as pure functions on arrays
   and a declarative instrument layer.
 - **soxspipe rejected** as a base: echelle-order data model with no fiber
   concept, wavelength solution tied to ESO pinhole frames and predicted-line
@@ -274,3 +274,15 @@ group.
   The frames are reached only through `MASTPIPE_TEST_DATA` with the layout the
   README documents; nothing about their location is in the repository.
 
+## 2026-11-02 — Public repository
+
+- **The GitHub repository is public** under `The-MAST-project/mastpipe`, like the
+  other MAST repositories, replacing the earlier private-for-now intent. The
+  privacy rules in `CLAUDE.md` (no paths, hosts, addresses, credentials or real
+  data in any tracked file) and the CI privacy scan are what make this safe.
+- **No individuals are named in tracked files.** Prose, comments and test
+  identifiers credit the HighSpec laboratory reduction notebook as a thing, not
+  its author; authorship is "The MAST project" (license, package metadata, docs).
+- **`CLAUDE.md` and `DECISIONS.md` are committed**, as in the other MAST
+  repositories (nine of which track a `CLAUDE.md`, four a `DECISIONS.md`);
+  the design documents under `docs/design/` stay local.

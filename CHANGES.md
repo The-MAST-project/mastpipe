@@ -2,6 +2,9 @@
 
 ## 0.0.1 (unreleased)
 
+- The repository is public under `The-MAST-project/mastpipe`. Documentation, comments
+  and test identifiers refer to the HighSpec laboratory reduction notebook rather than
+  to individuals; the repository `CLAUDE.md` records the public visibility.
 - Install documentation (`docs/running/install.md`, README) separates a plain install
   (`pip install "git+<repository>"` into a venv or conda environment) from the developer
   install (clone, `pip install -e ".[dev]"`), and says the tests run from the root of the

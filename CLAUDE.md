@@ -5,9 +5,9 @@ spectrographs, **HighSpec** (R ≈ 20 000, narrow-band gratings — three today,
 more planned — one detector) and **DeepSpec** (R ≈ 500, four cameras). It takes raw frames to
 wavelength-calibrated, sky-subtracted spectra per fiber, combined spectra per
 target, and quality-assurance products. It runs as an unattended quick-look at
-the observatory and as a manual reduction tool. Developed by the MAST team;
-its scientific core descends from the team's
-HighSpec reduction notebook. The design is in `docs/design/`.
+the observatory and as a manual reduction tool. Developed by the MAST team; the
+scientific core descends from the HighSpec laboratory reduction notebook. The
+design is in `docs/design/`.
 
 ## Editing this file
 
@@ -79,7 +79,9 @@ or collaborators.
 
 ## Git & remote safety
 
-- The GitHub repository is **private**. Do not change its visibility.
+- The GitHub repository (`The-MAST-project/mastpipe`) is **public**: every
+  tracked file and every commit is world-readable, which is why the privacy
+  rules above are strict. Do not change its visibility.
 - Commits are fine **when explicitly asked**, in logical chunks; do not bundle
   unrelated changes. Feature branches off `main`.
 - **No `git push` without explicit per-push approval.** Never force-push.
