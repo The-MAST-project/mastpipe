@@ -2,6 +2,8 @@
 
 ## 0.0.1 (unreleased)
 
+- The documentation is hosted on Read the Docs at <https://mastpipe.readthedocs.io/>
+  (project `mastpipe`, built from `.readthedocs.yaml`); the README links to it.
 - The repository is public under `The-MAST-project/mastpipe`. Documentation, comments
   and test identifiers refer to the HighSpec laboratory reduction notebook rather than
   to individuals; the repository `CLAUDE.md` records the public visibility.

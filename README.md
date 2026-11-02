@@ -7,6 +7,9 @@ spectra per fiber, combined spectra per target, and quality-assurance
 products. It runs as an unattended quick-look at the observatory and as a
 manual reduction tool.
 
+**Documentation:** <https://mastpipe.readthedocs.io/en/latest/> (observer guide, how it
+works, developer guide, API reference and executed tutorials; built from `docs/`).
+
 The design documents are kept locally under `docs/design/` (git-ignored);
 the decision log is `DECISIONS.md` and the release history is `CHANGES.md`.
 The reduction steps
