@@ -196,14 +196,28 @@ def test_provenance_cards_roundtrip():
 
 
 def test_product_name_format():
-    assert product_name(META, "spec") == "highspec_Mg_main_20261001T203015_spec.fits"
-    assert product_name(META, "qc", ext=".json") == "highspec_Mg_main_20261001T203015_qc.json"
-    bare = replace(META, configuration=None, mid_time=None)
-    assert product_name(bare, "trace") == "highspec_noconf_main_notime_trace.fits"
+    assert product_name(META, "spec") == "highspec_Mg_main_20261001T203015_012345_spec.fits"
+    assert product_name(META, "qc", ext=".json") == (
+        "highspec_Mg_main_20261001T203015_012345_qc.json"
+    )
+    bare = replace(META, configuration=None, mid_time=None, checksum="")
+    assert product_name(bare, "trace") == "highspec_noconf_main_notime_nosum_trace.fits"
     aware = replace(META, mid_time="2026-10-01T22:30:15+02:00")
-    assert product_name(aware, "spec") == "highspec_Mg_main_20261001T203015_spec.fits"
+    assert product_name(aware, "spec") == "highspec_Mg_main_20261001T203015_012345_spec.fits"
     assert combined_name(META, "HD 1234/b") == (
-        "highspec_Mg_main_20261001T203015_comb_HD_1234_b.fits"
+        "highspec_Mg_main_20261001T203015_012345_comb_HD_1234_b.fits"
+    )
+
+
+def test_product_name_differs_for_equal_times():
+    meta = replace(META, mid_time="2026-10-01T18:02:30")
+    a = replace(meta, checksum="abcdef0123456789")
+    b = replace(meta, checksum="123456abcdef0000")
+    assert product_name(a, "spec") != product_name(b, "spec")
+    assert product_name(a, "spec") == "highspec_Mg_main_20261001T180230_abcdef_spec.fits"
+    undated = replace(meta, mid_time=None)
+    assert product_name(replace(undated, checksum=a.checksum), "spec") != product_name(
+        replace(undated, checksum=b.checksum), "spec"
     )
 
 

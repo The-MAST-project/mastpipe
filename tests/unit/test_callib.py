@@ -103,7 +103,7 @@ def test_callib_add_writes_master_and_index(tmp_path):
     library = CalibLibrary(tmp_path / "calib")
     master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
     path = library.add(master, make_provenance(), meta)
-    assert path == tmp_path / "calib" / "highspec_Mg_main_20261001T180000_bias.fits"
+    assert path == tmp_path / "calib" / "highspec_Mg_main_20261001T180000_bias18_bias.fits"
     assert path.is_file()
     back, prov = read_master(path)
     assert back.kind == "bias" and float(back.data[0, 0]) == 500.0

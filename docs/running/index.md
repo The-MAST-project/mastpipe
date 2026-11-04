@@ -24,7 +24,7 @@ pip install "git+<repository>"
 mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg --stored-anchors
 # every night
 mastpipe quicklook night/ --out out --instrument highspec
-mastpipe show out/spec/highspec_Mg_main_20261001T221500_spec.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
 ```
 
 Three words carry most of the meaning:

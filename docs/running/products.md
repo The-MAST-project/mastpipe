@@ -4,10 +4,13 @@ Everything is written under the output folder. File names come from the
 frame's metadata, never from the raw file name:
 
 ```text
-{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits
+{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits
 ```
 
-with the UTC mid-time of the exposure and `kind` one of `bias`, `dark`,
+with the UTC mid-time of the exposure (`notime` without one), `checksum` the
+first six hex digits of the input file's SHA-256 (so two exposures with the same
+mid-time never share a name; `nosum` for a master without a source file) and
+`kind` one of `bias`, `dark`,
 `background`, `flat`, `traces`, `spec`, `comb_<target>`. Reference solutions
 are `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being
 the full arc's mid-time; the name without `_wref.fits` is the **reference
@@ -24,7 +27,7 @@ out/
 ## Looking inside
 
 ```bash
-mastpipe show out/spec/highspec_Mg_main_20261001T221500_spec.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
 mastpipe show out/calib/highspec_Mg_lab3_20260909T113702_wref.fits
 ```
 

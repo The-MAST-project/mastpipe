@@ -626,7 +626,9 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
     assert produced == set(good)
     # the stub frame's product (its 300 s start at 23:00 gives a mid-time of 23:02:30)
-    assert not (tmp_path / "out" / "spec" / "highspec_Mg_main_20261001T230230_spec.fits").exists()
+    assert not list(
+        (tmp_path / "out" / "spec").glob("highspec_Mg_main_20261001T230230_*_spec.fits")
+    )
 
     with pytest.raises(ValueError, match="shape"):
         run_quicklook(folder, tmp_path / "out2", options(on_error="raise"))

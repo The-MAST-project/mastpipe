@@ -91,15 +91,19 @@ SAFE_TARGET = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def product_name(meta: FrameMeta, kind: str, ext: str = ".fits") -> str:
-    """``{instrument}_{configuration|noconf}_{camera}_{YYYYmmddTHHMMSS|notime}_{kind}{ext}``.
+    """``{instrument}_{configuration|noconf}_{camera}_{YYYYmmddTHHMMSS|notime}_{sum}_{kind}{ext}``.
 
     The stamp is the frame's UTC mid-time; a time-zone-aware ``mid_time`` is converted.
+    ``sum`` is the first six characters of the frame's checksum (``nosum`` without one),
+    so two frames with the same mid-time to the second, or two without a mid-time, never
+    share a product name.
     """
     stamp = "notime"
     if meta.mid_time is not None:
         stamp = to_utc(meta.mid_time).strftime("%Y%m%dT%H%M%S")
     configuration = meta.configuration or "noconf"
-    return f"{meta.instrument}_{configuration}_{meta.camera}_{stamp}_{kind}{ext}"
+    short_sum = meta.checksum[:6] or "nosum"
+    return f"{meta.instrument}_{configuration}_{meta.camera}_{stamp}_{short_sum}_{kind}{ext}"
 
 
 def reference_name(ref: ReferenceSolution) -> str:

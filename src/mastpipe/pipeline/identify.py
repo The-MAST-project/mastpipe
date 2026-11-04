@@ -113,12 +113,13 @@ NO_TIME = "notime"
 
 
 def _latest_master(calib_dir: Path, effective: EffectiveConfig, kind: str) -> Path | None:
-    """The latest ``{instrument}_{configuration}_{camera}_{stamp}_{kind}.fits`` of ``calib_dir``.
+    """The latest ``{instrument}_{configuration}_{camera}_{stamp}_{sum}_{kind}.fits`` of
+    ``calib_dir``.
 
     Only the masters of ``effective``'s instrument, configuration and camera qualify; the
     latest is the one with the largest ``YYYYmmddTHHMMSS`` stamp (compared as a stamp, not
-    as a file name), and a ``notime`` master is taken only when no dated one exists.
-    ``None`` without a candidate.
+    as a file name: the short checksum after it plays no part), and a ``notime`` master is
+    taken only when no dated one exists. ``None`` without a candidate.
     """
     prefix = f"{effective.instrument}_{effective.configuration}_{effective.camera}_"
     suffix = f"_{kind}.fits"
@@ -127,7 +128,7 @@ def _latest_master(calib_dir: Path, effective: EffectiveConfig, kind: str) -> Pa
     for path in calib_dir.glob(f"{glob.escape(prefix)}*{glob.escape(suffix)}"):
         if not path.is_file():
             continue
-        stamp = path.name[len(prefix) : -len(suffix)]
+        stamp = path.name[len(prefix) : -len(suffix)].split("_")[0]
         if stamp == NO_TIME:
             undated.append(path)
         elif (

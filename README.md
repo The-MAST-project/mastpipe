@@ -295,7 +295,7 @@ FOCUS_05_13.30004_mm.fits,arc,Mg,lab3,full
 ### `show` — print what a product holds
 
 ```bash
-mastpipe show out/spec/highspec_Mg_main_20261001T221500_spec.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
 mastpipe show out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
@@ -321,8 +321,9 @@ out/
 `out/calib` is also the **calibration library**: `index.json` lists every
 master (camera, binning, readout mode, configuration, temperature, time) and
 reference (identifier, `valid_from`) so later runs find them. Files are named
-`{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits` after
-the frame's UTC mid-time, with `kind` one of `bias`, `dark`, `background`,
+`{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits`
+after the frame's UTC mid-time and the first six hex digits of its file's
+SHA-256 (so equal mid-times never collide), with `kind` one of `bias`, `dark`, `background`,
 `flat`, `traces`, `spec` or `comb_<target>`; references are
 `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being the
 full arc's mid-time, and that name without the suffix is the reference

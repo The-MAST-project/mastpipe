@@ -300,6 +300,23 @@ def test_latest_master_sorts_by_stamp_within_the_configuration(tmp_path, survey_
     assert chosen is not None and chosen.name == "highspec_Mg_main_notime_bias.fits"
 
 
+def test_latest_master_reads_the_stamp_before_the_checksum(tmp_path, survey_effective):
+    names = [
+        "highspec_Mg_main_20260930T235900_ffffff_bias.fits",
+        "highspec_Mg_main_20261001T180000_000000_bias.fits",  # latest, lowest checksum
+        "highspec_Mg_main_notime_nosum_bias.fits",
+        "highspec_Mg_main_20270101T000000_abcdef_flat.fits",  # another kind
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    chosen = _latest_master(tmp_path, survey_effective, "bias")
+    assert chosen is not None and chosen.name == "highspec_Mg_main_20261001T180000_000000_bias.fits"
+    for name in names[:2]:
+        (tmp_path / name).unlink()
+    chosen = _latest_master(tmp_path, survey_effective, "bias")
+    assert chosen is not None and chosen.name == "highspec_Mg_main_notime_nosum_bias.fits"
+
+
 def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
     sim_night_lab3, highspec_effective, lab3_layout, tmp_path
 ):
