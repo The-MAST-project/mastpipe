@@ -9,8 +9,11 @@ reduces every ``(camera, configuration)`` group in turn:
 1. **masters** — bias, dark and background frames are stacked (dark and background one
    exposure time at a time, the largest batch serving the night), the flats calibrated
    and stacked, and every master is added to the calibration library (``out/calib`` or
-   ``options.library``); a kind the night lacks is taken from the library when it holds
-   one that applies;
+   ``options.library``). The frames are loaded one at a time: one that cannot be read, is
+   not binned as the group's science frames (the most common binning among them) or has
+   another shape than the first good frame of its batch is recorded in ``failed`` and
+   left out. A kind the night lacks, or none of whose frames survive, is taken from the
+   library when it holds one that applies;
 1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
    control software writes for arcs and science frames alike) is calibrated with the
    masters (no cosmic-ray flagging) and resolved from its content
@@ -384,8 +387,51 @@ def _master_provenance(
     )
 
 
+def _group_binning(refs: list[FrameRef]) -> tuple[int, int]:
+    """The binning of a group: the most common among the frames that may be science
+    (``science`` and the not yet resolved ``light`` ones), else among all ``refs``."""
+    candidates = [ref for ref in refs if ref.meta.exposure_type in ("science", "light")]
+    return Counter(ref.meta.binning for ref in candidates or refs).most_common(1)[0][0]
+
+
+def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list[Frame]:
+    """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
+    ``calibrate``, calibrated as a flat is: background subtracted when
+    ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
+    load or calibrate, whose binning is not ``group.binning`` or whose shape is not that of
+    the first good frame is dropped under the error policy of :func:`_per_frame`: recorded
+    in ``failed`` with the reason, or raised under ``on_error='raise'``."""
+    detector = group.effective.detector
+    frames: list[Frame] = []
+
+    def use(group: _Group, ref: FrameRef) -> None:
+        if ref.meta.binning != group.binning:
+            (x, y), (gx, gy) = ref.meta.binning, group.binning
+            raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
+        frame = load_frame(ref, detector)
+        if frames and frame.data.shape != frames[0].data.shape:
+            raise ValueError(
+                f"shape {frame.data.shape} is not {frames[0].data.shape}, that of "
+                f"{frames[0].meta.source}"
+            )
+        if calibrate:
+            calib = group.calib
+            assert calib is not None
+            subtract = group.params.calib.flat_subtract_background and calib.background is not None
+            frame = calibrate_frame(
+                frame, calib, subtract_background=subtract, saturation=detector.saturation
+            )
+        frames.append(frame)
+
+    for ref in refs:
+        _per_frame(group, ref, use)
+    return frames
+
+
 def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
-    """Stage 1: stack the night's masters into the library and build the calibration set."""
+    """Stage 1: stack the night's masters into the library and build the calibration set.
+    Every frame goes through :func:`_usable_frames`; a kind none of whose frames survive is
+    sought in the library."""
     detector, params, library = group.effective.detector, group.params, group.library
     chosen: dict[str, tuple[MasterCalib, Path]] = {}
     for kind in MASTER_KINDS:
@@ -393,7 +439,9 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         batches = [refs] if kind == "bias" and refs else _by_exposure(refs)
         best: tuple[tuple[int, float], MasterCalib, Path] | None = None
         for batch in batches:
-            frames = [load_frame(ref, detector) for ref in batch]
+            frames = _usable_frames(group, batch, calibrate=False)
+            if not frames:
+                continue
             master = build_master(frames, kind, params.calib)
             exposure = master.validity.get("exposure_time")
             steps = [f"stack {params.calib.stack_method} of {len(frames)} {kind} frames"]
@@ -426,20 +474,14 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     applied = [path.name for _, path in chosen.values()]
 
     flats = by_type.get("flat", [])
+    frames = []
     if flats:
         batch = max(_by_exposure(flats), key=lambda b: (len(b), b[0].meta.exposure_time or 0.0))
+        frames = _usable_frames(group, batch, calibrate=True)
+    if frames:
         subtract = params.calib.flat_subtract_background and background is not None
-        frames = [
-            calibrate_frame(
-                load_frame(ref, detector),
-                group.calib,
-                subtract_background=subtract,
-                saturation=detector.saturation,
-            )
-            for ref in batch
-        ]
         master = build_master(frames, "flat", params.calib)
-        steps = calibration_steps(group.calib, float(batch[0].meta.exposure_time or 0.0), subtract)
+        steps = calibration_steps(group.calib, float(frames[0].meta.exposure_time or 0.0), subtract)
         steps.append(f"stack {params.calib.stack_method} of {len(frames)} flat frames")
         path = library.add(
             master, _master_provenance(group, frames, applied, steps), frames[0].meta
@@ -1130,7 +1172,6 @@ def _run_group(
     # may be science (light ones included, before their content is known)
     candidates = sorted(by_type.get("science", []) + by_type.get("light", []), key=_time_key)
     first = candidates[0].meta if candidates else refs[0].meta
-    binnings = Counter(ref.meta.binning for ref in candidates)
     temperatures = [
         m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None
     ]
@@ -1144,7 +1185,7 @@ def _run_group(
         options=options,
         summary=summary,
         cfg_hash=config_hash(effective),
-        binning=binnings.most_common(1)[0][0] if binnings else refs[0].meta.binning,
+        binning=_group_binning(refs),
         readout_mode=refs[0].meta.readout_mode,
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,

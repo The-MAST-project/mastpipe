@@ -26,6 +26,7 @@ from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import (
     combined_name,
     read_combined,
+    read_master,
     read_qc,
     read_reference,
     read_spectra,
@@ -653,6 +654,49 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
 
     with pytest.raises(ValueError, match="shape"):
         run_quicklook(folder, tmp_path / "out2", options(on_error="raise"))
+
+
+def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
+    """A truncated bias, a flat binned 2x1 and a corrupt arc are each dropped and recorded
+    as a failure of that frame; the masters are stacked from the other frames and the night
+    still yields every science product. The command reports the failures (exit code 2)."""
+    folder = tmp_path / "night"
+    shutil.copytree(night.dir, folder)
+    truth = night.truth
+    bias, flat = (
+        str(truth.frames.loc[truth.frames["exposure_type"] == kind, "file"].iloc[0])
+        for kind in ("bias", "flat")
+    )
+    # a bias cut down to a stub, with the cards of a real one
+    header = fits.getheader(night.dir / bias)
+    stub = fits.PrimaryHDU(np.full((20, 30), 600, dtype=np.uint16), header)
+    stub.writeto(folder / "sim_bias_bad.fits")
+    # a real flat's image under another binning
+    with fits.open(night.dir / flat) as hdul:
+        data, header = hdul[0].data.copy(), hdul[0].header.copy()
+    header["HBIN"] = 2
+    fits.PrimaryHDU(data, header).writeto(folder / "sim_flat_bad.fits")
+    # an arc that is not FITS at all: the scan reports it as an unreadable file
+    (folder / "sim_arc_bad.fits").write_bytes(b"this is not a FITS file\n" * 200)
+
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options())
+    failed = dict(summary.failed)
+    assert set(failed) == {"sim_bias_bad.fits", "sim_flat_bad.fits", "sim_arc_bad.fits"}
+    assert "shape" in failed["sim_bias_bad.fits"]
+    assert "binning 2x1" in failed["sim_flat_bad.fits"]
+    assert failed["sim_arc_bad.fits"] == "unreadable FITS file"
+    assert len(spec_products(out)) == N_SCIENCE
+    # the masters were stacked from the good frames only
+    n_bias, n_flat = (
+        int((truth.frames["exposure_type"] == kind).sum()) for kind in ("bias", "flat")
+    )
+    for kind, n in (("bias", n_bias), ("flat", n_flat)):
+        _, prov = read_master(next((out / "calib").glob(f"*_{kind}.fits")))
+        assert len(prov.inputs) == n, kind
+
+    argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec"]
+    assert main(argv + ["--layout", "survey45"]) == 2
 
 
 # --------------------------------------------------------------- light frames by content

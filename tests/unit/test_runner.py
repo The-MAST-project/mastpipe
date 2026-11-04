@@ -1,6 +1,10 @@
 """Unit tests of the quick-look runner's pure helpers: the drift models a frame may be
-paired with (those fitted against its own reference) and the blend of two drift models
-under the ``interpolate`` policy."""
+paired with (those fitted against its own reference), the blend of two drift models
+under the ``interpolate`` policy, the group's binning and the per-frame isolation of the
+calibration frames."""
+
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -8,13 +12,21 @@ import pytest
 from astropy.io import fits
 
 from mastpipe.config.models import DriftParams
-from mastpipe.core.model import PER_FIBER_COLUMNS, DriftModel, FrameMeta, ReferenceSolution
+from mastpipe.core.model import (
+    PER_FIBER_COLUMNS,
+    DriftModel,
+    FrameMeta,
+    FrameRef,
+    ReferenceSolution,
+)
 from mastpipe.pipeline.arcs import pair_arcs
 from mastpipe.pipeline.runner import (
     RunOptions,
     _arc_weights,
     _arcs_for,
     _blend_drifts,
+    _group_binning,
+    _usable_frames,
     run_quicklook,
 )
 from mastpipe.vocab import GRATING_NAMES
@@ -249,3 +261,77 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
         "manifest row 0: nothing.fits: matches no frame",
     ]
     assert [source for source, _ in summary.failed] == ["group main/None"]
+
+
+# ------------------------------------------------------------ calibration frames, binning
+
+
+def binned_ref(name: str, exposure_type: str, binning: tuple[int, int]) -> FrameRef:
+    meta = FrameMeta(
+        instrument="highspec",
+        camera="main",
+        exposure_type=exposure_type,
+        configuration="Mg",
+        binning=binning,
+        exposure_time=1.0,
+        source=name,
+    )
+    return FrameRef(path=Path(name), extension=0, meta=meta)
+
+
+def test_group_binning_follows_the_science_frames():
+    """Many calibration frames at 1x1 do not outvote the science frames at 2x2 (light
+    frames, which may be science, count with them); without any, all frames vote."""
+    calibrations = [binned_ref(f"bias_{k}.fits", "bias", (1, 1)) for k in range(5)]
+    calibrations += [binned_ref(f"flat_{k}.fits", "flat", (1, 1)) for k in range(3)]
+    science = [
+        binned_ref("sci_0.fits", "science", (2, 2)),
+        binned_ref("sci_1.fits", "science", (1, 1)),
+        binned_ref("light_0.fits", "light", (2, 2)),
+    ]
+    assert _group_binning(calibrations + science) == (2, 2)
+    odd = [binned_ref("bias_odd.fits", "bias", (2, 1))]
+    assert _group_binning(odd + calibrations) == (1, 1)
+
+
+def usable_group(on_error: str = "continue") -> SimpleNamespace:
+    """The parts of a ``_Group`` that :func:`_usable_frames` reads."""
+    detector = SimpleNamespace(crop=None, transpose=False, flip_x=False, flip_y=False)
+    return SimpleNamespace(
+        effective=SimpleNamespace(detector=detector),
+        binning=(1, 1),
+        options=SimpleNamespace(on_error=on_error),
+        summary=SimpleNamespace(failed=[]),
+    )
+
+
+def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
+    """A frame that cannot be read, has another binning, or another shape than the first
+    good frame is recorded in ``failed`` and dropped; the others are kept in order. Under
+    ``on_error='raise'`` the first bad frame raises."""
+    refs = []
+    for name, shape, binning in (
+        ("a.fits", (8, 10), (1, 1)),
+        ("binned.fits", (8, 10), (2, 1)),
+        ("b.fits", (8, 10), (1, 1)),
+        ("stub.fits", (4, 5), (1, 1)),
+        ("c.fits", (8, 10), (1, 1)),
+    ):
+        fits.PrimaryHDU(np.full(shape, 600, dtype=np.uint16)).writeto(tmp_path / name)
+        ref = binned_ref(name, "bias", binning)
+        refs.append(FrameRef(path=tmp_path / name, extension=0, meta=ref.meta))
+    (tmp_path / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    refs.insert(
+        1, FrameRef(tmp_path / "junk.fits", 0, binned_ref("junk.fits", "bias", (1, 1)).meta)
+    )
+
+    group = usable_group()
+    frames = _usable_frames(group, refs, calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits", "c.fits"]
+    failed = dict(group.summary.failed)
+    assert list(failed) == ["junk.fits", "binned.fits", "stub.fits"]
+    assert "binning 2x1" in failed["binned.fits"] and "1x1" in failed["binned.fits"]
+    assert "shape (4, 5)" in failed["stub.fits"] and "(8, 10)" in failed["stub.fits"]
+
+    with pytest.raises(ValueError, match="binning 2x1"):
+        _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
