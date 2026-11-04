@@ -46,6 +46,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig, EffectiveConfig
+from mastpipe.io.ingest import expected_shape as oriented_shape
 from mastpipe.steps.geometry import (
     GratingGeometry,
     grating_geometry,
@@ -177,15 +178,6 @@ class _Scene:
 
 
 # --------------------------------------------------------------------------- frame geometry
-
-
-def oriented_shape(detector: DetectorConfig) -> tuple[int, int]:
-    """Shape of a frame after ``load_frame``'s crop and orientation."""
-    ny, nx = detector.shape
-    if detector.crop is not None:
-        x_min, x_max, y_min, y_max = detector.crop
-        ny, nx = y_max - y_min, x_max - x_min
-    return (nx, ny) if detector.transpose else (ny, nx)
 
 
 def embed(oriented: np.ndarray, detector: DetectorConfig) -> np.ndarray:

@@ -11,9 +11,9 @@ reduces every ``(camera, configuration)`` group in turn:
    and stacked, and every master is added to the calibration library (``out/calib`` or
    ``options.library``). The frames are loaded one at a time: one that cannot be read, is
    not binned as the group's science frames (the most common binning among them) or has
-   another shape than the first good frame of its batch is recorded in ``failed`` and
-   left out. A kind the night lacks, or none of whose frames survive, is taken from the
-   library when it holds one that applies;
+   another shape than the detector's (after crop and orientation) is recorded in
+   ``failed`` and left out. A kind the night lacks, or none of whose frames survive, is
+   taken from the library when it holds one that applies;
 1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
    control software writes for arcs and science frames alike) is calibrated with the
    masters (no cosmic-ray flagging) and resolved from its content
@@ -102,6 +102,7 @@ from mastpipe.io import products
 from mastpipe.io.ingest import (
     ASSUMED_UTC,
     apply_manifest,
+    expected_shape,
     load_frame,
     read_manifest,
     scan_folder,
@@ -398,10 +399,12 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
     """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
     ``calibrate``, calibrated as a flat is: background subtracted when
     ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
-    load or calibrate, whose binning is not ``group.binning`` or whose shape is not that of
-    the first good frame is dropped under the error policy of :func:`_per_frame`: recorded
-    in ``failed`` with the reason, or raised under ``on_error='raise'``."""
+    load or calibrate, whose binning is not ``group.binning`` or whose loaded shape is not
+    the detector's (:func:`~mastpipe.io.ingest.expected_shape`) is dropped under the error
+    policy of :func:`_per_frame`: recorded in ``failed`` with the reason, or raised under
+    ``on_error='raise'``."""
     detector = group.effective.detector
+    shape = expected_shape(detector)
     frames: list[Frame] = []
 
     def use(group: _Group, ref: FrameRef) -> None:
@@ -409,11 +412,8 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
             (x, y), (gx, gy) = ref.meta.binning, group.binning
             raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
         frame = load_frame(ref, detector)
-        if frames and frame.data.shape != frames[0].data.shape:
-            raise ValueError(
-                f"shape {frame.data.shape} is not {frames[0].data.shape}, that of "
-                f"{frames[0].meta.source}"
-            )
+        if frame.data.shape != shape:
+            raise ValueError(f"shape {frame.data.shape} is not the detector's {shape}")
         if calibrate:
             calib = group.calib
             assert calib is not None

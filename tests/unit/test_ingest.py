@@ -14,6 +14,7 @@ from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.headers import HeaderMap
 from mastpipe.io.ingest import (
     apply_manifest,
+    expected_shape,
     file_checksum,
     load_frame,
     read_manifest,
@@ -240,6 +241,9 @@ def test_load_frame_crops_and_orients(tmp_path: Path):
     expected = np.array([[13, 7, 1], [14, 8, 2], [15, 9, 3], [16, 10, 4]], dtype=np.float32)
     np.testing.assert_array_equal(frame.data, expected)
     assert frame.data.dtype == np.float32
+    # the loaded shape is a function of the detector alone
+    assert expected_shape(detector) == frame.data.shape
+    assert expected_shape(make_detector()) == plain.data.shape
 
     flipped = load_frame(ref, make_detector(flip_y=True))
     np.testing.assert_array_equal(flipped.data, data[::-1, :])

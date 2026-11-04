@@ -344,6 +344,15 @@ def _mid_time(
     return utc_iso(mid), True, zone
 
 
+def expected_shape(detector: DetectorConfig) -> tuple[int, int]:
+    """Shape of a frame of ``detector`` after :func:`load_frame`'s crop and orientation."""
+    ny, nx = detector.shape
+    if detector.crop is not None:
+        x_min, x_max, y_min, y_max = detector.crop
+        ny, nx = y_max - y_min, x_max - x_min
+    return (nx, ny) if detector.transpose else (ny, nx)
+
+
 def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
     """The HDU of ``ref`` as a ``float32`` :class:`Frame`: cropped to ``detector.crop``
     (``x_min, x_max, y_min, y_max``, end-exclusive) when set, then transposed, flipped

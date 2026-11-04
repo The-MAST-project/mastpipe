@@ -296,7 +296,9 @@ def test_group_binning_follows_the_science_frames():
 
 def usable_group(on_error: str = "continue") -> SimpleNamespace:
     """The parts of a ``_Group`` that :func:`_usable_frames` reads."""
-    detector = SimpleNamespace(crop=None, transpose=False, flip_x=False, flip_y=False)
+    detector = SimpleNamespace(
+        shape=(8, 10), crop=None, transpose=False, flip_x=False, flip_y=False
+    )
     return SimpleNamespace(
         effective=SimpleNamespace(detector=detector),
         binning=(1, 1),
@@ -306,9 +308,9 @@ def usable_group(on_error: str = "continue") -> SimpleNamespace:
 
 
 def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
-    """A frame that cannot be read, has another binning, or another shape than the first
-    good frame is recorded in ``failed`` and dropped; the others are kept in order. Under
-    ``on_error='raise'`` the first bad frame raises."""
+    """A frame that cannot be read, has another binning, or another shape than the
+    detector's (after crop and orientation) is recorded in ``failed`` and dropped; the
+    others are kept in order. Under ``on_error='raise'`` the first bad frame raises."""
     refs = []
     for name, shape, binning in (
         ("a.fits", (8, 10), (1, 1)),
@@ -332,6 +334,12 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
     assert list(failed) == ["junk.fits", "binned.fits", "stub.fits"]
     assert "binning 2x1" in failed["binned.fits"] and "1x1" in failed["binned.fits"]
     assert "shape (4, 5)" in failed["stub.fits"] and "(8, 10)" in failed["stub.fits"]
+
+    # a stub sorting first does not set the shape: the good frames after it survive
+    group = usable_group()
+    frames = _usable_frames(group, [refs[4], refs[0], refs[3]], calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
+    assert [source for source, _ in group.summary.failed] == ["stub.fits"]
 
     with pytest.raises(ValueError, match="binning 2x1"):
         _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
