@@ -464,7 +464,12 @@ def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
 def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3):
     """A bright ridge between two fibers of the three-fiber night is detected on the flat
     but matches no layout row: it is dropped from the traces and the products, logged, and
-    listed in the trace QC with its position."""
+    listed in the trace QC with its position.
+
+    The layout has arc fibers only, so the simulated "science" frames carry no fiber light:
+    read as the simulator writes them (``IMAGETYP = 'light'``) their content has no signal
+    and they are skipped; declared ``science`` by a manifest they are reduced, and their
+    products carry the layout's fibers."""
     night_dir, truth = sim_night_lab3
     folder = tmp_path / "night"
     folder.mkdir()
@@ -480,8 +485,19 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
         )
 
     edit_flats(folder, truth, ridge)
+    sources = science_files(truth)
+    plain = run_quicklook(folder, tmp_path / "out_light", RunOptions("highspec"))
+    assert plain.failed == [] and spec_products(tmp_path / "out_light") == []
+    for source in sources:
+        assert any(
+            item.startswith(source) and "content:no_signal" in item for item in plain.skipped
+        ), (source, plain.skipped)
+
+    manifest = tmp_path / "manifest.csv"
+    rows = ["source,exposure_type", *(f"{source},science" for source in sources)]
+    manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="")
     out = tmp_path / "out"
-    summary = run_quicklook(folder, out, RunOptions("highspec"))
+    summary = run_quicklook(folder, out, RunOptions("highspec", manifest=manifest))
     assert summary.failed == []
     trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
     assert trace_qc.values["layout"] == "lab3"
@@ -490,7 +506,9 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
     assert len(trace_qc.values["extra"]) == 1
     assert trace_qc.values["extra_y_center"] == [pytest.approx(EXTRA_ROW, abs=1.0)]
     assert len(trace_qc.values["extra_snr"]) == 1
-    for path in spec_products(out):
+    products = spec_products(out)
+    assert len(products) == len(sources) > 0
+    for path in products:
         es, prov, _ = read_spectra(path)
         assert [s.fiber for s in es.spectra] == [0, 1, 2] and prov.layout == "lab3"
     log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
