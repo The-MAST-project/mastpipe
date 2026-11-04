@@ -10,16 +10,25 @@ POSIX and Windows; the lock is the only platform-specific code, guarded by
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import IO
 
 LOCK_POLL_S = 0.05
 """Seconds between attempts to take a lock that another holder has."""
+
+_BUSY = (
+    frozenset({errno.EACCES})
+    if sys.platform == "win32"
+    else frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
+)
+"""``errno`` values meaning "held by someone else": ``msvcrt.locking`` raises ``EACCES``;
+``flock`` raises ``EWOULDBLOCK`` (= ``EAGAIN``), and some systems ``EACCES``."""
 
 
 @contextmanager
@@ -39,7 +48,8 @@ def atomic_write(path: Path | str) -> Iterator[Path]:
         yield tmp
         os.replace(tmp, path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        with suppress(OSError):  # never let a failed clean-up mask the writer's error
+            tmp.unlink(missing_ok=True)
         raise
 
 
@@ -54,8 +64,10 @@ def _try_lock(handle: IO[bytes]) -> bool:
             import fcntl
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return False
+    except OSError as error:
+        if error.errno in _BUSY:
+            return False
+        raise  # not contention (e.g. a file system without locks): report it as it is
     return True
 
 
@@ -77,8 +89,10 @@ def locked(path: Path | str, timeout_s: float = 30.0) -> Iterator[None]:
 
     The file is created when missing (with its folder) and never deleted. The lock is
     tried every ``LOCK_POLL_S`` seconds; ``TimeoutError`` when it is not free within
-    ``timeout_s``. It is per open file, so a second ``locked`` on the same path waits
-    even in the same process. Advisory: it only excludes other users of ``locked``.
+    ``timeout_s``. An ``OSError`` from the platform lock call that does not mean "held by
+    someone else" (``_BUSY``) propagates at once. The lock is per open file, so a second
+    ``locked`` on the same path waits even in the same process. Advisory: it only excludes
+    other users of ``locked``.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

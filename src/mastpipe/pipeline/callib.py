@@ -76,7 +76,12 @@ class CalibLibrary:
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self._entries: list[dict[str, Any]] = self._load()
+        # Read under the lock: on Windows ``os.replace`` onto an index another process
+        # has open fails, so a reader must not hold it while a writer saves. Readers wait
+        # at most one write. The lock helper creates ``root`` and the lock file, so an
+        # absent or empty library still opens (with no entries).
+        with locked(self.root / LOCK_FILE):
+            self._entries: list[dict[str, Any]] = self._load()
         self._references: dict[str, ReferenceSolution] = {}
 
     # ------------------------------------------------------------------------ the index

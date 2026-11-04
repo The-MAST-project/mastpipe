@@ -1,5 +1,8 @@
 """Tests for the atomic file replacement and the advisory lock of ``mastpipe.io.atomic``."""
 
+import errno
+import sys
+
 import pytest
 
 from mastpipe.io.atomic import atomic_write, locked
@@ -45,3 +48,32 @@ def test_lock_times_out_with_a_message(tmp_path):
     with locked(tmp_path / "index.lock", timeout_s=0.2):
         pass
     assert (tmp_path / "index.lock").is_file()
+
+
+def test_lock_error_that_is_not_busy_propagates(tmp_path, monkeypatch):
+    def unsupported(*args):
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        monkeypatch.setattr(msvcrt, "locking", unsupported)
+    else:
+        import fcntl
+
+        monkeypatch.setattr(fcntl, "flock", unsupported)
+    with pytest.raises(OSError) as raised:
+        with locked(tmp_path / "index.lock", timeout_s=5.0):
+            pass
+    assert raised.type is OSError and raised.value.errno == errno.ENOLCK
+
+
+def test_atomic_write_unlink_failure_does_not_mask_the_error(tmp_path, monkeypatch):
+    def failing_unlink(self, missing_ok=False):
+        raise PermissionError("cannot remove")
+
+    monkeypatch.setattr(type(tmp_path), "unlink", failing_unlink)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        with atomic_write(tmp_path / "product.fits") as tmp:
+            tmp.write_text("partial", encoding="utf-8")
+            raise RuntimeError("interrupted")

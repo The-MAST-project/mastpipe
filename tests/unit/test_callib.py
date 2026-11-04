@@ -3,14 +3,16 @@ found by validity time or identifier, and the ``index.json`` behind both."""
 
 import json
 import multiprocessing
+import threading
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from mastpipe.core.model import LINE_COLUMNS, FrameMeta, MasterCalib, WavelengthSolution
+from mastpipe.io.atomic import locked
 from mastpipe.io.products import read_master, reference_name
-from mastpipe.pipeline.callib import INDEX_FILE, CalibLibrary
+from mastpipe.pipeline.callib import INDEX_FILE, LOCK_FILE, CalibLibrary
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import build_reference
@@ -257,3 +259,15 @@ def test_two_processes_add_to_one_library(tmp_path):
     index = json.loads((tmp_path / INDEX_FILE).read_text(encoding="utf-8"))
     assert len(index) == 2 * N_PER_WORKER
     assert not [p.name for p in tmp_path.iterdir() if ".tmp-" in p.name]
+
+
+def test_opening_a_library_waits_for_a_writer(tmp_path):
+    root = tmp_path / "calib"
+    opened: list[CalibLibrary] = []
+    with locked(root / LOCK_FILE):
+        reader = threading.Thread(target=lambda: opened.append(CalibLibrary(root)))
+        reader.start()
+        reader.join(timeout=0.3)
+        assert reader.is_alive() and not opened  # blocked while the index is being written
+    reader.join(timeout=10)
+    assert len(opened) == 1 and opened[0].list() == []
