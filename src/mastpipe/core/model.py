@@ -18,12 +18,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from mastpipe.core.times import to_utc
 
 EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "science", "background", "unknown")
 ARC_KINDS = ("full", "calfiber", "unknown")
@@ -63,7 +64,13 @@ def _check_columns(name: str, table: pd.DataFrame, columns: tuple[str, ...]) -> 
 
 @dataclass(frozen=True)
 class FrameMeta:
-    """Pipeline vocabulary for one raw frame, filled by ingest from the header map."""
+    """Pipeline vocabulary for one raw frame, filled by ingest from the header map.
+
+    ``mid_time`` is UTC; ``timezone`` says how the header's stamp got there: ``"utc"``
+    (the stamp carried an offset, or the map declares its clock UTC), ``"assumed-utc"``
+    (a stamp without an offset taken as UTC by assumption) or the IANA zone it was read
+    in; ``None`` when the frame has no time.
+    """
 
     instrument: str
     camera: str
@@ -71,6 +78,7 @@ class FrameMeta:
     configuration: str | None = None
     exposure_time: float | None = None
     mid_time: str | None = None
+    timezone: str | None = None
     binning: tuple[int, int] = (1, 1)
     readout_mode: str | None = None
     detector_temperature: float | None = None
@@ -313,7 +321,7 @@ class ReferenceSolution:
 
 def make_identifier(instrument: str, configuration: str, fiber_preset: str, created: str) -> str:
     """Reference identifier ``{instrument}_{configuration}_{fiber_preset}_{YYYYmmddTHHMMSS}``."""
-    stamp = datetime.fromisoformat(created).strftime("%Y%m%dT%H%M%S")
+    stamp = to_utc(created).strftime("%Y%m%dT%H%M%S")
     return f"{instrument}_{configuration}_{fiber_preset}_{stamp}"
 
 

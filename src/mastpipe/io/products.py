@@ -59,6 +59,7 @@ from mastpipe.core.model import (
     TraceSet,
     WavelengthSolution,
 )
+from mastpipe.core.times import to_utc
 from mastpipe.pipeline.provenance import NONE, Provenance
 from mastpipe.steps.geometry import GratingGeometry
 from mastpipe.steps.wavecal import solutions_hash
@@ -96,10 +97,7 @@ def product_name(meta: FrameMeta, kind: str, ext: str = ".fits") -> str:
     """
     stamp = "notime"
     if meta.mid_time is not None:
-        time = pd.Timestamp(meta.mid_time)
-        if time.tzinfo is not None:
-            time = time.tz_convert("UTC")
-        stamp = time.strftime("%Y%m%dT%H%M%S")
+        stamp = to_utc(meta.mid_time).strftime("%Y%m%dT%H%M%S")
     configuration = meta.configuration or "noconf"
     return f"{meta.instrument}_{configuration}_{meta.camera}_{stamp}_{kind}{ext}"
 

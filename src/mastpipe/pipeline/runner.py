@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,10 +82,11 @@ from mastpipe.core.model import (
     Spectrum,
     TraceSet,
 )
+from mastpipe.core.times import to_utc, utc_iso
 from mastpipe.instruments.registry import load_header_map, load_instrument, load_layout
 from mastpipe.io import products
-from mastpipe.io.ingest import load_frame, read_manifest, scan_folder
-from mastpipe.pipeline.arcs import _timestamp, pair_arcs, status_for
+from mastpipe.io.ingest import ASSUMED_UTC, load_frame, read_manifest, scan_folder
+from mastpipe.pipeline.arcs import pair_arcs, status_for
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import CALIB_FOLDER, _arc_lines, _provenance, _solve_and_package
 from mastpipe.pipeline.provenance import Provenance
@@ -186,6 +187,8 @@ class _Group:
     readout_mode: str | None
     temperature: float | None
     near_time: str | None
+    timezone: str | None = None
+    """How the group's frame times were read (:func:`_timezone` of their metadata)."""
     masters: dict[str, tuple[MasterCalib, Path]] = field(default_factory=dict)
     calib: CalibrationSet | None = None
     traceset: TraceSet | None = None
@@ -341,6 +344,14 @@ def _calibrated(group: _Group, ref: FrameRef, cosmics: bool = False) -> tuple[Fr
 # ------------------------------------------------------------------------------ masters
 
 
+def _timezone(metas: Iterable[FrameMeta]) -> str | None:
+    """The ``FrameMeta.timezone`` labels of ``metas`` for ``Provenance.timezone``: the one
+    label they share, the distinct labels joined by commas when they differ, ``None`` when
+    no frame has a time."""
+    zones = sorted({meta.timezone for meta in metas if meta.timezone is not None})
+    return ",".join(zones) if zones else None
+
+
 def _master_provenance(
     group: _Group, frames: list[Frame], calibrations: list[str], steps: list[str]
 ) -> Provenance:
@@ -350,6 +361,7 @@ def _master_provenance(
         inputs=[frame.meta.checksum for frame in frames],
         calibrations=calibrations,
         steps=steps,
+        timezone=_timezone(frame.meta for frame in frames),
     )
 
 
@@ -499,6 +511,7 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             f"{group.preset}, {len(traceset.missing)} missing, {len(extras)} extra dropped)"
         ],
         layout=group.preset,
+        timezone=frame.meta.timezone if source == "arc_full" else group.timezone,
     )
     products.write_traceset(path, traceset, prov)
     group.summary.products.append(path)
@@ -776,17 +789,12 @@ def _blend_drifts(
                 "usable": bool(all(bool(r["usable"]) for r, _ in present)),
             }
         )
-    origin = _timestamp(pairs[0][0].arc_mid_time)
+    origin = to_utc(pairs[0][0].arc_mid_time)
     offset = sum(
-        (
-            (_timestamp(model.arc_mid_time) - origin).total_seconds() * weight
-            for model, weight in pairs
-        ),
+        ((to_utc(model.arc_mid_time) - origin).total_seconds() * weight for model, weight in pairs),
         0.0,
     )
-    mid_time = (
-        (origin + pd.Timedelta(seconds=offset)).tz_convert(None).isoformat(timespec="seconds")
-    )
+    mid_time = utc_iso(origin + pd.Timedelta(seconds=offset))
     blended = DriftModel(
         arc_checksums=tuple(sorted({c for model, _ in pairs for c in model.arc_checksums})),
         arc_mid_time=mid_time,
@@ -943,6 +951,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         drift_arcs=list(drift_arcs),
         steps=steps,
         layout=group.preset,
+        timezone=meta.timezone,
     )
     products.write_spectra(path, es, prov, drift=drift, weights=weights)
     group.summary.products.append(path)
@@ -1082,6 +1091,7 @@ def _run_group(
         readout_mode=refs[0].meta.readout_mode,
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,
+        timezone=_timezone(ref.meta for ref in refs),
     )
     log.info(
         "group %s/%s: %s, layout %s, config %s",
@@ -1126,6 +1136,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             summary.failed.append((path.name, "unreadable FITS file"))
             log.error("unreadable FITS file skipped: %s", path.name)
         log.info("scanned %d frames in %s", len(refs), night_dir)
+        if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
+            log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")
         if not refs:
             summary.failed.append((f"night {night_dir.name}", NO_FRAMES))
             log.error("%s: %s", night_dir, NO_FRAMES)

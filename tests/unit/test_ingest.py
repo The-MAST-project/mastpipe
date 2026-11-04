@@ -160,6 +160,48 @@ def test_mid_time_is_derived_from_the_start_time(tmp_path: Path, highspec_map: H
         assert ref.meta.mid_time == expected, reference
 
 
+def test_frame_meta_records_the_timezone_used(tmp_path: Path, highspec_map: HeaderMap):
+    """A naive FRAME stamp under HighSpec's ``assume-utc`` is kept as UTC and labelled
+    ``assumed-utc``; a stamp with its own offset is converted and labelled ``utc``; a
+    zone named in the map converts a naive stamp and is the label."""
+    blank = np.zeros((2, 2), dtype=np.uint16)
+    write_fits(
+        tmp_path / "frame.fits",
+        blank,
+        {"IMAGETYP": "light", "EXPOSURE": 60.0, "FRAME": "2026-09-09T11:35:24.500"},
+    )
+    write_fits(
+        tmp_path / "offset.fits",
+        blank,
+        {"IMAGETYP": "light", "EXPOSURE": 60.0, "DATE-OBS": "2026-11-04T20:00:00+02:00"},
+    )
+    write_fits(tmp_path / "untimed.fits", blank, {"IMAGETYP": "light", "EXPOSURE": 60.0})
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert refs["frame.fits"].mid_time == "2026-09-09T11:35:54"
+    assert refs["frame.fits"].timezone == "assumed-utc"
+    assert refs["offset.fits"].mid_time == "2026-11-04T18:00:30"
+    assert refs["offset.fits"].timezone == "utc"
+    assert refs["untimed.fits"].mid_time is None and refs["untimed.fits"].timezone is None
+
+    raw = load_header_map("highspec")
+    raw["fields"]["mid_time"] = {**raw["fields"]["mid_time"], "timezone": "Asia/Jerusalem"}
+    local = {
+        ref.meta.source: ref.meta
+        for ref in scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw))
+    }
+    assert local["frame.fits"].mid_time == "2026-09-09T08:35:54"
+    assert local["frame.fits"].timezone == "Asia/Jerusalem"
+    assert local["offset.fits"].timezone == "utc"
+
+    # a manifest mid_time is taken as given, in UTC
+    manifest = tmp_path / "frames.csv"
+    write_manifest(manifest, [{"source": "frame.fits", "mid_time": "2026-09-09T12:00:00"}])
+    (ref,) = scan_folder(
+        tmp_path, "highspec", highspec_map, pattern="frame.fits", manifest=manifest
+    )
+    assert ref.meta.mid_time == "2026-09-09T12:00:00" and ref.meta.timezone == "utc"
+
+
 def test_scan_folder_rejects_a_missing_folder(tmp_path: Path, highspec_map: HeaderMap):
     with pytest.raises(FileNotFoundError, match="nope"):
         scan_folder(tmp_path / "nope", "highspec", highspec_map)

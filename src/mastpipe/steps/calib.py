@@ -21,13 +21,14 @@ Everything here is pure: arrays, dataclasses and plain parameters in, dataclasse
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from mastpipe.config.models import CalibParams, DetectorConfig
 from mastpipe.core.model import CalibrationSet, Frame, FrameMeta, MasterCalib
+from mastpipe.core.times import to_utc, utc_iso
 
 STACK_METHODS = ("median", "mean")
 MEDIAN_EFFICIENCY = 1.253
@@ -164,12 +165,12 @@ def _mean_or_none(values: Iterable[float | None]) -> float | None:
 
 def _mean_time_or_none(values: Iterable[str | None]) -> str | None:
     """Mean of ISO-8601 times as ISO-8601, ``None`` when no time is given."""
-    times = [datetime.fromisoformat(value) for value in values if value is not None]
+    times = [to_utc(value) for value in values if value is not None]
     if not times:
         return None
     origin = times[0]
-    offset = sum((time - origin for time in times), timedelta(0)) / len(times)
-    return (origin + offset).isoformat()
+    offset = sum((time - origin for time in times), pd.Timedelta(0)) / len(times)
+    return utc_iso(origin + offset)
 
 
 # ---------------------------------------------------------------------- calibration set

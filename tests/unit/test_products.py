@@ -89,6 +89,7 @@ def make_provenance() -> Provenance:
         drift_arcs=[CHECKSUMS[1], CHECKSUMS[2]],
         steps=["bias", "background", "extract"],
         layout="survey45",
+        timezone="assumed-utc",
     )
 
 
@@ -173,6 +174,10 @@ def test_provenance_cards_roundtrip():
     # a product written before the layout card existed reads back with no layout
     del header["MPLAYOUT"]
     assert Provenance.from_header(header).layout is None
+    assert header["MPTZ"] == "assumed-utc"
+    # nor does one written before the time-zone card existed
+    del header["MPTZ"]
+    assert Provenance.from_header(header).timezone is None
 
     bare = Provenance(
         pipeline_version="0.0.1", config_hash="abcdef012345", inputs=[], calibrations=[]
@@ -182,11 +187,12 @@ def test_provenance_cards_roundtrip():
         header[key] = (value, comment)
     assert header["MPWREF"] == "none" and header["MPWREFH"] == "none"
     assert header["MPLAYOUT"] == "none"
+    assert header["MPTZ"] == "none"
     assert header["MPNIN"] == 0 and "MPIN0001" not in header
     back = Provenance.from_header(header)
     assert back == bare
     assert back.reference_id is None and back.drift_arcs == [] and back.steps == []
-    assert back.layout is None
+    assert back.layout is None and back.timezone is None
 
 
 def test_product_name_format():
@@ -369,10 +375,11 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         assert drift_header["MPDNST"] == 1 and drift_header["MPDST01"] == pytest.approx(2e-6)
         assert list(hdul["DRIFT"].data["WEIGHT"]) == [0.6, 0.4]
         primary = hdul[0].header
-        assert primary["MPNMK"] == 18
-        meta_keys = {primary[f"MPMK{n:02d}"] for n in range(1, 19)}
+        assert primary["MPNMK"] == 19
+        meta_keys = {primary[f"MPMK{n:02d}"] for n in range(1, 20)}
         assert {"instrument", "camera", "exposure_type", "binning", "unresolved"} <= meta_keys
-        assert json.loads(primary["MPMV07"]) == [1, 1]
+        assert "timezone" in meta_keys
+        assert json.loads(primary["MPMV08"]) == [1, 1]
 
 
 def make_drift() -> DriftModel:

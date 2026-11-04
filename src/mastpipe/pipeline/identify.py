@@ -351,6 +351,7 @@ def _provenance(
         wavelength_status="solved",
         steps=[*lines.steps, *steps],
         layout=layout,
+        timezone=lines.frame.meta.timezone,
     )
 
 

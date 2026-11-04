@@ -26,6 +26,7 @@ from typing import Any
 import pandas as pd
 
 from mastpipe.core.model import MasterCalib, ReferenceSolution
+from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io.products import (
     product_name,
@@ -41,14 +42,6 @@ from mastpipe.steps.geometry import GratingGeometry, grating_geometry
 INDEX_FILE = "index.json"
 REFERENCE_KIND = "reference"
 """The ``kind`` of a reference entry; masters carry their ``MasterCalib.kind``."""
-
-
-def _timestamp(value: str) -> pd.Timestamp:
-    """``value`` as a UTC timestamp; a naive time is taken to be UTC."""
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is None:
-        return stamp.tz_localize("UTC")
-    return stamp.tz_convert("UTC")
 
 
 def registry_geometry(camera: str) -> Any:
@@ -173,20 +166,20 @@ class CalibLibrary:
         if not matches:
             return None
         if near_time is not None:
-            target = _timestamp(near_time)
+            target = to_utc(near_time)
 
             def distance(entry: dict[str, Any]) -> float:
                 time = entry.get("mid_time")
                 if time is None:
                     return float("inf")
-                return abs((_timestamp(time) - target).total_seconds())
+                return abs((to_utc(time) - target).total_seconds())
 
             chosen = min(matches, key=distance)
         else:
             chosen = max(
                 matches,
                 key=lambda e: (
-                    _timestamp(e["mid_time"])
+                    to_utc(e["mid_time"])
                     if e.get("mid_time")
                     else pd.Timestamp.min.tz_localize("UTC")
                 ),
@@ -262,13 +255,11 @@ class CalibLibrary:
         if identifier is not None:
             entries = [e for e in entries if e.get("identifier") == identifier]
         elif at_time is not None:
-            limit = _timestamp(at_time)
-            entries = [e for e in entries if _timestamp(str(e["valid_from"])) <= limit]
+            limit = to_utc(at_time)
+            entries = [e for e in entries if to_utc(str(e["valid_from"])) <= limit]
         if not entries:
             return None
-        chosen = max(
-            entries, key=lambda e: (_timestamp(str(e["valid_from"])), str(e["identifier"]))
-        )
+        chosen = max(entries, key=lambda e: (to_utc(str(e["valid_from"])), str(e["identifier"])))
         return self._read_reference(chosen)
 
     def reference_for_source(

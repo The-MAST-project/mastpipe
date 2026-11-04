@@ -5,7 +5,7 @@ sections:
 
 ``fields``
     pipeline name -> ``{keys, type, lower, map, default, filename_regex, missing_values,
-    reference}``. ``keys`` are raw keywords tried in order (the first present wins); the
+    reference, timezone}``. ``keys`` are raw keywords tried in order (the first present wins); the
     value is then converted to ``type`` (``float``, ``int`` or ``str``), lower-cased when
     ``lower`` is true and translated through ``map`` (an unmapped value is left as is). A
     keyword whose raw or converted value is listed in ``missing_values`` (a sentinel such
@@ -15,7 +15,10 @@ sections:
     that fails too. A field that still has no value is *unresolved*: ``None`` in the result
     and listed by name. A value that cannot be converted counts as unresolved as well.
     ``reference`` (``start``, ``mid`` or ``end``; default ``start``) says which instant of
-    the exposure a time field records; ingest derives the mid-time from it.
+    the exposure a time field records; ingest derives the mid-time from it. ``timezone``
+    (``utc``, ``assume-utc`` or an IANA zone name; default ``utc``) says how a time
+    field's stamp without an offset is read (see :mod:`mastpipe.core.times`); ``assume-utc``
+    reads it as UTC but records that this is an assumption.
 
 ``classification``
     an ordered list of rules ``{when: {<field>: {lt: v} | {eq: v} | {missing: true}}, type}``
@@ -35,6 +38,7 @@ from typing import Any
 from astropy.io.fits.card import Undefined
 
 from mastpipe.core.model import EXPOSURE_TYPES
+from mastpipe.core.times import UTC, check_timezone
 
 TYPES: dict[str, type] = {"float": float, "int": int, "str": str}
 FIELD_OPTIONS = (
@@ -46,6 +50,7 @@ FIELD_OPTIONS = (
     "filename_regex",
     "missing_values",
     "reference",
+    "timezone",
 )
 OPERATORS = ("lt", "eq", "missing")
 TIME_REFERENCES = ("start", "mid", "end")
@@ -68,6 +73,7 @@ class FieldSpec:
     filename_regex: re.Pattern[str] | None = None
     missing_values: tuple[Any, ...] = ()
     reference: str = "start"
+    timezone: str = UTC
 
     @property
     def has_default(self) -> bool:
@@ -209,6 +215,10 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
             f"header map field {name!r}: reference must be one of {TIME_REFERENCES}, "
             f"got {reference!r}"
         )
+    try:
+        timezone = check_timezone(spec.get("timezone", UTC))
+    except ValueError as error:
+        raise ValueError(f"header map field {name!r}: timezone: {error}") from error
     return FieldSpec(
         name=name,
         keys=keys,
@@ -219,6 +229,7 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         filename_regex=regex,
         missing_values=tuple(missing),
         reference=str(reference),
+        timezone=timezone,
     )
 
 

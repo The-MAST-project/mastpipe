@@ -6,9 +6,11 @@ producing one :class:`~mastpipe.core.model.FrameRef` per image HDU (the primary 
 when it carries data, else every image extension, each read with the primary header
 underneath its own). The ``mid_time`` of a frame is derived from the header's time field
 and the exposure time according to the field's ``reference`` (``start``: plus half the
-exposure; ``end``: minus half; ``mid``: as given); when the exposure time is unknown the
-time stays as given and ``unresolved`` lists ``mid_time``. A manifest CSV can override
-any metadata field frame by frame (its ``mid_time`` is taken as the mid-time); it is how
+exposure; ``end``: minus half; ``mid``: as given) and converted to UTC, a stamp without
+an offset read according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
+``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
+shifted and ``unresolved`` lists ``mid_time``. A manifest CSV can override any metadata
+field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); it is how
 laboratory data without instrument keywords enter the pipeline.
 :func:`load_frame` reads one HDU as ``float32``, crops it and applies the detector's
 orientation. Downstream code sees only the pipeline vocabulary carried by
@@ -21,7 +23,6 @@ import dataclasses
 import hashlib
 from collections import ChainMap
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,12 +32,15 @@ from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig
 from mastpipe.core.model import ARC_KINDS, EXPOSURE_TYPES, Frame, FrameMeta, FrameRef
+from mastpipe.core.times import ASSUME_UTC, UTC, is_explicit, to_utc, utc_iso
 from mastpipe.io.headers import HeaderMap
 
 CHECKSUM_LENGTH = 16
 CHUNK_SIZE = 1 << 20
 DEFAULT_CAMERA = "main"
 MANIFEST_RULE = "manifest"
+ASSUMED_UTC = "assumed-utc"
+"""``FrameMeta.timezone`` of a stamp without an offset taken as UTC under ``assume-utc``."""
 TIME_FIELD = "mid_time"
 """The header-map field carrying the exposure's time, whose ``reference`` says which instant."""
 
@@ -45,6 +49,7 @@ PASSTHROUGH_FIELDS = (
     "configuration",
     "exposure_time",
     "mid_time",
+    "timezone",
     "readout_mode",
     "detector_temperature",
     "lamp_state",
@@ -159,8 +164,12 @@ def _build_meta(
     exposure_type, rule = header_map.classify(fields)
     spec = header_map.fields.get(TIME_FIELD)
     reference = "mid" if spec is None else spec.reference
-    mid_time, derived = _mid_time(fields.get(TIME_FIELD), fields.get("exposure_time"), reference)
+    timezone = UTC if spec is None else spec.timezone
+    mid_time, derived, zone = _mid_time(
+        fields.get(TIME_FIELD), fields.get("exposure_time"), reference, timezone
+    )
     fields[TIME_FIELD] = mid_time
+    fields["timezone"] = zone
     if not derived:
         unresolved.append(TIME_FIELD)
     arc_kind = fields.get("arc_kind")
@@ -188,28 +197,41 @@ def _axis_binning(value: Any) -> int:
     return 1 if value is None else int(value)
 
 
-def _mid_time(value: Any, exposure_time: Any, reference: str) -> tuple[str | None, bool]:
-    """``(mid_time, derived)``: the exposure's mid-time from the header's time ``value``
-    (an ISO-8601 string) and ``exposure_time`` in seconds, according to ``reference``.
+def _mid_time(
+    value: Any, exposure_time: Any, reference: str, timezone: str = UTC
+) -> tuple[str | None, bool, str | None]:
+    """``(mid_time, derived, zone)``: the exposure's UTC mid-time from the header's time
+    ``value`` (an ISO-8601 string) and ``exposure_time`` in seconds, according to
+    ``reference``; a ``value`` without an offset is read according to ``timezone``.
 
-    ``derived`` is false when the time is given but could not be turned into a mid-time
-    (no exposure time, or a time that does not parse); the value is then passed on as it
-    came. ``None`` stays ``None`` (and counts as derived: there is nothing to note twice).
+    ``zone`` is the :attr:`FrameMeta.timezone` label: ``"utc"`` for a value with its own
+    offset (or under ``timezone="utc"``), ``"assumed-utc"`` under ``"assume-utc"``, else
+    the zone name. ``derived`` is false when the time is given but could not be turned
+    into a mid-time: without an exposure time it is converted but not shifted; a time that
+    does not parse is passed on as it came, with no zone. ``None`` stays ``None`` (and
+    counts as derived: there is nothing to note twice).
     """
     if value is None:
-        return None, True
+        return None, True, None
     text = str(value)
-    if reference == "mid":
-        return text, True
-    if exposure_time is None:
-        return text, False
     try:
-        start_or_end = datetime.fromisoformat(text)
-        half = timedelta(seconds=float(exposure_time) / 2.0)
+        stamp = to_utc(text, timezone)
+    except ValueError:
+        return text, False, None
+    if is_explicit(text):
+        zone = UTC
+    else:
+        zone = ASSUMED_UTC if timezone == ASSUME_UTC else timezone
+    if reference == "mid":
+        return utc_iso(stamp), True, zone
+    if exposure_time is None:
+        return utc_iso(stamp), False, zone
+    try:
+        half = pd.Timedelta(seconds=float(exposure_time) / 2.0)
     except (TypeError, ValueError):
-        return text, False
-    mid = start_or_end + half if reference == "start" else start_or_end - half
-    return mid.isoformat(), True
+        return utc_iso(stamp), False, zone
+    mid = stamp + half if reference == "start" else stamp - half
+    return utc_iso(mid), True, zone
 
 
 def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
@@ -293,4 +315,6 @@ def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[st
         raise ValueError(f"{label}: arc_kind must be one of {ARC_KINDS}")
     if "exposure_type" in values:
         values.setdefault("classification_rule", MANIFEST_RULE)
+    if "mid_time" in values:
+        values["timezone"] = UTC  # a manifest's mid_time is taken as given, in UTC
     return source, extension, values

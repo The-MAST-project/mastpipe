@@ -6,12 +6,19 @@
 # fields: pipeline name -> {keys: header keywords tried in order, type, lower, map, default,
 #         filename_regex (named group `value`, used when no keyword is present),
 #         missing_values (sentinels that count as "not written"),
-#         reference (start | mid | end: the instant a time keyword records)}
+#         reference (start | mid | end: the instant a time keyword records),
+#         timezone (utc | assume-utc | an IANA zone: how a stamp without an offset is read)}
 # Andor Solis stamps DATE / DATE-OBS with the exposure start; ingest adds half the exposure
-# time to reach the mid-time. TEMP is -999 while the sensor has not been read.
+# time to reach the mid-time. The control software's camera driver stamps FRAME (start of
+# frame exposure, with milliseconds) and DATE (file creation) from the Windows clock with no
+# time zone, and whether that clock keeps UTC is not established: assume-utc reads such a
+# stamp as UTC and records the assumption (MPTZ on every product, one warning per run).
+# Change it to the clock's IANA zone once known. DeepSpec's T_MID (UTC, reference: mid)
+# will be declared in its own map when that instrument lands.
+# TEMP is -999 while the sensor has not been read.
 fields:
   exposure_time: {keys: [EXPOSURE, EXPTIME], type: float}
-  mid_time: {keys: [DATE-OBS, DATE], type: str, reference: start}
+  mid_time: {keys: [DATE-OBS, FRAME, DATE], type: str, reference: start, timezone: assume-utc}
   detector_temperature: {keys: [TEMP, CCD-TEMP], type: float, missing_values: [-999]}
   binning_x: {keys: [HBIN], type: int}
   binning_y: {keys: [VBIN], type: int}

@@ -196,3 +196,29 @@ def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_pa
     message = f"configuration unknown; pass --configuration one of {GRATING_NAMES}"
     assert summary.failed == [("group main/None", message)]
     assert summary.products == [] and summary.qc == []
+
+
+# ------------------------------------------------------------------ assumed time zone
+
+
+def test_one_warning_per_run_when_frame_times_carry_no_zone(sim_night, tmp_path):
+    """The simulator writes a naive DATE-OBS, which HighSpec's map takes as UTC: the run log
+    says so once, however many frames there are, and not at all when every stamp has its
+    own offset."""
+    sim_dir, _ = sim_night
+    warning = "frame times carry no time zone; taken as UTC (header map 'assume-utc')"
+    for name, offset in (("naive", ""), ("explicit", "+00:00")):
+        folder = tmp_path / name
+        folder.mkdir()
+        for k, source in enumerate(("sim_bias_00.fits", "sim_bias_01.fits")):
+            with fits.open(sim_dir / source) as hdul:
+                data = hdul[0].data.copy()
+                header = hdul[0].header.copy()
+            del header["GRATING"]  # the group then fails fast, after the scan
+            header["DATE-OBS"] = header["DATE-OBS"] + offset
+            fits.PrimaryHDU(data, header).writeto(folder / f"frame_{k:04d}.fits")
+        out = tmp_path / f"out_{name}"
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        count = log_file.read_text(encoding="utf-8").count(warning)
+        assert count == (1 if name == "naive" else 0), name

@@ -192,6 +192,22 @@ def test_time_reference_option_is_validated():
     assert highspec.fields["mid_time"].reference == "start"
 
 
+def test_timezone_option_is_validated():
+    def spec(**options):
+        raw = {"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", **options}}}
+        return HeaderMap.from_dict(raw).fields["mid_time"]
+
+    assert spec().timezone == "utc"
+    for zone in ("utc", "assume-utc", "Asia/Jerusalem", "UTC"):
+        assert spec(timezone=zone).timezone == zone
+    for bad in ("Mars/Olympus", "", "../etc", 3):
+        with pytest.raises(ValueError, match="timezone"):
+            spec(timezone=bad)
+    highspec = HeaderMap.from_dict(load_header_map("highspec"))
+    assert highspec.fields["mid_time"].timezone == "assume-utc"
+    assert highspec.fields["mid_time"].keys == ("DATE-OBS", "FRAME", "DATE")
+
+
 def test_lt_on_a_non_numeric_value_does_not_match():
     hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
     base = {name: None for name in hmap.fields}
