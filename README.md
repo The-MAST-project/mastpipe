@@ -1,5 +1,11 @@
 # mastpipe
 
+[![CI](https://github.com/The-MAST-project/mastpipe/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/The-MAST-project/mastpipe/actions/workflows/ci.yml)
+[![Documentation](https://readthedocs.org/projects/mastpipe/badge/?version=latest)](https://mastpipe.readthedocs.io/en/latest/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://github.com/The-MAST-project/mastpipe/blob/main/pyproject.toml)
+[![License: BSD-3-Clause](https://img.shields.io/github/license/The-MAST-project/mastpipe.svg)](https://github.com/The-MAST-project/mastpipe/blob/main/LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 Data-reduction pipeline for the MAST fiber-fed spectrographs, **HighSpec**
 (R ≈ 20 000, narrow-band gratings, one detector) and **DeepSpec** (R ≈ 500,
 four cameras). It takes raw frames to wavelength-calibrated, sky-subtracted
