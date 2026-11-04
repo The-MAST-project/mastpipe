@@ -344,27 +344,48 @@ def _mid_time(
     return utc_iso(mid), True, zone
 
 
-def expected_shape(detector: DetectorConfig) -> tuple[int, int]:
-    """Shape of a frame of ``detector`` after :func:`load_frame`'s crop and orientation."""
-    ny, nx = detector.shape
-    if detector.crop is not None:
-        x_min, x_max, y_min, y_max = detector.crop
+def _binned_crop(
+    detector: DetectorConfig, binning: tuple[int, int]
+) -> tuple[int, int, int, int] | None:
+    """``detector.crop`` (unbinned pixels) in the pixels of a frame binned ``binning``
+    (``(x, y)`` factors): each bound integer-divided by its axis's factor."""
+    if detector.crop is None:
+        return None
+    (bx, by), (x_min, x_max, y_min, y_max) = binning, detector.crop
+    return x_min // bx, x_max // bx, y_min // by, y_max // by
+
+
+def expected_shape(detector: DetectorConfig, binning: tuple[int, int] = (1, 1)) -> tuple[int, int]:
+    """Shape of a frame of ``detector`` binned ``binning`` (``(x, y)`` factors) after
+    :func:`load_frame`'s crop and orientation. ``detector.shape`` and ``crop`` are in
+    unbinned pixels; a binned frame is cropped and sized in binned pixels, each axis divided
+    by its factor before the transpose."""
+    bx, by = binning
+    crop = _binned_crop(detector, binning)
+    if crop is None:
+        ny, nx = detector.shape[0] // by, detector.shape[1] // bx
+    else:
+        x_min, x_max, y_min, y_max = crop
         ny, nx = y_max - y_min, x_max - x_min
     return (nx, ny) if detector.transpose else (ny, nx)
 
 
 def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
     """The HDU of ``ref`` as a ``float32`` :class:`Frame`: cropped to ``detector.crop``
-    (``x_min, x_max, y_min, y_max``, end-exclusive) when set, then transposed, flipped
-    in x and flipped in y as the detector asks, in that order. No variance or mask yet."""
+    (``x_min, x_max, y_min, y_max``, end-exclusive, in unbinned pixels; a frame binned
+    ``ref.meta.binning`` is cropped at the bounds divided by its factors) when set, then
+    transposed, flipped in x and flipped in y as the detector asks, in that order. A frame
+    of the detector's size loads to :func:`expected_shape` of its binning. No variance or
+    mask yet."""
     with fits.open(ref.path) as hdul:
         data = np.asarray(hdul[ref.extension].data, dtype=np.float32)
     if data.ndim != 2:
         raise ValueError(
             f"{ref.meta.source}[{ref.extension}]: expected a 2-D image, got {data.ndim}-D"
         )
-    if detector.crop is not None:
-        x_min, x_max, y_min, y_max = detector.crop
+    crop = _binned_crop(detector, ref.meta.binning)
+    if crop is not None:
+        x_min, x_max, y_min, y_max = crop
         data = data[y_min:y_max, x_min:x_max]
     if detector.transpose:
         data = data.T

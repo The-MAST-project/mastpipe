@@ -72,6 +72,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -395,22 +396,27 @@ def _group_binning(refs: list[FrameRef]) -> tuple[int, int]:
     return Counter(ref.meta.binning for ref in candidates or refs).most_common(1)[0][0]
 
 
+def _check_binning(group: _Group, ref: FrameRef) -> None:
+    """``ValueError`` when ``ref`` is not binned as the group."""
+    if ref.meta.binning != group.binning:
+        (x, y), (gx, gy) = ref.meta.binning, group.binning
+        raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
+
+
 def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list[Frame]:
     """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
     ``calibrate``, calibrated as a flat is: background subtracted when
     ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
     load or calibrate, whose binning is not ``group.binning`` or whose loaded shape is not
-    the detector's (:func:`~mastpipe.io.ingest.expected_shape`) is dropped under the error
-    policy of :func:`_per_frame`: recorded in ``failed`` with the reason, or raised under
-    ``on_error='raise'``."""
+    the detector's at that binning (:func:`~mastpipe.io.ingest.expected_shape`) is dropped
+    under the error policy of :func:`_per_frame`: recorded in ``failed`` with the reason,
+    or raised under ``on_error='raise'``."""
     detector = group.effective.detector
-    shape = expected_shape(detector)
+    shape = expected_shape(detector, group.binning)
     frames: list[Frame] = []
 
     def use(group: _Group, ref: FrameRef) -> None:
-        if ref.meta.binning != group.binning:
-            (x, y), (gx, gy) = ref.meta.binning, group.binning
-            raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
+        _check_binning(group, ref)
         frame = load_frame(ref, detector)
         if frame.data.shape != shape:
             raise ValueError(f"shape {frame.data.shape} is not the detector's {shape}")
@@ -541,14 +547,25 @@ def _content_steps(meta: FrameMeta) -> list[str]:
 
 def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]:
     """Calibrated arcs that may serve as the trace source, the one lighting the most traces
-    first: the arcs the header calls full, else the arcs of unknown kind."""
+    first: the arcs the header calls full, else the arcs of unknown kind. Each candidate
+    runs under the error policy of :func:`_per_frame`: one not binned as the group or that
+    cannot be calibrated is recorded in ``failed`` and removed from ``arc_refs``, so that
+    the arc stage does not record it again; the others still compete."""
     known = [ref for ref in arc_refs if ref.meta.arc_kind == "full"]
     candidates = known or [ref for ref in arc_refs if ref.meta.arc_kind is None]
     trace_params = group.params.trace.model_copy(update={"collapse": "percentile"})
     scored: list[tuple[int, int, Frame]] = []
-    for n, ref in enumerate(candidates):
+
+    def score(group: _Group, ref: FrameRef, n: int) -> None:
+        _check_binning(group, ref)
         frame, _ = _calibrated(group, ref)
         scored.append((len(find_traces(frame.data, trace_params)), -n, frame))
+
+    for n, ref in enumerate(candidates):
+        before = len(scored)
+        _per_frame(group, ref, partial(score, n=n))
+        if len(scored) == before:
+            arc_refs.remove(ref)
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [frame for _, _, frame in scored]
 

@@ -10,7 +10,7 @@ from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig
 from mastpipe.core.model import FrameMeta, FrameRef
-from mastpipe.instruments.registry import load_header_map
+from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.headers import HeaderMap
 from mastpipe.io.ingest import (
     apply_manifest,
@@ -247,6 +247,39 @@ def test_load_frame_crops_and_orients(tmp_path: Path):
 
     flipped = load_frame(ref, make_detector(flip_y=True))
     np.testing.assert_array_equal(flipped.data, data[::-1, :])
+
+
+def test_expected_shape_scales_with_binning():
+    """``shape`` and ``crop`` are unbinned pixels: at 1x1 the loaded shape is the crop's (or
+    the frame's), oriented; at 2x2 each extent halves; x binning divides the raw x extent
+    and y binning the raw y extent, before the transpose."""
+    highspec = load_instrument("highspec").cameras["main"]
+    assert expected_shape(highspec) == (398, 1598)
+    assert expected_shape(highspec, (1, 1)) == (398, 1598)
+    assert expected_shape(highspec, (2, 2)) == (199, 799)
+    assert expected_shape(make_detector()) == (4, 6)
+    assert expected_shape(make_detector(), (2, 2)) == (2, 3)
+    rotated = make_detector(shape=(8, 12), crop=(2, 10, 0, 8), transpose=True)
+    assert expected_shape(rotated) == (8, 8)
+    assert expected_shape(rotated, (2, 1)) == (4, 8)  # x halves, then becomes the rows
+
+
+def test_load_frame_of_a_binned_frame(tmp_path: Path):
+    """A frame binned 2x2 (``HBIN = VBIN = 2``, half the raw size on each axis) is cropped
+    at the halved bounds and loads to ``expected_shape(detector, (2, 2))``."""
+    detector = load_instrument("highspec").cameras["main"]
+    raw_y, raw_x = detector.shape
+    data = np.full((raw_y // 2, raw_x // 2), 600, dtype=np.uint16)
+    write_fits(tmp_path / "b.fits", data, {"HBIN": 2, "VBIN": 2})
+    meta = FrameMeta(
+        instrument="highspec",
+        camera="main",
+        exposure_type="bias",
+        binning=(2, 2),
+        source="b.fits",
+    )
+    frame = load_frame(FrameRef(tmp_path / "b.fits", 0, meta), detector)
+    assert frame.data.shape == expected_shape(detector, (2, 2)) == (199, 799)
 
 
 def test_manifest_overrides_fields(night: Path, highspec_map: HeaderMap, tmp_path: Path):

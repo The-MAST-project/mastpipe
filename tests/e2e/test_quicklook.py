@@ -30,6 +30,7 @@ from mastpipe.io.products import (
     read_qc,
     read_reference,
     read_spectra,
+    read_traceset,
 )
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import run_identify
@@ -697,6 +698,29 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
 
     argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec"]
     assert main(argv + ["--layout", "survey45"]) == 2
+
+
+def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, night):
+    """A night without a flat finds its traces on a full arc. A second full arc binned 2x1
+    is a candidate that cannot be calibrated: it is recorded once in ``failed`` and left
+    out, the traces still come from the good full arc and every science frame is reduced."""
+    folder = tmp_path / "night"
+    folder.mkdir()
+    truth = night.truth
+    copy_frames(night.dir, truth, folder, ["bias", "dark", "background", "arc", "science"])
+    with fits.open(night.full_arc) as hdul:
+        data, header = hdul[0].data.copy(), hdul[0].header.copy()
+    header["HBIN"] = 2
+    fits.PrimaryHDU(data, header).writeto(folder / "sim_arc_full_bad.fits")
+
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options())
+    assert [source for source, _ in summary.failed] == ["sim_arc_full_bad.fits"]
+    trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
+    assert trace_qc.values["source"] == "arc_full"
+    _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
+    assert prov.inputs == [file_checksum(night.full_arc)]
+    assert len(spec_products(out)) == N_SCIENCE
 
 
 # --------------------------------------------------------------- light frames by content
