@@ -8,8 +8,9 @@ frame's metadata, never from the raw file name:
 ```
 
 with the UTC mid-time of the exposure (`notime` without one), `checksum` the
-first six hex digits of the input file's SHA-256 (so two exposures with the same
-mid-time never share a name; `nosum` for a master without a source file) and
+first six hex digits of the input file's SHA-256 (for a master, its first input
+frame's), so two exposures with the same mid-time never share a name (`nosum`
+on a trace set built from a library flat, which has no input frame), and
 `kind` one of `bias`, `dark`,
 `background`, `flat`, `traces`, `spec`, `comb_<target>`. Reference solutions
 are `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being

@@ -50,10 +50,13 @@ its source.
 ## Names
 
 ```text
-{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits      masters, traces, spec, comb_<target>
-{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits        reference solutions
+{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits   masters, traces, spec, comb_<target>
+{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits              reference solutions
 ```
 
 Times are the exposure's UTC mid-time, derived by ingest from the header's
-start time and the exposure time. Raw file names never appear in product
-names.
+start time and the exposure time (`notime` without one). `checksum` is the first
+six hex digits of the input frame's SHA-256 (for a master or trace set, its
+first input frame's), so two exposures with the same mid-time never share a
+name; a trace set built from a library flat has no input frame and carries
+`nosum`. Raw file names never appear in product names.
