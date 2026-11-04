@@ -76,6 +76,24 @@ def test_frame_meta_rejects_unknown_arc_kind():
         meta.camera = "other"  # frozen
 
 
+def test_target_for_prefers_exact_then_star():
+    meta = make_meta(targets=(("*", "all"), ("mast02", "two")))
+    assert meta.target_for("mast02") == "two"
+    assert meta.target_for("mast07") == "all"
+    assert meta.target_for(None) == "all"
+    assert make_meta().target_for("mast01") is None
+    only = make_meta(targets=(("mast01", "one"),))
+    assert only.target_for("mast01") == "one" and only.target_for("mast02") is None
+    assert only.target_for(None) is None
+
+
+def test_frame_meta_rejects_malformed_targets():
+    with pytest.raises(ValueError, match="targets"):
+        make_meta(targets=(("mast01",),))
+    with pytest.raises(ValueError, match="targets"):
+        make_meta(targets=(("mast01", 3),))
+
+
 def test_frame_rejects_shape_mismatch():
     data = np.zeros((4, 5), dtype=np.float32)
     with pytest.raises(ValueError, match="variance"):

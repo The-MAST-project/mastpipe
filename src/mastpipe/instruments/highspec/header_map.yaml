@@ -7,7 +7,8 @@
 #         filename_regex (named group `value`, used when no keyword is present),
 #         missing_values (sentinels that count as "not written"),
 #         reference (start | mid | end: the instant a time keyword records),
-#         timezone (utc | assume-utc | an IANA zone: how a stamp without an offset is read)}
+#         timezone (utc | assume-utc | an IANA zone: how a stamp without an offset is read),
+#         per_unit (a keyword template with {nn}, read once per telescope unit 01..20)}
 # Andor Solis stamps DATE / DATE-OBS with the exposure start; ingest adds half the exposure
 # time to reach the mid-time. The control software's camera driver stamps FRAME (start of
 # frame exposure, with milliseconds) and DATE (file creation) from the Windows clock with no
@@ -52,6 +53,10 @@ fields:
     keys: [GRATING]
     filename_regex: "(?P<value>mgb518|halpha|caiihk)"
     map: {mgb518: Mg, halpha: Halpha, caiihk: Ca}
+  # Each telescope of an exposure has its own target. OBJ01..OBJ20 (one card per unit) is
+  # the seam for when the control software writes them; none is written today. Without
+  # them a single OBJECT names the target of every science fiber.
+  targets: {per_unit: "OBJ{nn}"}
   target: {keys: [OBJECT]}
 
 # IMAGETYP = 'light' is what the control software writes for every shutter-open exposure,

@@ -275,3 +275,37 @@ def test_a_map_without_conditional_rules_leaves_light_as_is():
     hmap = HeaderMap.from_dict(raw)
     assert hmap.classify({"exposure_type": "light", "exposure_time": 0.0}) == ("light", "header")
     assert hmap.classify({"exposure_type": None, "exposure_time": 0.0}) == ("science", "rule:0")
+
+
+# ------------------------------------------------------------------------- per_unit fields
+
+PER_UNIT_MAP = {
+    "fields": {
+        "targets": {"per_unit": "OBJ{nn}", "missing_values": ["none"]},
+        "target": {"keys": ["OBJECT"]},
+    }
+}
+
+
+def test_per_unit_field_collects_present_units_in_unit_order():
+    hmap = HeaderMap.from_dict(PER_UNIT_MAP)
+    header = {"OBJ03": "HD 3", "OBJ01": "HD 1", "OBJ02": "none", "OBJ04": "", "OBJ21": "x"}
+    fields, unresolved = hmap.resolve(header, "frame.fits")
+    assert fields["targets"] == (("mast01", "HD 1"), ("mast03", "HD 3"))
+    assert unresolved == ["target"]
+    fields, unresolved = hmap.resolve({"OBJECT": "star"}, "frame.fits")
+    assert fields["targets"] is None and fields["target"] == "star"
+    assert unresolved == ["targets"]
+
+
+def test_per_unit_spec_is_validated():
+    with pytest.raises(ValueError, match="nn"):
+        HeaderMap.from_dict({"fields": {"targets": {"per_unit": "OBJ"}}})
+    for other in ({"keys": ["OBJECT"]}, {"filename_regex": "(?P<value>x)"}, {"default": "x"}):
+        with pytest.raises(ValueError, match="per_unit"):
+            HeaderMap.from_dict({"fields": {"targets": {"per_unit": "OBJ{nn}", **other}}})
+
+
+def test_highspec_map_reads_targets_per_unit(highspec_map):
+    assert highspec_map.fields["targets"].per_unit == "OBJ{nn}"
+    assert highspec_map.fields["target"].keys == ("OBJECT",)

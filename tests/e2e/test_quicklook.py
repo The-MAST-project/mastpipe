@@ -250,8 +250,11 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
         assert len(qc.values["median_snr"]) == len(es.spectra)
         assert len(qc.values["masked_fraction"]) == len(es.spectra)
         assert qc.values["sky"] == []
-        # a combined product per target of the exposure
-        for target in group_by_target(es.spectra):
+        assert len(qc.values["targets"]) == 20  # one target per telescope unit
+        # a combined product per target of the exposure: four targets, five telescopes each
+        groups = group_by_target(es.spectra)
+        assert sorted(groups) == sorted(truth.extras["targets"]) and len(groups) == 4
+        for target in groups:
             combined = out_dir / "spec" / combined_name(es.meta, target)
             assert combined.is_file(), combined.name
             cs, meta, comb_prov = read_combined(combined)
@@ -718,6 +721,8 @@ def test_cli_quicklook_and_show(transferred_run, identified, night, out_dir, cap
     out = capsys.readouterr().out
     assert "spectra" in out and "transferred" in out and identified.ref.identifier in out
     assert "science" in out and "sky" in out and "arc" in out
+    first = night.truth.layout.dropna(subset=["telescope", "target"]).iloc[0]
+    assert f"{first.telescope}={first.target}" in out  # the targets per telescope
     assert main(["show", str(identified.path)]) == 0
     out = capsys.readouterr().out
     assert "reference" in out and identified.ref.identifier in out and "solved" in out

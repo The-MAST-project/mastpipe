@@ -105,7 +105,8 @@ def extract_aperture(frame: Frame, traceset: TraceSet, params: ExtractParams) ->
     (``ValueError`` when ``None``).
 
     The spectrum carries ``fiber = trace.index``, the trace's ``role`` and ``telescope``,
-    ``target = frame.meta.target`` for traces with role ``"science"`` (``None`` otherwise)
+    ``target = frame.meta.target_for(trace.telescope)`` for traces with role ``"science"``
+    (``None`` otherwise)
     and ``pixel = arange(nx)``.
     """
     if frame.variance is None:
@@ -155,7 +156,7 @@ def extract_aperture(frame: Frame, traceset: TraceSet, params: ExtractParams) ->
                 mask=low | flagged,
                 role=trace.role,
                 telescope=trace.telescope,
-                target=frame.meta.target if trace.role == "science" else None,
+                target=frame.meta.target_for(trace.telescope) if trace.role == "science" else None,
             )
         )
     return spectra

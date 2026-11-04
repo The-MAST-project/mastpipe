@@ -60,9 +60,9 @@ def toy_frame(
     data: np.ndarray,
     variance: np.ndarray | None = None,
     mask: np.ndarray | None = None,
-    target: str | None = None,
+    targets: tuple[tuple[str, str], ...] = (),
 ) -> Frame:
-    meta = FrameMeta(instrument="toy", camera="main", exposure_type="science", target=target)
+    meta = FrameMeta(instrument="toy", camera="main", exposure_type="science", targets=targets)
     return Frame(data=data.astype(np.float32), meta=meta, variance=variance, mask=mask)
 
 
@@ -142,7 +142,7 @@ def test_extract_sum_mean_and_metadata():
     ny, nx = 12, 6
     data = np.arange(ny * nx, dtype=float).reshape(ny, nx)
     variance = np.full((ny, nx), 2.0)
-    frame = toy_frame(data, variance, target="star")
+    frame = toy_frame(data, variance, targets=(("*", "star"),))
     traces = TraceSet(
         traces=[
             make_trace(0, 5.0, role="science", telescope="mast01"),
@@ -180,6 +180,27 @@ def test_extract_sum_mean_and_metadata():
         extract_aperture(toy_frame(data), traces, ExtractParams(halfwidth=2.0))
 
 
+def test_extract_assigns_target_per_telescope():
+    ny, nx = 16, 4
+    data = np.ones((ny, nx))
+    targets = (("*", "target_z"), ("mast01", "target_a"), ("mast02", "target_b"))
+    frame = toy_frame(data, np.ones((ny, nx)), targets=targets)
+    traces = TraceSet(
+        traces=[
+            make_trace(0, 3.0, role="science", telescope="mast01"),
+            make_trace(1, 6.0, role="sky", telescope="mast01"),
+            make_trace(2, 9.0, role="science", telescope="mast02"),
+            make_trace(3, 12.0, role="science", telescope="mast03"),
+        ],
+        shape=(ny, nx),
+    )
+    spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=1.0))
+    assert [s.target for s in spectra] == ["target_a", None, "target_b", "target_z"]
+    only_one = toy_frame(data, np.ones((ny, nx)), targets=(("mast01", "target_a"),))
+    spectra = extract_aperture(only_one, traces, ExtractParams(halfwidth=1.0))
+    assert [s.target for s in spectra] == ["target_a", None, None, None]
+
+
 def test_extract_recovers_simulated_flux(night):
     truth = night.truth
     params = ExtractParams(halfwidth=APERTURE_HALFWIDTH, aperture="round", min_coverage=0.99)
@@ -193,7 +214,9 @@ def test_extract_recovers_simulated_flux(night):
         if trace.role != "science":
             assert spectrum.target is None
             continue
-        assert spectrum.target == night.science.meta.target
+        assert spectrum.target == night.science.meta.target_for(trace.telescope)
+        row = truth.layout.loc[truth.layout.trace == trace.index]
+        assert spectrum.target == row.target.item()
         expected = truth.throughput[trace.index] * truth.science_flux
         good = ~spectrum.mask
         assert good.mean() > 0.95

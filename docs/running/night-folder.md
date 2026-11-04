@@ -34,7 +34,8 @@ control software will write:
   "unstabilised", counts as missing), binning from `HBIN`/`VBIN`, readout mode
   from `READMODE`;
 - the grating from `GRATING` or the file name, the fiber layout preset from
-  `FIBPRE`, the target from `OBJECT`.
+  `FIBPRE`, each telescope's target from `OBJ01`…`OBJ20` when written, else one
+  target for every fiber from `OBJECT`.
 
 An arc is told to be *full* or *calibration-fiber* from which traces carry
 light, so no keyword is needed for that. A frame the map cannot classify is
@@ -60,7 +61,9 @@ mastpipe quicklook night/ --out out --instrument highspec --manifest night/manif
 
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
-`fiber_preset`, `target`, `exposure_time`, `mid_time` (taken as the
+`fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
+every telescope; the older `target` column is still read that way),
+`exposure_time`, `mid_time` (taken as the
 mid-exposure time), `binning`, `readout_mode`, `detector_temperature`,
 `lamp_state`, `camera`, `instrument`, `classification_rule`; `extension`
 selects an HDU of a multi-extension file.

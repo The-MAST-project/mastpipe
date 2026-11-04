@@ -102,8 +102,9 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     assert bias.exposure_time == 0.0
     assert bias.mid_time == "2026-10-01T18:00:00"  # a zero-second exposure: start is mid
     assert bias.binning == (2, 1)  # VBIN absent: the missing axis defaults to 1
-    assert bias.target is None and bias.arc_kind is None
-    assert "target" in bias.unresolved and "exposure_time" not in bias.unresolved
+    assert bias.targets == () and bias.arc_kind is None
+    assert "targets" in bias.unresolved and "exposure_time" not in bias.unresolved
+    assert "target" not in bias.unresolved
 
     sci = refs[1].meta
     assert sci.exposure_type == "science" and sci.classification_rule == "rule:5"
@@ -112,7 +113,8 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     assert sci.detector_temperature == pytest.approx(-60.5)
     assert sci.readout_mode == "normal"
     assert sci.configuration == "Mg"
-    assert sci.target == "lab target"
+    assert sci.targets == (("*", "lab target"),)  # a single OBJECT applies to every fiber
+    assert "targets" not in sci.unresolved and "target" not in sci.unresolved
 
 
 def test_scan_folder_accepts_raw_mapping_and_pattern(night: Path):
@@ -277,11 +279,11 @@ def test_manifest_overrides_fields(night: Path, highspec_map: HeaderMap, tmp_pat
     new = apply_manifest(refs, manifest)
     assert len(new) == 2 and all(isinstance(ref, FrameRef) for ref in new)
     assert new[0].meta.exposure_type == "bias" and new[0].meta.classification_rule == "header"
-    assert new[0].meta.target == "renamed"
+    assert new[0].meta.targets == (("*", "renamed"),)
     assert new[0].meta.exposure_time == pytest.approx(0.5)
     assert new[1].meta.exposure_type == "arc" and new[1].meta.classification_rule == "manifest"
     assert new[1].meta.arc_kind == "full"
-    assert new[1].meta.target == "lab target"  # an empty cell is not an override
+    assert new[1].meta.targets == (("*", "lab target"),)  # an empty cell is not an override
     assert new[1].meta.exposure_time == pytest.approx(120.0)
     assert new[1].meta.checksum == refs[1].meta.checksum
     assert refs[1].meta.exposure_type == "science"  # the input refs are untouched
@@ -337,7 +339,7 @@ def test_mef_extensions_become_separate_refs(tmp_path: Path):
     assert all(ref.meta.source == "mef.fits" for ref in refs)
     assert all(ref.meta.instrument == "deepspec" for ref in refs)
     assert [ref.meta.exposure_time for ref in refs] == [30.0, 30.0]  # inherited from primary
-    assert [ref.meta.target for ref in refs] == ["shared", "red only"]  # extension wins
+    assert [ref.meta.target_for("mast01") for ref in refs] == ["shared", "red only"]
     assert len({ref.meta.checksum for ref in refs}) == 1
 
     frame = load_frame(refs[1], make_detector(shape=(2, 3)))
@@ -461,7 +463,7 @@ def test_manifest_matches_relative_path_glob_and_unique_name(
     unmatched: list[str] = []
     new = apply_manifest(refs, read_manifest(path), unmatched)
     assert [ref.meta.arc_kind for ref in new] == ["full", None, None]
-    assert [ref.meta.target for ref in new] == [None, "star", "flat lamp"]
+    assert [ref.meta.target_for(None) for ref in new] == [None, "star", "flat lamp"]
     # "*" does not cross "/": the fourth row matches nothing at the top level
     assert unmatched == ["manifest row 3: *.fits"]
 
@@ -491,3 +493,48 @@ def test_manifest_mid_time_is_normalised_to_utc(night: Path, highspec_map: Heade
     write_manifest(path, [{"source": "a_bias.fits", "mid_time": "yesterday-ish"}])
     with pytest.raises(ValueError, match="manifest row 0: bad mid_time"):
         scan_folder(night, "highspec", highspec_map, manifest=path)
+
+
+# --------------------------------------------------------------------------- targets per unit
+
+
+def test_per_unit_cards_become_targets(tmp_path: Path, highspec_map: HeaderMap):
+    cards = {"EXPOSURE": 300.0, "OBJECT": "target_a+target_c", "OBJ01": "target_a"}
+    cards["OBJ03"] = "target_c"
+    write_fits(tmp_path / "science.fits", np.ones((2, 3), dtype=np.uint16), cards)
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.targets == (("mast01", "target_a"), ("mast03", "target_c"))
+    assert ref.meta.target_for("mast03") == "target_c" and ref.meta.target_for("mast02") is None
+    assert "targets" not in ref.meta.unresolved and "target" not in ref.meta.unresolved
+
+
+def test_single_object_applies_to_all(tmp_path: Path, highspec_map: HeaderMap):
+    cards = {"EXPOSURE": 300.0, "OBJECT": "target_a"}
+    write_fits(tmp_path / "science.fits", np.ones((2, 3), dtype=np.uint16), cards)
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.targets == (("*", "target_a"),)
+    assert ref.meta.target_for("mast17") == "target_a"
+
+
+def test_manifest_targets_column(night: Path, highspec_map: HeaderMap, tmp_path: Path):
+    path = tmp_path / "manifest.csv"
+    write_manifest(
+        path,
+        [
+            {"source": "b_science.fits", "targets": "mast01=HD 1; mast02 = HD 2;"},
+            {"source": "a_bias.fits", "targets": "target_b"},
+        ],
+    )
+    new = scan_folder(night, "highspec", highspec_map, manifest=path)
+    assert new[1].meta.targets == (("mast01", "HD 1"), ("mast02", "HD 2"))
+    assert new[0].meta.targets == (("*", "target_b"),)
+    # the targets column wins over a legacy target column of the same row
+    both = tmp_path / "both.csv"
+    write_manifest(both, [{"source": "b_science.fits", "target": "old", "targets": "mast05=new"}])
+    again = scan_folder(night, "highspec", highspec_map, manifest=both)
+    assert again[1].meta.targets == (("mast05", "new"),)
+    for bad in ("mast01=", "=HD 1", "mast01=a;mast01=b"):
+        broken = tmp_path / "broken.csv"
+        write_manifest(broken, [{"source": "b_science.fits", "targets": bad}])
+        with pytest.raises(ValueError, match="targets"):
+            apply_manifest(scan_folder(night, "highspec", highspec_map), read_manifest(broken))

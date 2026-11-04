@@ -14,7 +14,8 @@ Layout rules shared by every product:
   / ``MPXPKnn`` / ``MPXPVnn`` for the free-form provenance dicts of
   :class:`~mastpipe.core.model.MasterCalib` and
   :class:`~mastpipe.core.model.ExposureSpectra`). Values are JSON; a JSON list of a
-  validity value or of the ``binning`` / ``unresolved`` fields reads back as a tuple.
+  validity value or of the ``binning`` / ``unresolved`` fields reads back as a tuple, and
+  ``targets`` as a tuple of ``(telescope, target)`` pairs.
 - No raw instrument keyword ever reaches a product header: frame metadata travels only as
   the ``MPMKnn`` / ``MPMVnn`` pairs. An unset scalar is the string ``"none"``.
 - Per-fiber tables hold one row per fiber with vector columns on the fiber's pixel grid.
@@ -43,6 +44,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.core.model import (
+    ALL_TELESCOPES,
     COMBINED_VERSIONS,
     LINE_COLUMNS,
     VERSIONS,
@@ -188,6 +190,11 @@ def _read_meta(header: fits.Header) -> FrameMeta:
     for name in META_TUPLE_FIELDS:
         if name in fields:
             fields[name] = tuple(fields[name])
+    if "targets" in fields:
+        fields["targets"] = tuple(tuple(pair) for pair in fields["targets"])
+    if "target" in fields:  # a product written before targets per fiber
+        single = fields.pop("target")
+        fields.setdefault("targets", () if single is None else ((ALL_TELESCOPES, single),))
     return FrameMeta(**fields)
 
 

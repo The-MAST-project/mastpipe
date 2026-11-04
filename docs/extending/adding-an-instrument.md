@@ -54,7 +54,8 @@ fields:
   configuration: {keys: [BAND], lower: true, filename_regex: "_(?P<value>[ugri])_"}
   camera: {keys: [CAMERA], lower: true}
   fiber_preset: {keys: [FIBPRE]}
-  target: {keys: [OBJECT]}
+  targets: {per_unit: "OBJ{nn}"}  # one keyword per telescope unit, 01..20
+  target: {keys: [OBJECT]}        # the fallback: one target for every fiber
 classification:                # applied in order when the header has no valid type
   - {when: {exposure_time: {lt: 0.001}}, type: bias}
   - {when: {lamp_state: {eq: thar}}, type: arc}
@@ -64,7 +65,10 @@ classification:                # applied in order when the header has no valid t
 
 Nothing downstream of ingest sees a raw keyword, so a change of control
 software is a change of this file. Unresolved fields are recorded, never
-guessed. The manifest can override any field frame by frame.
+guessed. A `per_unit` field reads a keyword template once per telescope unit
+(`{nn}` is the two-digit unit number) and gives the units whose keyword is
+present; it replaces `keys`, `filename_regex` and `default`. The manifest can
+override any field frame by frame.
 
 ## Layouts
 

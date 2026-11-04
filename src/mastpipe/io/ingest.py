@@ -12,7 +12,10 @@ according to the field's ``reference`` (``start``: plus half the exposure; ``end
 minus half; ``mid``: as given) and converted to UTC, a stamp without an offset read
 according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
 ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
-shifted and ``unresolved`` lists ``mid_time``. A manifest CSV can override any metadata
+shifted and ``unresolved`` lists ``mid_time``. A frame's ``targets`` come from the map's
+per-unit ``targets`` field (one target per telescope unit), else from its single
+``target`` field as ``(("*", target),)``, which applies to every science fiber; when
+neither resolves ``unresolved`` lists ``targets``. A manifest CSV can override any metadata
 field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); a row names
 its frames by relative path, glob pattern or unique file name. It is how laboratory data
 without instrument keywords enter the pipeline.
@@ -37,9 +40,17 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig
-from mastpipe.core.model import ARC_KINDS, EXPOSURE_TYPES, Frame, FrameMeta, FrameRef
+from mastpipe.core.model import (
+    ALL_TELESCOPES,
+    ARC_KINDS,
+    EXPOSURE_TYPES,
+    Frame,
+    FrameMeta,
+    FrameRef,
+)
 from mastpipe.core.times import ASSUME_UTC, UTC, is_explicit, to_utc, utc_iso
 from mastpipe.io.headers import HeaderMap
+from mastpipe.vocab import is_unit_name
 
 CHECKSUM_LENGTH = 16
 CHUNK_SIZE = 1 << 20
@@ -56,6 +67,10 @@ DEFAULT_PATTERN = "*.fit*"
 FITS_SUFFIXES = (".fits", ".fit", ".fits.fz")
 """File-name endings of FITS files, compared case-insensitively."""
 GLOB_CHARS = frozenset("*?[")
+TARGETS_FIELD = "targets"
+"""The header-map field (``per_unit``) naming each telescope unit's target."""
+TARGET_FIELD = "target"
+"""The header-map field naming one target for every fiber, the fallback of ``targets``."""
 
 #: Header-map fields copied verbatim into :class:`FrameMeta` when they resolve.
 PASSTHROUGH_FIELDS = (
@@ -67,7 +82,6 @@ PASSTHROUGH_FIELDS = (
     "detector_temperature",
     "lamp_state",
     "fiber_preset",
-    "target",
 )
 
 
@@ -85,6 +99,34 @@ def _parse_binning(text: str) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
+def _parse_targets(text: str) -> tuple[tuple[str, str], ...]:
+    """``"mast01=HD 1234;mast02=HD 5678"`` to ``(("mast01", "HD 1234"), ("mast02", "HD 5678"))``;
+    an entry without ``=`` (such as a bare ``"HD 1234"``) applies to every telescope, as
+    ``("*", "HD 1234")``. Empty entries are ignored; ``ValueError`` for an empty name or
+    target, a name that is not a unit name, or a telescope named twice."""
+    pairs: list[tuple[str, str]] = []
+    for entry in text.split(";"):
+        if not entry.strip():
+            continue
+        if "=" in entry:
+            telescope, _, target = (part.strip() for part in entry.partition("="))
+            if not is_unit_name(telescope):
+                raise ValueError(f"{telescope!r} is not a telescope unit name")
+        else:
+            telescope, target = ALL_TELESCOPES, entry.strip()
+        if not target:
+            raise ValueError(f"no target for {telescope!r}")
+        if any(telescope == seen for seen, _ in pairs):
+            raise ValueError(f"{telescope!r} is named twice")
+        pairs.append((telescope, target))
+    return tuple(pairs)
+
+
+def _parse_single_target(text: str) -> tuple[tuple[str, str], ...]:
+    """A legacy ``target`` cell: one target for every telescope."""
+    return ((ALL_TELESCOPES, text),)
+
+
 #: Metadata fields a manifest may override, with the parser applied to the CSV cell.
 MANIFEST_FIELDS: dict[str, Callable[[str], Any]] = {
     "instrument": str,
@@ -98,11 +140,15 @@ MANIFEST_FIELDS: dict[str, Callable[[str], Any]] = {
     "detector_temperature": float,
     "lamp_state": str,
     "fiber_preset": str,
-    "target": str,
+    "targets": _parse_targets,
+    "target": _parse_single_target,
     "arc_kind": str,
     "classification_rule": str,
 }
 MANIFEST_KEYS = ("source", "extension")
+LEGACY_MANIFEST_FIELDS = {TARGET_FIELD: TARGETS_FIELD}
+"""Manifest columns kept for older manifests, with the field they set (a ``target`` cell
+is one target for every telescope); the new column wins when a row fills both."""
 
 
 def file_checksum(path: Path | str) -> str:
@@ -231,6 +277,14 @@ def _build_meta(
     if arc_kind is not None and arc_kind not in ARC_KINDS:
         arc_kind = None
         unresolved.append("arc_kind")
+    targets = fields.get(TARGETS_FIELD)
+    if not targets:
+        single = fields.get(TARGET_FIELD)
+        targets = () if single is None else ((ALL_TELESCOPES, str(single)),)
+    targets = tuple((str(telescope), str(target)) for telescope, target in targets)
+    unresolved = [name for name in unresolved if name not in (TARGETS_FIELD, TARGET_FIELD)]
+    if not targets:
+        unresolved.append(TARGETS_FIELD)
     camera = fields.get("camera")
     passthrough = {name: fields.get(name) for name in PASSTHROUGH_FIELDS}
     return FrameMeta(
@@ -238,6 +292,7 @@ def _build_meta(
         camera=DEFAULT_CAMERA if camera is None else str(camera),
         exposure_type=exposure_type,
         binning=(_axis_binning(fields.get("binning_x")), _axis_binning(fields.get("binning_y"))),
+        targets=targets,
         arc_kind=arc_kind,
         checksum=checksum,
         source=source,
@@ -434,6 +489,9 @@ def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[st
             values[name] = parse(text)
         except ValueError as error:
             raise ValueError(f"{label}: bad {name} value {text!r}") from error
+    for legacy, field in LEGACY_MANIFEST_FIELDS.items():
+        if legacy in values:
+            values.setdefault(field, values.pop(legacy))
     if "exposure_type" in values and values["exposure_type"] not in EXPOSURE_TYPES:
         raise ValueError(f"{label}: exposure_type must be one of {EXPOSURE_TYPES}")
     if "arc_kind" in values and values["arc_kind"] not in ARC_KINDS:

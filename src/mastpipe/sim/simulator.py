@@ -24,7 +24,9 @@ adding half the exposure time. The simulation model:
 - science frames carry no arc light: science fibers show a flat continuum with Gaussian
   absorption dips at fixed wavelengths, sky fibers a faint continuum plus emission lines,
   both drifted by the same law at the frame's own time and scaled by the throughput, plus
-  ``cosmic_rays`` single-pixel hits of +5000 ADU.
+  ``cosmic_rays`` single-pixel hits of +5000 ADU; their headers name each telescope's
+  target in an ``OBJnn`` card per unit (the layout's ``target`` column: four targets,
+  five telescopes each), with ``OBJECT`` the targets joined by ``+``.
 
 All truth coordinates (traces, line pixels, cosmic rays) are in the cropped and oriented
 frame that :func:`mastpipe.io.ingest.load_frame` returns, ``x`` the dispersion column.
@@ -51,6 +53,7 @@ from mastpipe.steps.geometry import (
     lambda_of_x,
     nominal_solution,
 )
+from mastpipe.vocab import unit_number
 
 BIAS_LEVEL_ADU = 500.0
 DARK_RATE_ADU_S = 0.05
@@ -435,7 +438,14 @@ def _cards(
     start_time: str,
     configuration: str,
     target: str,
+    unit_targets: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """The frame's header cards; ``unit_targets`` (telescope -> target) adds one
+    ``OBJnn`` card per telescope unit, ``OBJECT`` staying the readable summary."""
+    per_unit = {
+        f"OBJ{unit_number(telescope):02d}": name
+        for telescope, name in sorted((unit_targets or {}).items())
+    }
     return {
         "IMAGETYP": IMAGE_TYPES[exposure_type],
         "EXPOSURE": exposure,
@@ -448,6 +458,7 @@ def _cards(
         "LAMP": LAMPS.get(exposure_type, "off"),
         "OBJECT": target,
         "SHUTTER": "closed" if exposure_type in SHUTTER_CLOSED else "open",
+        **per_unit,
     }
 
 
@@ -514,6 +525,11 @@ def simulate_night(
     exposures = {**EXPOSURE_S, "science": exposure_science, "background": exposure_science}
     targets = sorted({t for t in scene.layout["target"] if t is not None})
     science_object = "+".join(targets) if targets else "sim"
+    unit_targets = {
+        row.telescope: row.target
+        for row in scene.layout.itertuples()
+        if pd.notna(row.telescope) and pd.notna(row.target)
+    }
 
     rows: list[dict[str, Any]] = []
     hits: dict[str, list[list[int]]] = {}
@@ -533,7 +549,14 @@ def simulate_night(
             scene, detector, exposure_type, arc_kind, exposure, shift, stretch, cosmic_rays, rng
         )
         target = science_object if exposure_type == "science" else exposure_type
-        cards = _cards(exposure_type, exposure, start_time, effective.configuration, target)
+        cards = _cards(
+            exposure_type,
+            exposure,
+            start_time,
+            effective.configuration,
+            target,
+            unit_targets if exposure_type == "science" else None,
+        )
         _write_fits(out_dir / name, data, cards)
         if exposure_type == "science":
             hits[name] = cosmic

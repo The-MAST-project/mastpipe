@@ -233,12 +233,17 @@ def _print_provenance(prov: Provenance) -> None:
         print(f"  step: {step}")
 
 
+def _targets_text(targets: tuple[tuple[str, str], ...]) -> str:
+    """``mast01=HD 1; mast02=HD 2`` (``*`` for a target of every telescope), ``-`` if none."""
+    return "; ".join(f"{telescope}={target}" for telescope, target in targets) or "-"
+
+
 def _show_spectra(path: Path) -> None:
     es, _, drift = products.read_spectra(path)
     meta = es.meta
     print(
         f"frame {meta.source} ({meta.exposure_type}), mid-time {meta.mid_time}, "
-        f"target {meta.target}"
+        f"targets {_targets_text(meta.targets)}"
     )
     if drift is not None:
         print(

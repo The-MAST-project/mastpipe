@@ -65,7 +65,7 @@ META = FrameMeta(
     detector_temperature=-60.5,
     lamp_state="off",
     fiber_preset="survey45",
-    target="HD 1234",
+    targets=(("mast01", "HD 1234"), ("*", "target_b")),
     arc_kind=None,
     checksum=CHECKSUMS[0],
     source="sim_science_01.fits",
@@ -338,6 +338,30 @@ def test_traceset_roundtrip_degrees(tmp_path):
 
 
 # --------------------------------------------------------------------------------- spectra
+
+
+def test_meta_targets_round_trip_and_legacy_target_card(tmp_path):
+    es = ExposureSpectra(
+        meta=META,
+        spectra=[make_spectrum(0, np.random.default_rng(3), with_versions=False)],
+        wavelength_status="transferred",
+        flux_status="uncalibrated",
+        telluric_status="uncorrected",
+        reference_id="highspec_Mg_survey45_20261001T180000",
+        reference_hash="0011223344aa",
+        drift_arcs=(CHECKSUMS[1], CHECKSUMS[2]),
+    )
+    path = tmp_path / product_name(META, "spec")
+    write_spectra(path, es, make_provenance())
+    back = read_spectra(path)[0].meta
+    assert back.targets == META.targets and isinstance(back.targets[0], tuple)
+    # a product written before targets per fiber carries a single target string
+    with fits.open(path, mode="update") as hdul:
+        header = hdul[0].header
+        n = next(k for k in range(1, 100) if header[f"MPMK{k:02d}"] == "targets")
+        header[f"MPMK{n:02d}"] = "target"
+        header[f"MPMV{n:02d}"] = json.dumps("target_a")
+    assert read_spectra(path)[0].meta.targets == (("*", "target_a"),)
 
 
 def test_spectra_roundtrip_with_versions_and_drift(tmp_path):

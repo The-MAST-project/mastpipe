@@ -5,11 +5,12 @@ sections:
 
 ``fields``
     pipeline name -> ``{keys, type, lower, map, default, filename_regex, missing_values,
-    reference, timezone}``. ``keys`` are raw keywords tried in order (the first present wins); the
-    value is then converted to ``type`` (``float``, ``int`` or ``str``), lower-cased when
-    ``lower`` is true and translated through ``map`` (an unmapped value is left as is). A
-    keyword whose raw or converted value is listed in ``missing_values`` (a sentinel such
-    as the ``-999`` of an unread sensor) counts as absent and the next keyword is tried.
+    reference, timezone, per_unit}``. ``keys`` are raw keywords tried in order (the first
+    present wins); the value is then converted to ``type`` (``float``, ``int`` or
+    ``str``), lower-cased when ``lower`` is true and translated through ``map`` (an
+    unmapped value is left as is). A keyword whose raw or converted value is listed in
+    ``missing_values`` (a sentinel such as the ``-999`` of an unread sensor) counts as
+    absent and the next keyword is tried.
     When no keyword is present ``filename_regex`` is searched in the file name (its
     ``value`` group is the value, transformed the same way), and ``default`` is used when
     that fails too. A field that still has no value is *unresolved*: ``None`` in the result
@@ -19,6 +20,13 @@ sections:
     (``utc``, ``assume-utc`` or an IANA zone name; default ``utc``) says how a time
     field's stamp without an offset is read (see :mod:`mastpipe.core.times`); ``assume-utc``
     reads it as UTC but records that this is an assumption.
+
+    A field may instead declare ``per_unit``, a keyword template containing ``{nn}``, in
+    place of ``keys``, ``filename_regex`` and ``default``: the template is expanded with
+    each telescope unit's two-digit number, and the value is the tuple of ``(unit name,
+    value)`` pairs of the units whose keyword is present (each value transformed as above;
+    a blank or ``missing_values`` value counts as absent), in unit order, or unresolved
+    when no unit's keyword is present.
 
 ``classification``
     an ordered list of rules ``{when: {<field>: {lt: v} | {eq: v} | {missing: true}}, type}``
@@ -46,6 +54,7 @@ from astropy.io.fits.card import Undefined
 
 from mastpipe.core.model import EXPOSURE_TYPES
 from mastpipe.core.times import UTC, check_timezone
+from mastpipe.vocab import UNIT_COUNT, unit_name
 
 TYPES: dict[str, type] = {"float": float, "int": int, "str": str}
 FIELD_OPTIONS = (
@@ -58,10 +67,13 @@ FIELD_OPTIONS = (
     "missing_values",
     "reference",
     "timezone",
+    "per_unit",
 )
 OPERATORS = ("lt", "eq", "missing")
 TIME_REFERENCES = ("start", "mid", "end")
 """Which instant of the exposure a time field records (the ``reference`` option)."""
+UNIT_PLACEHOLDER = "{nn}"
+"""Where a ``per_unit`` template takes the two-digit unit number."""
 UNCLASSIFIED = "unknown"
 PROVISIONAL = "light"
 """The header type that the rules with conditions may still refine."""
@@ -83,6 +95,7 @@ class FieldSpec:
     missing_values: tuple[Any, ...] = ()
     reference: str = "start"
     timezone: str = UTC
+    per_unit: str | None = None
 
     @property
     def has_default(self) -> bool:
@@ -217,7 +230,17 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         regex = re.compile(spec["filename_regex"])
         if "value" not in regex.groupindex:
             raise ValueError(f"header map field {name!r}: filename_regex needs a 'value' group")
-    if not keys and regex is None and "default" not in spec:
+    per_unit = spec.get("per_unit")
+    if per_unit is not None:
+        if not isinstance(per_unit, str) or UNIT_PLACEHOLDER not in per_unit:
+            raise ValueError(
+                f"header map field {name!r}: per_unit must be a keyword template "
+                f"containing {UNIT_PLACEHOLDER}, got {per_unit!r}"
+            )
+        clashing = [option for option in ("keys", "filename_regex", "default") if option in spec]
+        if clashing:
+            raise ValueError(f"header map field {name!r}: per_unit excludes {', '.join(clashing)}")
+    elif not keys and regex is None and "default" not in spec:
         raise ValueError(f"header map field {name!r}: needs keys, filename_regex or default")
     mapping = spec.get("map")
     if mapping is not None and not isinstance(mapping, Mapping):
@@ -246,6 +269,7 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         missing_values=tuple(missing),
         reference=str(reference),
         timezone=timezone,
+        per_unit=per_unit,
     )
 
 
@@ -278,6 +302,8 @@ def _parse_rule(index: int, rule: Any, fields: Mapping[str, FieldSpec]) -> Rule:
 
 
 def _resolve_field(spec: FieldSpec, header: Mapping[str, Any], filename: str) -> Any:
+    if spec.per_unit is not None:
+        return _resolve_per_unit(spec, spec.per_unit, header)
     for key in spec.keys:
         if key in header:
             value = header[key]
@@ -294,6 +320,28 @@ def _resolve_field(spec: FieldSpec, header: Mapping[str, Any], filename: str) ->
     if spec.has_default:
         return spec.default
     return None
+
+
+def _resolve_per_unit(
+    spec: FieldSpec, template: str, header: Mapping[str, Any]
+) -> tuple[tuple[str, Any], ...] | None:
+    """``(unit name, value)`` for every unit whose expanded ``template`` keyword is present;
+    ``None`` when none is."""
+    pairs: list[tuple[str, Any]] = []
+    for number in range(1, UNIT_COUNT + 1):
+        key = template.replace(UNIT_PLACEHOLDER, f"{number:02d}")
+        if key not in header:
+            continue
+        value = header[key]
+        if not _present(value) or spec.is_missing(value):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        converted = _convert(spec, value)
+        if converted is None or spec.is_missing(converted):
+            continue
+        pairs.append((unit_name(number), converted))
+    return tuple(pairs) or None
 
 
 def _convert(spec: FieldSpec, value: Any) -> Any:

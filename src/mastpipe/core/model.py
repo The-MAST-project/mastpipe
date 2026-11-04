@@ -28,6 +28,8 @@ from mastpipe.core.times import to_utc
 
 EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "light", "science", "background", "unknown")
 ARC_KINDS = ("full", "calfiber", "unknown")
+ALL_TELESCOPES = "*"
+"""The key of a ``FrameMeta.targets`` entry that applies to every telescope."""
 ROLES = ("arc", "science", "sky", "unknown")
 WAVELENGTH_STATUSES = ("none", "nominal", "reference", "transferred", "solved")
 FLUX_STATUSES = ("uncalibrated", "calibrated")
@@ -70,6 +72,10 @@ class FrameMeta:
     (the stamp carried an offset, or the map declares its clock UTC), ``"assumed-utc"``
     (a stamp without an offset taken as UTC by assumption) or the IANA zone it was read
     in; ``None`` when the frame has no time.
+
+    ``targets`` holds ``(telescope, target)`` pairs: one per telescope unit when the
+    header or manifest names targets per unit, or a single ``("*", target)`` pair that
+    applies to every science fiber (a single ``OBJECT``); :meth:`target_for` reads it.
     """
 
     instrument: str
@@ -84,7 +90,7 @@ class FrameMeta:
     detector_temperature: float | None = None
     lamp_state: str | None = None
     fiber_preset: str | None = None
-    target: str | None = None
+    targets: tuple[tuple[str, str], ...] = ()
     arc_kind: str | None = None
     checksum: str = ""
     source: str = ""
@@ -96,6 +102,20 @@ class FrameMeta:
         _check_choice("exposure_type", self.exposure_type, EXPOSURE_TYPES)
         if self.arc_kind is not None:
             _check_choice("arc_kind", self.arc_kind, ARC_KINDS)
+        for pair in self.targets:
+            if (
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not all(isinstance(part, str) for part in pair)
+            ):
+                raise ValueError(f"targets must be (telescope, target) string pairs, got {pair!r}")
+
+    def target_for(self, telescope: str | None) -> str | None:
+        """The target of ``telescope``: its own entry, else the ``"*"`` entry, else ``None``."""
+        found = dict(self.targets)
+        if telescope is not None and telescope in found:
+            return found[telescope]
+        return found.get(ALL_TELESCOPES)
 
 
 @dataclass(frozen=True)

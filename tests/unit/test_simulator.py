@@ -141,6 +141,16 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert layout.loc[layout.role == "arc", "target"].isna().all()
     for target in science_rows.target.unique():
         assert target in header["OBJECT"]
+    # every telescope's target is written per unit as OBJnn; calibration frames carry none
+    telescopes = science_rows.drop_duplicates("telescope")
+    for row in telescopes.itertuples():
+        assert header[f"OBJ{row.telescope[-2:]}"] == row.target
+    assert len(telescopes) == 20
+    science_meta = by_file[science.name].meta
+    expected = dict(zip(telescopes.telescope, telescopes.target, strict=True))
+    assert dict(science_meta.targets) == expected
+    arc_header = fits.getheader(frame_path(out_dir, truth, "arc"))
+    assert not any(f"OBJ{n:02d}" in arc_header for n in range(1, 21))
 
 
 def test_truth_roundtrip(sim_night):

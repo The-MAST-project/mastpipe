@@ -1019,7 +1019,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
             "source": meta.source,
             "classification_rule": meta.classification_rule,
             "mid_time": meta.mid_time,
-            "target": meta.target,
+            "targets": dict(meta.targets),
             "wavelength_status": status,
             "reference_id": es.reference_id,
             "drift_arcs": list(drift_arcs),
