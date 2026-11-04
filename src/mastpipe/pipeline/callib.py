@@ -15,6 +15,14 @@ time), or the one named by its identifier. Times are compared as parsed timestam
 naive time is UTC), never as strings. Adding a product whose file name or identifier is
 already indexed replaces that entry and overwrites the file. This is pipeline-layer code:
 it reads and writes files.
+
+Several processes may share one library (a quick-look and an ``identify`` run against the
+same folder). Products and the index are written atomically, and every change to the
+index re-reads it under an exclusive lock on ``index.lock``
+(:func:`mastpipe.io.atomic.locked`), so concurrent writers keep each other's entries.
+Lookups read the index as last loaded or written by this instance, without the lock: an
+entry another process added since is not seen until this instance next writes or is
+re-created, which is acceptable for finding calibrations.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import pandas as pd
 from mastpipe.core.model import MasterCalib, ReferenceSolution
 from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
+from mastpipe.io.atomic import atomic_write, locked
 from mastpipe.io.products import (
     product_name,
     read_master,
@@ -40,6 +49,8 @@ from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.geometry import GratingGeometry, grating_geometry
 
 INDEX_FILE = "index.json"
+LOCK_FILE = "index.lock"
+"""The advisory lock file next to the index, taken for every read-modify-write of it."""
 REFERENCE_KIND = "reference"
 """The ``kind`` of a reference entry; masters carry their ``MasterCalib.kind``."""
 
@@ -80,16 +91,23 @@ class CalibLibrary:
         return entries
 
     def _save(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
+        """Write the index atomically; callers hold the lock (see :meth:`_replace`)."""
         text = json.dumps(self._entries, indent=1, sort_keys=True, ensure_ascii=True)
-        with (self.root / INDEX_FILE).open("w", encoding="utf-8", newline="") as handle:
-            handle.write(text + "\n")
+        with atomic_write(self.root / INDEX_FILE) as tmp:
+            with tmp.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(text + "\n")
 
     def _replace(self, key: str, value: Any, entry: dict[str, Any]) -> None:
-        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``."""
-        self._entries = [e for e in self._entries if e.get(key) != value]
-        self._entries.append(entry)
-        self._save()
+        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``.
+
+        Under the lock on ``index.lock`` the index is re-read from disk first, so entries
+        another process added since this instance loaded it are kept; ``TimeoutError``
+        from :func:`~mastpipe.io.atomic.locked` when the lock is not free in time.
+        """
+        with locked(self.root / LOCK_FILE):
+            self._entries = [e for e in self._load() if e.get(key) != value]
+            self._entries.append(entry)
+            self._save()
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
         """Copies of the index entries, those of ``kind`` only when given."""
@@ -143,7 +161,9 @@ class CalibLibrary:
         must match when given (a flat belongs to its grating); the entry's temperature must
         be within ``temperature_tolerance`` of ``temperature`` when both are known. Among
         several matches the nearest ``mid_time`` to ``near_time`` wins (an entry without a
-        time counts as farthest), the latest ``mid_time`` without ``near_time``.
+        time counts as farthest), the latest ``mid_time`` without ``near_time``. Reads this
+        instance's view of the index without the lock; a master another process added
+        since may be missed (a stale read is acceptable here).
         """
         matches = []
         for entry in self._entries:
@@ -265,7 +285,11 @@ class CalibLibrary:
     def reference_for_source(
         self, instrument: str, configuration: str, fiber_preset: str, checksum: str
     ) -> dict[str, Any] | None:
-        """The index entry of the reference solved from the frame with ``checksum``, if any."""
+        """The index entry of the reference solved from the frame with ``checksum``, if any.
+
+        Reads this instance's view of the index without the lock; a reference another
+        process added since may be missed (a stale read is acceptable here).
+        """
         for entry in self._reference_entries(instrument, configuration, fiber_preset):
             if checksum in (entry.get("source_checksums") or []):
                 return dict(entry)

@@ -2,6 +2,7 @@
 found by validity time or identifier, and the ``index.json`` behind both."""
 
 import json
+import multiprocessing
 
 import numpy as np
 import pandas as pd
@@ -220,3 +221,39 @@ def test_callib_rejects_unknown_camera_on_read(tmp_path, highspec_effective):
     library.add_reference(ref, make_provenance(), "nocam")
     with pytest.raises(KeyError):
         library.find_reference("highspec", "Mg", "survey45")
+
+
+# ---------------------------------------------------------------------------- concurrency
+
+N_PER_WORKER = 25
+
+
+def add_biases(root: str, worker: str, barrier) -> None:
+    """Add ``N_PER_WORKER`` distinct bias masters to the library at ``root``; a spawned
+    process's target, so it lives at module level. Both workers open the library before
+    either adds, so each starts from the same (empty) index."""
+    library = CalibLibrary(root)
+    barrier.wait(timeout=60)
+    for i in range(N_PER_WORKER):
+        master, meta = make_master(
+            "bias", f"2026-10-01T18:{i:02d}:00", 500.0, checksum=f"{worker}{i:05d}"
+        )
+        library.add(master, make_provenance(), meta)
+
+
+def test_two_processes_add_to_one_library(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    workers = [
+        context.Process(target=add_biases, args=(str(tmp_path), name, barrier))
+        for name in ("a", "b")
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=120)
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    assert len(CalibLibrary(tmp_path).list("bias")) == 2 * N_PER_WORKER
+    index = json.loads((tmp_path / INDEX_FILE).read_text(encoding="utf-8"))
+    assert len(index) == 2 * N_PER_WORKER
+    assert not [p.name for p in tmp_path.iterdir() if ".tmp-" in p.name]

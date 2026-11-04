@@ -25,8 +25,9 @@ Layout rules shared by every product:
   / ``MPGRDSKY`` / ``MPGRDCON`` for the wavelength, sky and continuum grids.
 - Tables from ``DataFrame``s (``DRIFT``, ``CONTRIB``, ``EXCLUDED``) keep the frame's
   columns, upper-cased on disk; ``None`` strings become empty strings.
-- Files are written with ``overwrite=True``; arrays read back are copies in native byte
-  order.
+- Files are written atomically (a temporary next to the target, moved into place with
+  :func:`os.replace`; :func:`mastpipe.io.atomic.atomic_write`), replacing an earlier file
+  of the same name; arrays read back are copies in native byte order.
 """
 
 from __future__ import annotations
@@ -62,6 +63,7 @@ from mastpipe.core.model import (
     WavelengthSolution,
 )
 from mastpipe.core.times import to_utc
+from mastpipe.io.atomic import atomic_write
 from mastpipe.pipeline.provenance import NONE, Provenance
 from mastpipe.steps.geometry import GratingGeometry
 from mastpipe.steps.wavecal import solutions_hash
@@ -274,9 +276,11 @@ def _frame_from_table(hdu: fits.BinTableHDU) -> pd.DataFrame:
 
 
 def _write(path: Path | str, hdus: list[Any]) -> Path:
+    """Write ``hdus`` to ``path`` atomically (see :func:`~mastpipe.io.atomic.atomic_write`);
+    ``writeto`` closes its file before the temporary is moved into place."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fits.HDUList(hdus).writeto(path, overwrite=True)
+    with atomic_write(path) as tmp:
+        fits.HDUList(hdus).writeto(tmp, overwrite=True)
     return path
 
 
@@ -977,12 +981,12 @@ def _jsonable(value: Any) -> Any:
 
 def write_qc(path: Path | str, report: QCReport) -> Path:
     """``{"stage": ..., "values": {...}}`` as JSON (``indent=1``, sorted keys, numpy scalars
-    and arrays converted)."""
+    and arrays converted), written atomically."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"stage": report.stage, "values": report.values}
     text = json.dumps(payload, indent=1, sort_keys=True, default=_jsonable)
-    path.write_text(text + "\n", encoding="utf-8")
+    with atomic_write(path) as tmp:
+        tmp.write_text(text + "\n", encoding="utf-8")
     return path
 
 

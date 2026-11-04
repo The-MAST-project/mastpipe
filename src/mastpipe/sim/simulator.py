@@ -46,6 +46,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig, EffectiveConfig
+from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import expected_shape as oriented_shape
 from mastpipe.steps.geometry import (
     GratingGeometry,
@@ -640,13 +641,15 @@ def _layout_table(records: list[dict[str, Any]]) -> pd.DataFrame:
 def save_truth(out_dir: Path | str, truth: SimTruth) -> None:
     """Write ``truth.npz`` (the arrays) and ``truth.json`` (scalars, tables, extras)."""
     out_dir = Path(out_dir)
-    np.savez(out_dir / "truth.npz", **{name: getattr(truth, name) for name in TRUTH_ARRAYS})
+    # through a handle: ``np.savez`` would append ``.npz`` to the temporary's name
+    with atomic_write(out_dir / "truth.npz") as tmp, tmp.open("wb") as handle:
+        np.savez(handle, **{name: getattr(truth, name) for name in TRUTH_ARRAYS})
     payload = {name: getattr(truth, name) for name in TRUTH_SCALARS}
     payload["crop"] = None if truth.crop is None else list(truth.crop)
     payload["layout"] = _records(truth.layout)
     payload["frames"] = _records(truth.frames)
     payload["extras"] = truth.extras
-    with (out_dir / "truth.json").open("w", encoding="utf-8") as handle:
+    with atomic_write(out_dir / "truth.json") as tmp, tmp.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=1)
 
 

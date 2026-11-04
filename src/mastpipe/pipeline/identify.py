@@ -55,6 +55,7 @@ from mastpipe.instruments.registry import (
     load_line_table,
 )
 from mastpipe.io import products
+from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.io.qa import plot_anchor_panels
 from mastpipe.pipeline.callib import CalibLibrary
@@ -336,7 +337,7 @@ def _write_candidates(path: Path, template: pd.DataFrame, measured: pd.DataFrame
         ],
         ignore_index=True,
     )
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    with atomic_write(path) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
         rows.to_csv(handle, index=False)
 
 
@@ -407,7 +408,10 @@ def _write_reference_product(
     if not write:
         return path
     CalibLibrary(path.parent).add_reference(ref, prov, camera)
-    with (path.parent / AGREEMENT_FILE).open("w", encoding="utf-8", newline="") as handle:
+    with (
+        atomic_write(path.parent / AGREEMENT_FILE) as tmp,
+        tmp.open("w", encoding="utf-8", newline="") as handle,
+    ):
         fiber_agreement(ref.solutions).to_csv(handle, index=False)
     return path
 
