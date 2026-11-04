@@ -634,6 +634,54 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
         run_quicklook(folder, tmp_path / "out2", options(on_error="raise"))
 
 
+# --------------------------------------------------------------- light frames by content
+
+
+def test_resolve_light_sorts_frames_by_content(tmp_path, night):
+    """The night as the control software writes it: every arc and science frame is
+    ``IMAGETYP = 'light'`` with no lamp card, and there is no flat. The runner resolves the
+    light frames from their content before the trace stage, so the traces come from the
+    full arc it found, the arcs go to the arc stage and the science frames are reduced,
+    each with its classification rule in the QC. A manifest row's type wins over the
+    content: that frame never reaches the resolution."""
+    folder = tmp_path / "night"
+    folder.mkdir()
+    truth = night.truth
+    copy_frames(night.dir, truth, folder, ["bias", "dark", "background", "arc", "science"])
+    for name in truth.frames.loc[truth.frames["exposure_type"].isin(["arc", "science"]), "file"]:
+        with fits.open(folder / name, mode="update") as hdul:
+            hdul[0].header["IMAGETYP"] = "light"
+            del hdul[0].header["LAMP"]
+    sources = science_files(truth)
+    declared = sources[0]
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text(f"source,exposure_type\n{declared},science\n", encoding="utf-8", newline="")
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options(manifest=manifest))
+    assert summary.failed == []
+
+    trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
+    assert trace_qc.values["source"] == "arc_full"
+    # the full arc reached the arc stage (no reference yet), and so did the drift arcs
+    assert any(night.full_arc.name in item and "run identify" in item for item in summary.skipped)
+    for arc in night.cal_arcs:
+        assert any(arc in item and "no reference" in item for item in summary.skipped)
+    products = spec_products(out)
+    assert sorted(read_spectra(p)[0].meta.source for p in products) == sorted(sources)
+    rules = {}
+    for path in products:
+        es, prov, _ = read_spectra(path)
+        assert es.wavelength_status == "nominal"
+        qc = read_qc(out / "qa" / path.with_suffix(".json").name)
+        rules[es.meta.source] = qc.values["classification_rule"]
+        if es.meta.source != declared:
+            assert any("content:continuum" in step for step in prov.steps)
+    assert rules.pop(declared) == "manifest"
+    assert set(rules.values()) == {"content:continuum"}
+    log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
+    assert "content:arc_like" in log
+
+
 # ------------------------------------------------------------------------------- the CLI
 
 

@@ -66,7 +66,7 @@ def calibrated_night(sim, highspec_effective) -> SimpleNamespace:
         flat=flat,
         full_arc=clean(arcs["full"]),
         cal_arc=clean(arcs["calfiber"]),
-        science=clean(by_type["science"][0]),
+        science=clean(by_type["light"][0]),  # the simulator's science frames are 'light'
     )
 
 

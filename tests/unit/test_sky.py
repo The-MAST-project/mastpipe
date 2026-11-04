@@ -95,7 +95,8 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     params = CalibParams()
     masters = [build_master(by_type[kind], kind, params) for kind in ("bias", "dark", "background")]
     calib = build_calibration_set(*masters, detector)
-    frame = calibrate_frame(by_type["science"][0], calib, saturation=detector.saturation)
+    # the simulator writes its science frames as IMAGETYP 'light'
+    frame = calibrate_frame(by_type["light"][0], calib, saturation=detector.saturation)
     traces = truth_traceset(truth, frame.shape)
     spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=APERTURE_HALFWIDTH))
 

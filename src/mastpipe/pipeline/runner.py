@@ -11,6 +11,16 @@ reduces every ``(camera, configuration)`` group in turn:
    and stacked, and every master is added to the calibration library (``out/calib`` or
    ``options.library``); a kind the night lacks is taken from the library when it holds
    one that applies;
+1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
+   control software writes for arcs and science frames alike) is calibrated with the
+   masters (no cosmic-ray flagging) and resolved from its content
+   (:func:`~mastpipe.steps.classify.classify_light`) into an arc or a science frame, its
+   ``classification_rule`` set to ``content:arc_like`` or ``content:continuum``, or
+   skipped with ``content:no_signal``. This comes before the traces because on a night
+   without a flat the full arc is itself a ``light`` frame and is the trace source. A
+   manifest row's ``exposure_type`` wins: such a frame is never ``light``. The rule is in
+   the QC of every arc and science frame and, when it came from the content, in the
+   product's provenance steps;
 2. **traces** — found on the flat master, or on a full arc with the percentile collapse
    when there is no flat, matched to the layout preset (``options.layout``, else the
    frames' ``fiber_preset`` from a manifest, else the instrument's default) and keyed by
@@ -55,7 +65,7 @@ removed when it ends.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -103,6 +113,7 @@ from mastpipe.steps.calib import (
     calibrate_frame,
     calibration_steps,
 )
+from mastpipe.steps.classify import ARC_LIKE, CONTINUUM, classify_light
 from mastpipe.steps.combine import combine_spectra, group_by_target
 from mastpipe.steps.cosmics import flag_cosmic_rays
 from mastpipe.steps.drift import apply_drift, fit_drift
@@ -455,6 +466,37 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
 # ------------------------------------------------------------------------------- traces
 
 
+def _resolve_light(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
+    """Stage 1b: every ``light`` frame, in time order and under the error policy, calibrated
+    with the group's masters (no cosmic-ray flagging) and classified from its content: moved
+    into ``by_type["arc"]`` or ``by_type["science"]`` with its ``classification_rule``, or
+    skipped with its reason. ``by_type`` loses its ``light`` entry."""
+
+    def resolve(group: _Group, ref: FrameRef) -> None:
+        frame, _ = _calibrated(group, ref)
+        kind, rule = classify_light(frame, group.params.classify)
+        log.info("light %s: %s (%s)", ref.meta.source, kind, rule)
+        if kind not in ("arc", "science"):
+            _skip(group, ref.meta.source, f"exposure type {kind} ({rule})")
+            return
+        arc_kind = ref.meta.arc_kind if kind == "arc" else None
+        meta = replace(ref.meta, exposure_type=kind, classification_rule=rule, arc_kind=arc_kind)
+        by_type.setdefault(kind, []).append(replace(ref, meta=meta))
+
+    for ref in sorted(by_type.pop("light", []), key=_time_key):
+        _per_frame(group, ref, resolve)
+
+
+def _content_steps(meta: FrameMeta) -> list[str]:
+    """The provenance step recording a type resolved from the frame's content, if it was."""
+    if meta.classification_rule in (ARC_LIKE, CONTINUUM):
+        return [
+            f"exposure type {meta.exposure_type} from the frame's content "
+            f"({meta.classification_rule})"
+        ]
+    return []
+
+
 def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]:
     """Calibrated arcs that may serve as the trace source, the one lighting the most traces
     first: the arcs the header calls full, else the arcs of unknown kind."""
@@ -634,7 +676,7 @@ def _full_arc(group: _Group, ref: FrameRef) -> None:
     prov = _provenance(
         effective,
         lines,
-        [f"wavecal seeded by reference {previous.identifier}"],
+        [*_content_steps(meta), f"wavecal seeded by reference {previous.identifier}"],
         layout=group.preset,
     )
     prov.reference_id = previous.identifier
@@ -647,6 +689,7 @@ def _full_arc(group: _Group, ref: FrameRef) -> None:
         "reference",
         {
             "source": meta.source,
+            "classification_rule": meta.classification_rule,
             "identifier": solution.identifier,
             "valid_from": solution.valid_from,
             "seeded_by": previous.identifier,
@@ -714,6 +757,7 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
         "drift",
         {
             "source": meta.source,
+            "classification_rule": meta.classification_rule,
             "arc_mid_time": drift.arc_mid_time,
             "reference_id": reference.identifier,
             "usable": bool(drift.usable),
@@ -897,6 +941,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         log.info("reducing %s again: %s", meta.source, why)
 
     frame, steps = _calibrated(group, ref, cosmics=True)
+    steps = [*_content_steps(meta), *steps]
     traceset = group.traces()
     spectra = extract_aperture(frame, traceset, params.extract)
     steps.append(
@@ -972,6 +1017,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         "science",
         {
             "source": meta.source,
+            "classification_rule": meta.classification_rule,
             "mid_time": meta.mid_time,
             "target": meta.target,
             "wavelength_status": status,
@@ -1080,8 +1126,11 @@ def _run_group(
     by_type: dict[str, list[FrameRef]] = defaultdict(list)
     for ref in refs:
         by_type[ref.meta.exposure_type].append(ref)
-    science = sorted(by_type.get("science", []), key=_time_key)
-    first = science[0].meta if science else refs[0].meta
+    # binning and the time near which library masters are sought: from the frames that
+    # may be science (light ones included, before their content is known)
+    candidates = sorted(by_type.get("science", []) + by_type.get("light", []), key=_time_key)
+    first = candidates[0].meta if candidates else refs[0].meta
+    binnings = Counter(ref.meta.binning for ref in candidates)
     temperatures = [
         m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None
     ]
@@ -1095,7 +1144,7 @@ def _run_group(
         options=options,
         summary=summary,
         cfg_hash=config_hash(effective),
-        binning=refs[0].meta.binning,
+        binning=binnings.most_common(1)[0][0] if binnings else refs[0].meta.binning,
         readout_mode=refs[0].meta.readout_mode,
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,
@@ -1110,6 +1159,8 @@ def _run_group(
         group.cfg_hash,
     )
     _masters(group, by_type)
+    _resolve_light(group, by_type)
+    science = sorted(by_type.get("science", []), key=_time_key)
     _traces(group, by_type)
     _arcs(group, by_type.get("arc", []))
     for ref in science:

@@ -78,7 +78,8 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     params = CalibParams()
     masters = [build_master(by_type[kind], kind, params) for kind in ("bias", "dark", "background")]
     calib = build_calibration_set(*masters, detector)
-    science = calibrate_frame(by_type["science"][0], calib, saturation=detector.saturation)
+    # the simulator writes its science frames as IMAGETYP 'light'
+    science = calibrate_frame(by_type["light"][0], calib, saturation=detector.saturation)
     traces = [
         make_trace(
             i,

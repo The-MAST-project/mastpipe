@@ -26,7 +26,7 @@ import pandas as pd
 
 from mastpipe.core.times import to_utc
 
-EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "science", "background", "unknown")
+EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "light", "science", "background", "unknown")
 ARC_KINDS = ("full", "calfiber", "unknown")
 ROLES = ("arc", "science", "sky", "unknown")
 WAVELENGTH_STATUSES = ("none", "nominal", "reference", "transferred", "solved")

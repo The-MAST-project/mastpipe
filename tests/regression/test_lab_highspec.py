@@ -10,6 +10,10 @@ run of ``mastpipe quicklook --manifest`` would. The numbers asserted are the not
 trace centres, per-fiber rms and line counts, band coverage and the fiber-to-fiber
 agreement of the reference solution.
 
+One test reads the frames without the manifest, as the control software writes them
+(``IMAGETYP = 'light'``), and checks that their content resolves them: every focus frame of
+the scan an arc, the flat a continuum, the lamp-off background no signal.
+
 The runs are quick (one arc, three fibers), but ``quicklook`` -> ``identify`` ->
 ``quicklook`` is one story, so a module-scoped output folder carries it and the tests
 read it in order.
@@ -31,6 +35,7 @@ from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
 from mastpipe.pipeline.identify import AGREEMENT_FILE, CALIB_FOLDER, _arc_lines, run_identify
 from mastpipe.pipeline.runner import RunOptions, run_quicklook
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
+from mastpipe.steps.classify import classify_light
 from mastpipe.steps.drift import fit_fiber_drift
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.trace import find_traces, match_layout
@@ -212,6 +217,49 @@ def test_lab_traces_match_notebook(night, effective):
     alone = find_traces(subtracted.data, params.trace)
     assert len(alone) == 3
     assert np.allclose([t.y_center for t in alone], arc_y_centers(traceset), atol=0.1)
+
+
+def test_lab_focus_frames_are_arc_like(lab_root, effective):
+    """Without a manifest every laboratory frame but the bias is ``light`` (the control
+    software's ``IMAGETYP``, no lamp card), and the content resolves it as the runner
+    would: every Th-Ar focus frame of the scan is an arc, whether or not the lamp-off
+    background is subtracted (the ambient light it holds is about 30 times the line flux
+    and has broad structure of its own); the flat is a continuum, ``science``; the lamp-off
+    background, calibrated with the bias alone as on a night where it is not declared, has
+    no signal."""
+    detector, params = effective.detector, effective.params
+    header_map = load_header_map("highspec")
+    calib_refs = {
+        ref.meta.source: ref for ref in scan_folder(lab_root / "calib", "highspec", header_map)
+    }
+    focus = sorted(
+        scan_folder(lab_root / "scan", "highspec", header_map), key=lambda r: r.meta.source
+    )
+    assert len(focus) >= 11
+    for ref in [*focus, calib_refs["flat_518.fits"], calib_refs["background.fits"]]:
+        assert (ref.meta.exposure_type, ref.meta.classification_rule) == ("light", "header")
+    assert calib_refs["image_bias.fits"].meta.exposure_type == "bias"
+
+    def master(name: str, kind: str):
+        return build_master([load_frame(calib_refs[name], detector)], kind, params.calib)
+
+    bias, background = master("image_bias.fits", "bias"), master("background.fits", "background")
+    bias_only = build_calibration_set(bias, None, None, detector)
+    with_background = build_calibration_set(bias, None, background, detector)
+
+    def resolved(ref, calib) -> tuple[str, str]:
+        subtract = calib.background is not None
+        frame = calibrate_frame(
+            load_frame(ref, detector), calib, subtract, saturation=detector.saturation
+        )
+        return classify_light(frame, params.classify)
+
+    for ref in focus:
+        for calib in (bias_only, with_background):
+            assert resolved(ref, calib) == ("arc", "content:arc_like"), ref.meta.source
+    for calib in (bias_only, with_background):
+        assert resolved(calib_refs["flat_518.fits"], calib) == ("science", "content:continuum")
+    assert resolved(calib_refs["background.fits"], bias_only) == ("unknown", "content:no_signal")
 
 
 def test_lab_reference_from_stored_anchors(reference, night, effective, out_dir):

@@ -115,13 +115,16 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert background["SHUTTER"] == "open" and background["EXPOSURE"] == pytest.approx(300.0)
     assert "ARCKIND" not in fits.getheader(frame_path(out_dir, truth, "arc"))
 
-    # ingest classifies every frame from its header alone
+    # ingest classifies every frame from its header alone; a science frame is 'light', the
+    # provisional type the runner resolves from its content
     refs = scan_folder(out_dir, "highspec", load_header_map("highspec"))
     by_file = {ref.meta.source: ref for ref in refs}
     assert set(by_file) == set(frames.file)
     for row in frames.itertuples():
         meta = by_file[row.file].meta
-        assert meta.exposure_type == row.exposure_type
+        assert meta.exposure_type == (
+            "light" if row.exposure_type == "science" else row.exposure_type
+        )
         assert meta.classification_rule == "header"
         assert meta.mid_time == row.mid_time
         assert meta.configuration == "Mg" and meta.fiber_preset is None

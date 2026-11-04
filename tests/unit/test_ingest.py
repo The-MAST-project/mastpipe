@@ -394,7 +394,7 @@ def test_scan_is_recursive_with_relative_sources(nested: Path, highspec_map: Hea
         "highspec/acquisition-0002/exposure-002.fits",
     ]
     assert refs[0].path == nested / "highspec" / "acquisition-0001" / "exposure-001.fits"
-    assert [ref.meta.exposure_type for ref in refs] == ["arc", "science", "flat"]
+    assert [ref.meta.exposure_type for ref in refs] == ["arc", "light", "flat"]
     # a flat scan keeps to the folder itself
     assert scan_folder(nested, "highspec", highspec_map, recursive=False) == []
 

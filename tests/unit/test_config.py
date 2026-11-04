@@ -190,6 +190,18 @@ def test_config_hash_stable_and_sensitive():
     assert same == a
 
 
+def test_classify_params_layer_like_any_step():
+    inst = make_instrument()
+    plain = build_effective(inst, "g518", "main")
+    assert plain.params.classify.arc_peak_fraction == 0.5
+    tuned = build_effective(inst, "g518", "main", overrides=[{"classify": {"signal_sigma": 8.0}}])
+    assert tuned.params.classify.signal_sigma == 8.0
+    assert tuned.params.classify.continuum_window == 101
+    assert config_hash(tuned) != config_hash(plain)
+    with pytest.raises(ValidationError):
+        build_effective(inst, "g518", "main", overrides=[{"classify": {"banana": 1}}])
+
+
 def test_unknown_key_rejected():
     with pytest.raises(ValidationError):
         TraceParams(trace_halfwidth=4, banana=1)

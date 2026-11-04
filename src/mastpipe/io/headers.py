@@ -25,6 +25,13 @@ sections:
     applied when the header carries no valid ``exposure_type``. Every condition of a rule
     must hold; a rule without ``when`` matches unconditionally and serves as the fallback.
 
+A valid header type wins, except ``light``: it is provisional ("shutter open, source not
+stated", what the control software writes for arcs and science frames alike), so the rules
+**with conditions** are tried on it and the first that matches wins (a ``light`` frame with
+a zero exposure time is a bias). With no such match it stays ``light``, for the runner to
+resolve from the frame's content; the unconditional fallback applies only to a frame
+without a valid header type.
+
 Raw keyword names live only in the YAML files; this module never names one.
 """
 
@@ -56,6 +63,8 @@ OPERATORS = ("lt", "eq", "missing")
 TIME_REFERENCES = ("start", "mid", "end")
 """Which instant of the exposure a time field records (the ``reference`` option)."""
 UNCLASSIFIED = "unknown"
+PROVISIONAL = "light"
+"""The header type that the rules with conditions may still refine."""
 
 _NO_DEFAULT = object()
 
@@ -173,13 +182,20 @@ class HeaderMap:
 
     def classify(self, fields: Mapping[str, Any]) -> tuple[str, str]:
         """``(exposure_type, rule name)``: the header's own valid type (``"header"``), else
-        the first matching rule (``"rule:<i>"``), else ``"unknown"`` (``"unclassified"``)."""
+        the first matching rule (``"rule:<i>"``), else ``"unknown"`` (``"unclassified"``).
+        A ``light`` header type is refined by the first matching rule that has conditions
+        and stays ``("light", "header")`` when none matches."""
         from_header = fields.get("exposure_type")
-        if from_header in EXPOSURE_TYPES:
+        provisional = from_header == PROVISIONAL
+        if from_header in EXPOSURE_TYPES and not provisional:
             return from_header, "header"
         for i, rule in enumerate(self.rules):
+            if provisional and not rule.conditions:
+                continue
             if rule.matches(fields):
                 return rule.exposure_type, f"rule:{i}"
+        if provisional:
+            return PROVISIONAL, "header"
         return UNCLASSIFIED, "unclassified"
 
 

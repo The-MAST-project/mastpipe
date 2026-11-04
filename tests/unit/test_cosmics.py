@@ -82,7 +82,8 @@ def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective)
     background = build_master(by_type["background"], "background", params)
     calib = build_calibration_set(bias, dark, background, detector)
 
-    science = by_type["science"][0]
+    # the simulator writes its science frames as IMAGETYP 'light'
+    science = by_type["light"][0]
     hits = truth.extras["cosmic_rays"][science.meta.source]
     planted = {(int(y), int(x)) for y, x in hits}
     assert planted  # the simulator planted something to find

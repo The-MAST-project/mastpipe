@@ -40,7 +40,7 @@ fields:
       arc: arc
       comp: arc
       object: science
-      light: science
+      light: light
       science: science
       background: background
   arc_kind: {keys: [ARCKIND], lower: true}
@@ -54,8 +54,13 @@ fields:
     map: {mgb518: Mg, halpha: Halpha, caiihk: Ca}
   target: {keys: [OBJECT]}
 
+# IMAGETYP = 'light' is what the control software writes for every shutter-open exposure,
+# arcs and science frames alike (and it writes no LAMP card), so it maps to the provisional
+# type light, which the runner resolves into arc or science from the frame's content.
 # classification: applied in order when the header carries no valid exposure type; the
-# first matching rule wins and the last rule, with no condition, is the fallback.
+# first matching rule wins and the last rule, with no condition, is the fallback. A light
+# frame is refined by the rules with conditions only (a zero-exposure light is a bias) and
+# stays light when none matches.
 classification:
   - {when: {exposure_time: {lt: 0.001}}, type: bias}
   - {when: {lamp_state: {eq: "off"}, shutter_state: {eq: closed}}, type: dark}

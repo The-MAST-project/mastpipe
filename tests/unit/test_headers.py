@@ -1,9 +1,12 @@
 """Tests for header-map resolution and exposure classification."""
 
+import numpy as np
 import pytest
+from astropy.io import fits
 
 from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.headers import HeaderMap
+from mastpipe.io.ingest import scan_folder
 
 SYNTHETIC_MAP = {
     "fields": {
@@ -215,3 +218,60 @@ def test_lt_on_a_non_numeric_value_does_not_match():
     assert hmap.classify({**base, "exposure_time": "short"}) == ("unknown", "unclassified")
     assert hmap.classify({**base, "exposure_time": 0.0}) == ("bias", "rule:0")
     assert hmap.classify({**base, "exposure_time": True}) == ("unknown", "unclassified")
+
+
+# ------------------------------------------------------------- the provisional light type
+
+
+@pytest.fixture
+def highspec_map() -> HeaderMap:
+    return HeaderMap.from_dict(load_header_map("highspec"))
+
+
+def test_light_is_provisional_and_rules_refine_it(highspec_map):
+    base = {name: None for name in highspec_map.fields}
+    light = {**base, "exposure_type": "light"}
+    assert highspec_map.classify({**light, "exposure_time": 30.0}) == ("light", "header")
+    assert highspec_map.classify({**light, "exposure_time": 0.0}) == ("bias", "rule:0")
+    # a rule with conditions refines it; the unconditional fallback never does
+    lamp = {**light, "exposure_time": 30.0, "lamp_state": "thar"}
+    assert highspec_map.classify(lamp) == ("arc", "rule:2")
+    # without a valid header type the rules and the fallback apply as before
+    assert highspec_map.classify({**base, "exposure_time": 30.0}) == ("science", "rule:5")
+
+
+def test_light_with_zero_exposure_is_bias(tmp_path, highspec_map):
+    cards = {"IMAGETYP": "Light", "DATE-OBS": "2026-10-01T18:00:00", "INSTRUME": "Highspec"}
+    for name, exposure in (("zero.fits", 0.0), ("long.fits", 30.0)):
+        hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+        hdu.header.update({**cards, "EXPOSURE": exposure})
+        hdu.writeto(tmp_path / name)
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert (refs["zero.fits"].exposure_type, refs["zero.fits"].classification_rule) == (
+        "bias",
+        "rule:0",
+    )
+    assert (refs["long.fits"].exposure_type, refs["long.fits"].classification_rule) == (
+        "light",
+        "header",
+    )
+
+
+def test_flat_header_type_is_never_refined(highspec_map):
+    base = {name: None for name in highspec_map.fields}
+    for kind in ("flat", "bias", "dark", "arc", "science"):
+        fields = {**base, "exposure_type": kind, "exposure_time": 0.0, "lamp_state": "thar"}
+        assert highspec_map.classify(fields) == (kind, "header")
+
+
+def test_a_map_without_conditional_rules_leaves_light_as_is():
+    raw = {
+        "fields": {
+            "exposure_type": {"keys": ["IMAGETYP"]},
+            "exposure_time": {"keys": ["EXPOSURE"]},
+        },
+        "classification": [{"type": "science"}],
+    }
+    hmap = HeaderMap.from_dict(raw)
+    assert hmap.classify({"exposure_type": "light", "exposure_time": 0.0}) == ("light", "header")
+    assert hmap.classify({"exposure_type": None, "exposure_time": 0.0}) == ("science", "rule:0")
