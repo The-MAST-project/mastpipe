@@ -24,7 +24,7 @@ def make_meta(kind: str, mid_time: str, **kwargs) -> FrameMeta:
         "instrument": "highspec",
         "camera": "main",
         "exposure_type": kind,
-        "configuration": "mgb518",
+        "configuration": "Mg",
         "exposure_time": 0.0 if kind == "bias" else 300.0,
         "mid_time": mid_time,
         "readout_mode": "image",
@@ -93,7 +93,7 @@ def make_reference(created: str, x_c_offset: float, highspec_effective):
             "B_nom": geom.B_nom,
         },
     )
-    return build_reference("highspec", "mgb518", "survey45", {0: solution}, created, ("arc",))
+    return build_reference("highspec", "Mg", "survey45", {0: solution}, created, ("arc",))
 
 
 # -------------------------------------------------------------------------------- masters
@@ -103,7 +103,7 @@ def test_callib_add_writes_master_and_index(tmp_path):
     library = CalibLibrary(tmp_path / "calib")
     master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
     path = library.add(master, make_provenance(), meta)
-    assert path == tmp_path / "calib" / "highspec_mgb518_main_20261001T180000_bias.fits"
+    assert path == tmp_path / "calib" / "highspec_Mg_main_20261001T180000_bias.fits"
     assert path.is_file()
     back, prov = read_master(path)
     assert back.kind == "bias" and float(back.data[0, 0]) == 500.0
@@ -123,7 +123,7 @@ def test_callib_find_matches_keys_temperature_and_time(tmp_path):
     late, late_meta = make_master("bias", "2026-10-02T18:00:00", 2.0)
     warm, warm_meta = make_master("bias", "2026-10-03T18:00:00", 3.0, detector_temperature=-40.0)
     binned, binned_meta = make_master("bias", "2026-10-04T18:00:00", 4.0, binning=(2, 2))
-    flat, flat_meta = make_master("flat", "2026-10-01T19:00:00", 5.0, configuration="halpha")
+    flat, flat_meta = make_master("flat", "2026-10-01T19:00:00", 5.0, configuration="Halpha")
     prov = make_provenance()
     for master, meta in ((early, early_meta), (late, late_meta), (warm, warm_meta)):
         library.add(master, prov, meta)
@@ -149,8 +149,8 @@ def test_callib_find_matches_keys_temperature_and_time(tmp_path):
     assert library.find("bias", "main", (1, 1), "fast") is None
     assert library.find("bias", "other", (1, 1), "image") is None
     assert library.find("dark", "main", (1, 1), "image") is None
-    assert library.find("flat", "main", (1, 1), "image", configuration="mgb518") is None
-    master, _ = library.find("flat", "main", (1, 1), "image", configuration="halpha")
+    assert library.find("flat", "main", (1, 1), "image", configuration="Mg") is None
+    master, _ = library.find("flat", "main", (1, 1), "image", configuration="Halpha")
     assert float(master.data[0, 0]) == 5.0
 
 
@@ -168,41 +168,38 @@ def test_callib_find_reference_by_time_and_identifier(tmp_path, highspec_effecti
     assert earlier.identifier != later.identifier
 
     library = CalibLibrary(tmp_path / "calib")
-    between = library.find_reference(
-        "highspec", "mgb518", "survey45", at_time="2026-10-03T00:00:00"
-    )
+    between = library.find_reference("highspec", "Mg", "survey45", at_time="2026-10-03T00:00:00")
     assert between is not None and between.identifier == earlier.identifier
     assert between.hash == earlier.hash and set(between.solutions) == {0}
-    after = library.find_reference("highspec", "mgb518", "survey45", at_time="2026-10-06T00:00:00")
+    after = library.find_reference("highspec", "Mg", "survey45", at_time="2026-10-06T00:00:00")
     assert after is not None and after.identifier == later.identifier
     # a time-zone-aware time compares as a time, not as a string
     aware = library.find_reference(
-        "highspec", "mgb518", "survey45", at_time="2026-10-05T19:00:00+02:00"
+        "highspec", "Mg", "survey45", at_time="2026-10-05T19:00:00+02:00"
     )
     assert aware is not None and aware.identifier == earlier.identifier
-    latest = library.find_reference("highspec", "mgb518", "survey45")
+    latest = library.find_reference("highspec", "Mg", "survey45")
     assert latest is not None and latest.identifier == later.identifier
     assert (
-        library.find_reference("highspec", "mgb518", "survey45", at_time="2026-09-01T00:00:00")
-        is None
+        library.find_reference("highspec", "Mg", "survey45", at_time="2026-09-01T00:00:00") is None
     )
     by_id = library.find_reference(
         "highspec",
-        "mgb518",
+        "Mg",
         "survey45",
         at_time="2026-10-06T00:00:00",
         identifier=earlier.identifier,
     )
     assert by_id is not None and by_id.identifier == earlier.identifier
-    assert library.find_reference("highspec", "mgb518", "survey45", identifier="nope") is None
-    assert library.find_reference("highspec", "mgb518", "lab3") is None
-    assert library.find_reference("highspec", "halpha", "survey45") is None
+    assert library.find_reference("highspec", "Mg", "survey45", identifier="nope") is None
+    assert library.find_reference("highspec", "Mg", "lab3") is None
+    assert library.find_reference("highspec", "Halpha", "survey45") is None
     # the index knows the camera and the source checksums of every reference
     entries = library.list(kind="reference")
     assert len(entries) == 2
     assert {entry["camera"] for entry in entries} == {"main"}
-    assert library.reference_for_source("highspec", "mgb518", "survey45", "arc") is not None
-    assert library.reference_for_source("highspec", "mgb518", "survey45", "other") is None
+    assert library.reference_for_source("highspec", "Mg", "survey45", "arc") is not None
+    assert library.reference_for_source("highspec", "Mg", "survey45", "other") is None
 
 
 def test_callib_reference_with_same_identifier_is_replaced(tmp_path, highspec_effective):
@@ -213,7 +210,7 @@ def test_callib_reference_with_same_identifier_is_replaced(tmp_path, highspec_ef
     library.add_reference(first, make_provenance(), "main")
     library.add_reference(second, make_provenance(), "main")
     assert len(library.list(kind="reference")) == 1
-    found = library.find_reference("highspec", "mgb518", "survey45")
+    found = library.find_reference("highspec", "Mg", "survey45")
     assert found is not None and found.hash == second.hash
 
 
@@ -222,4 +219,4 @@ def test_callib_rejects_unknown_camera_on_read(tmp_path, highspec_effective):
     ref = make_reference("2026-10-01T18:00:00", 0.0, highspec_effective)
     library.add_reference(ref, make_provenance(), "nocam")
     with pytest.raises(KeyError):
-        library.find_reference("highspec", "mgb518", "survey45")
+        library.find_reference("highspec", "Mg", "survey45")

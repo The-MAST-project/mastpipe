@@ -39,7 +39,7 @@ ARC_SIGMA_PX = FWHM_PX / GAUSSIAN_FWHM
 
 @pytest.fixture(scope="session")
 def highspec_effective() -> EffectiveConfig:
-    return build_effective(load_instrument("highspec"), "mgb518", "main")
+    return build_effective(load_instrument("highspec"), "Mg", "main")
 
 
 @pytest.fixture(scope="session")
@@ -53,8 +53,8 @@ def lab3_layout() -> pd.DataFrame:
 
 
 @pytest.fixture(scope="session")
-def mgb518_lines() -> pd.DataFrame:
-    return load_line_table("highspec", "mgb518")
+def mg_lines() -> pd.DataFrame:
+    return load_line_table("highspec", "Mg")
 
 
 @pytest.fixture(scope="session")
@@ -62,11 +62,11 @@ def sim_night(
     tmp_path_factory: pytest.TempPathFactory,
     highspec_effective: EffectiveConfig,
     survey_layout: pd.DataFrame,
-    mgb518_lines: pd.DataFrame,
+    mg_lines: pd.DataFrame,
 ) -> tuple[Path, SimTruth]:
     out_dir = tmp_path_factory.mktemp("sim_night")
     truth = simulate_night(
-        highspec_effective, survey_layout, mgb518_lines, out_dir, seed=0, n_science=4
+        highspec_effective, survey_layout, mg_lines, out_dir, seed=0, n_science=4
     )
     return out_dir, truth
 
@@ -76,13 +76,13 @@ def sim_night_lab3(
     tmp_path_factory: pytest.TempPathFactory,
     highspec_effective: EffectiveConfig,
     lab3_layout: pd.DataFrame,
-    mgb518_lines: pd.DataFrame,
+    mg_lines: pd.DataFrame,
 ) -> tuple[Path, SimTruth]:
     out_dir = tmp_path_factory.mktemp("sim_night_lab3")
     truth = simulate_night(
         highspec_effective,
         lab3_layout,
-        mgb518_lines,
+        mg_lines,
         out_dir,
         seed=0,
         n_science=4,

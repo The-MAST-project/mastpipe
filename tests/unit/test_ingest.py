@@ -72,7 +72,7 @@ def night(tmp_path: Path) -> Path:
             "VBIN": 2,
             "TEMP": -60.5,
             "READMODE": "Normal",
-            "GRATING": "MgB518",
+            "GRATING": "Mg",
         },
     )
     (tmp_path / "notes.txt").write_text("not a frame\n", encoding="utf-8")
@@ -111,7 +111,7 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     assert sci.binning == (2, 2)
     assert sci.detector_temperature == pytest.approx(-60.5)
     assert sci.readout_mode == "normal"
-    assert sci.configuration == "mgb518"
+    assert sci.configuration == "Mg"
     assert sci.target == "lab target"
 
 

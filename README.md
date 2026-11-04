@@ -160,7 +160,7 @@ mastpipe <command> --help
 
 The reduction commands (`identify`, `solve`, `quicklook`) take `--instrument`
 (e.g. `highspec`), `--configuration` where the frames' headers do not say which
-grating was used (e.g. `mgb518`), `--camera` when the instrument has several,
+grating was used (e.g. `Mg`), `--camera` when the instrument has several,
 `--layout` to name the fiber preset (`lab3`, `survey45`; default: the frames'
 preset, else the instrument's), `--out` for the output folder, `--library` for
 a calibration library elsewhere than `OUT/calib`, and repeatable
@@ -192,7 +192,7 @@ strong lines numbered in both) for the user to read a few wavelength–pixel
 pairs off:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg
 #   anchor panels: out/anchor_panels.png
 #   candidates: out/anchor_candidates.csv
 ```
@@ -204,12 +204,12 @@ stored with the instrument for the configuration and layout
 reference; `--trace` names the layout trace id the pairs were measured on:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --anchors 515.8605:267.22,525.836:1423.22 --trace 0
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --stored-anchors
-#   reference highspec_mgb518_lab3_20260909T113659: 3 fibers solved
-#   written: out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+#   reference highspec_Mg_lab3_20260909T113659: 3 fibers solved
+#   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
 Masters already in `out/calib` (`*_bias.fits`, `*_background.fits`,
@@ -221,8 +221,8 @@ solutions disagree.
 ### `solve` — re-solve a full arc from the previous reference
 
 ```bash
-mastpipe solve night/arc_full.fits --out out --instrument highspec --configuration mgb518
-#   reference highspec_mgb518_lab3_20261112T010203: 3 fibers solved, seeded by highspec_mgb518_lab3_20260909T113659
+mastpipe solve night/arc_full.fits --out out --instrument highspec --configuration Mg
+#   reference highspec_Mg_lab3_20261112T010203: 3 fibers solved, seeded by highspec_Mg_lab3_20260909T113659
 ```
 
 The seed is the latest reference of the configuration and layout in the
@@ -274,17 +274,17 @@ the laboratory data, enter the pipeline:
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind
-image_bias.fits,bias,mgb518,lab3,
-background.fits,background,mgb518,lab3,
-flat_518.fits,flat,mgb518,lab3,
-FOCUS_05_13.30004_mm.fits,arc,mgb518,lab3,full
+image_bias.fits,bias,Mg,lab3,
+background.fits,background,Mg,lab3,
+flat_518.fits,flat,Mg,lab3,
+FOCUS_05_13.30004_mm.fits,arc,Mg,lab3,full
 ```
 
 ### `show` — print what a product holds
 
 ```bash
-mastpipe show out/spec/highspec_mgb518_main_20261001T221500_spec.fits
-mastpipe show out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_spec.fits
+mastpipe show out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
 Prints the product kind, the frame and its statuses, a per-fiber summary

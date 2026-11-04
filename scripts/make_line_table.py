@@ -17,7 +17,7 @@ above the baseline (rolling 10th percentile over 2001 samples) exceeds 20 times 
 Usage::
 
     MASTPIPE_ATLAS_DIR=<atlas folder> python scripts/make_line_table.py \\
-        --instrument highspec --configuration mgb518 --resolving-power 23081
+        --instrument highspec --configuration Mg --resolving-power 23081
 
 Writes ``src/mastpipe/instruments/<instrument>/lines/<configuration>.csv`` (the path the
 configuration block declares as ``line_table``).

@@ -128,9 +128,9 @@ def test_catalogue_arrays():
     assert sp_u.tolist() == ["Th II", "Th I"]
 
 
-def test_catalogue_arrays_of_shipped_table(mgb518_lines):
-    wl, sp = catalogue_arrays(mgb518_lines, usable_only=True)
-    assert len(wl) == int(mgb518_lines["usable"].sum())
+def test_catalogue_arrays_of_shipped_table(mg_lines):
+    wl, sp = catalogue_arrays(mg_lines, usable_only=True)
+    assert len(wl) == int(mg_lines["usable"].sum())
     assert np.all(np.diff(wl) > 0)
     assert len(sp) == len(wl)
 

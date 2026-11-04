@@ -569,7 +569,7 @@ def register_identify(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("full_arc", type=Path, help="the full-arc FITS file")
     parser.add_argument("--out", type=Path, required=True, help="output folder")
     parser.add_argument("--instrument", required=True, help="instrument name, e.g. highspec")
-    parser.add_argument("--configuration", required=True, help="configuration, e.g. mgb518")
+    parser.add_argument("--configuration", required=True, help="configuration, e.g. Mg")
     parser.add_argument("--layout", help="fiber layout preset (default: the instrument's)")
     parser.add_argument("--camera", help="camera name (default: the instrument's only camera)")
     group = parser.add_mutually_exclusive_group()

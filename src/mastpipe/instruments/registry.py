@@ -18,6 +18,7 @@ import pandas as pd
 from mastpipe.config.loader import load_yaml
 from mastpipe.config.models import ConfigurationBlock, InstrumentConfig
 from mastpipe.core.model import ROLES
+from mastpipe.vocab import GRATING_NAMES
 
 LAYOUT_COLUMNS = ("trace", "role", "telescope", "y_nominal", "slope_nominal", "aperture")
 LINE_TABLE_COLUMNS = ("wavelength_nm", "species", "logI", "usable")
@@ -46,7 +47,8 @@ def load_instrument(name: str) -> InstrumentConfig:
 
     Each block file is validated on its own as a :class:`ConfigurationBlock`; its ``name``
     must equal the file stem, so that the configuration name, the file and the line table
-    it references cannot drift apart.
+    it references cannot drift apart. A grating block's ``name`` must be one of
+    :data:`~mastpipe.vocab.GRATING_NAMES`, the names the control software writes.
     """
     folder = instrument_dir(name)
     raw = load_yaml(folder / "config.yaml")
@@ -58,6 +60,11 @@ def load_instrument(name: str) -> InstrumentConfig:
                 raise ValueError(f"{path.name}: block name {block.name!r} must equal the file stem")
             if block.name in blocks:
                 raise ValueError(f"{path.name}: configuration {block.name!r} defined twice")
+            if sub == "gratings" and block.name not in GRATING_NAMES:
+                raise ValueError(
+                    f"grating block {block.name!r} is not a MAST_common grating name "
+                    f"{GRATING_NAMES}"
+                )
             blocks[block.name] = block.model_dump()
     raw["configurations"] = blocks
     return InstrumentConfig.model_validate(raw)

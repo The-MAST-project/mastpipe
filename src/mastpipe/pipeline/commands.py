@@ -65,7 +65,9 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("night_dir", type=Path, help="folder of raw FITS frames")
     parser.add_argument("--out", type=Path, required=True, help="output folder")
     parser.add_argument("--instrument", required=True, help="instrument name, e.g. highspec")
-    parser.add_argument("--configuration", help="configuration of frames whose header has none")
+    parser.add_argument(
+        "--configuration", help="configuration of frames whose header has none, e.g. Mg"
+    )
     parser.add_argument("--camera", help="reduce this camera only")
     parser.add_argument("--layout", help="fiber layout preset (default: the frames' preset)")
     parser.add_argument("--manifest", type=Path, help="CSV of metadata overrides by file name")
@@ -138,7 +140,7 @@ def register_solve(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("full_arc", type=Path, help="the full-arc FITS file")
     parser.add_argument("--out", type=Path, required=True, help="output folder")
     parser.add_argument("--instrument", required=True, help="instrument name, e.g. highspec")
-    parser.add_argument("--configuration", required=True, help="configuration, e.g. mgb518")
+    parser.add_argument("--configuration", required=True, help="configuration, e.g. Mg")
     parser.add_argument("--layout", help="fiber layout preset (default: the instrument's)")
     parser.add_argument("--camera", help="camera name (default: the instrument's only camera)")
     parser.add_argument("--library", type=Path, help="calibration library (default: OUT/calib)")

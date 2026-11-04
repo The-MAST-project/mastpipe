@@ -47,18 +47,18 @@ ANCHOR_LOG_INTENSITY = 2.0
 def survey_effective():
     """The HighSpec configuration with the ``survey45`` preset's parameters (the 8.5 px
     pitch narrows the three halfwidths to 4 px)."""
-    return build_effective(load_instrument("highspec"), "mgb518", "main", layout="survey45")
+    return build_effective(load_instrument("highspec"), "Mg", "main", layout="survey45")
 
 
 @pytest.fixture(scope="module")
-def arc(sim_night, survey_effective, mgb518_lines) -> SimpleNamespace:
+def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
     """The simulated full arc on disk, its truth anchors and the grating truth."""
     night_dir, truth = sim_night
     row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     path = night_dir / str(row["file"])
     geom = grating_geometry(survey_effective.geometry, survey_effective.detector.pixel_size_um)
     n_pix = truth.extras["n_pix"]
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
@@ -207,7 +207,7 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
     assert path.is_file()
     back, prov = read_reference(path, lambda instrument, configuration: arc.geom)
     assert back.identifier == ref.identifier and back.hash == ref.hash
-    assert back.instrument == "highspec" and back.configuration == "mgb518"
+    assert back.instrument == "highspec" and back.configuration == "Mg"
     assert back.fiber_preset == "survey45"
     assert back.valid_from == back.created == arc.mid_time
     assert len(back.solutions) >= MIN_SOLVED
@@ -226,12 +226,12 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
 
 
 def test_identify_uses_stored_anchors_and_trace(
-    tmp_path, sim_night_lab3, highspec_effective, mgb518_lines, monkeypatch
+    tmp_path, sim_night_lab3, highspec_effective, mg_lines, monkeypatch
 ):
     """Without an ``anchors`` argument the instrument's stored pairs and trace are used."""
     night_dir, truth = sim_night_lab3
     row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
     bright = (
         np.isin(truth.lines_nm, cat_wl)
         & truth.lines_on_chip
@@ -252,7 +252,7 @@ def test_identify_uses_stored_anchors_and_trace(
     monkeypatch.setattr(identify, "solve_full_arc", spy)
     out_dir = tmp_path / "lab"
     ref, path = run_identify(night_dir / str(row["file"]), highspec_effective, "lab3", out_dir)
-    assert asked == [("highspec", "mgb518", "lab3")]
+    assert asked == [("highspec", "Mg", "lab3")]
     assert seeded["ref_fiber"] == 1
     assert isinstance(ref, ReferenceSolution) and set(ref.solutions) == {0, 1, 2}
     assert ref.fiber_preset == "lab3" and path.is_file()
@@ -281,23 +281,23 @@ def test_identify_uses_stored_anchors_and_trace(
 
 def test_latest_master_sorts_by_stamp_within_the_configuration(tmp_path, survey_effective):
     names = [
-        "highspec_mgb518_main_20260930T235900_bias.fits",
-        "highspec_mgb518_main_20261001T180000_bias.fits",
-        "highspec_mgb518_main_notime_bias.fits",  # sorts after every digit stamp by name
+        "highspec_Mg_main_20260930T235900_bias.fits",
+        "highspec_Mg_main_20261001T180000_bias.fits",
+        "highspec_Mg_main_notime_bias.fits",  # sorts after every digit stamp by name
         "highspec_noconf_main_20270101T000000_bias.fits",  # another configuration, later
-        "highspec_mgb518_other_20270101T000000_bias.fits",  # another camera, later
-        "highspec_mgb518_main_20270101T000000_flat.fits",  # another kind
+        "highspec_Mg_other_20270101T000000_bias.fits",  # another camera, later
+        "highspec_Mg_main_20270101T000000_flat.fits",  # another kind
     ]
     for name in names:
         (tmp_path / name).write_bytes(b"")
-    assert sorted(names)[-1] != "highspec_mgb518_main_20261001T180000_bias.fits"
+    assert sorted(names)[-1] != "highspec_Mg_main_20261001T180000_bias.fits"
     chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_mgb518_main_20261001T180000_bias.fits"
+    assert chosen is not None and chosen.name == "highspec_Mg_main_20261001T180000_bias.fits"
     assert _latest_master(tmp_path, survey_effective, "background") is None
     for name in names[:2]:
         (tmp_path / name).unlink()
     chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_mgb518_main_notime_bias.fits"
+    assert chosen is not None and chosen.name == "highspec_Mg_main_notime_bias.fits"
 
 
 def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
@@ -400,7 +400,7 @@ def test_cli_identify_parses_anchor_pairs(tmp_path, sim_night_lab3, capsys):
         "--instrument",
         "highspec",
         "--configuration",
-        "mgb518",
+        "Mg",
         "--layout",
         "lab3",
         "--set",

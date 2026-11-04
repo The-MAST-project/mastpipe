@@ -112,6 +112,7 @@ from mastpipe.steps.trace import (
     trace_source,
 )
 from mastpipe.steps.wavemodel import model_from_config
+from mastpipe.vocab import GRATING_NAMES
 
 log = logging.getLogger("mastpipe")
 
@@ -1130,8 +1131,6 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             log.error("%s: %s", night_dir, NO_FRAMES)
         library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
         default_conf = options.configuration
-        if default_conf is None and len(instrument.configurations) == 1:
-            default_conf = next(iter(instrument.configurations))
         groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
         for ref in refs:
             meta = ref.meta
@@ -1148,7 +1147,9 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 log.info("skipped %s: not camera %s", label, options.camera)
                 continue
             if configuration is None:
-                summary.failed.append((label, "configuration unknown; pass --configuration"))
+                summary.failed.append(
+                    (label, f"configuration unknown; pass --configuration one of {GRATING_NAMES}")
+                )
                 log.error("%s: configuration unknown, group skipped", label)
                 continue
             try:

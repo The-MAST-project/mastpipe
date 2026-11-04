@@ -57,7 +57,7 @@ META = FrameMeta(
     instrument="highspec",
     camera="main",
     exposure_type="science",
-    configuration="mgb518",
+    configuration="Mg",
     exposure_time=300.0,
     mid_time="2026-10-01T20:30:15",
     binning=(1, 1),
@@ -84,7 +84,7 @@ def make_provenance() -> Provenance:
         wavelength_status="transferred",
         flux_status="uncalibrated",
         telluric_status="uncorrected",
-        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_id="highspec_Mg_survey45_20261001T180000",
         reference_hash="0011223344aa",
         drift_arcs=[CHECKSUMS[1], CHECKSUMS[2]],
         steps=["bias", "background", "extract"],
@@ -109,7 +109,7 @@ def make_spectrum(fiber: int, rng: np.random.Generator, with_versions: bool) -> 
         error=error,
         mask=mask,
         role=("science", "sky", None)[fiber % 3],
-        telescope=("T1", "T1", None)[fiber % 3],
+        telescope=("mast01", "mast01", None)[fiber % 3],
         target=("HD 1234", None, None)[fiber % 3],
         wavelength=517.0 + 0.00866 * np.arange(N_SPEC) if with_versions else None,
         sky=np.full(N_SPEC, 20.0) if with_versions else None,
@@ -190,14 +190,14 @@ def test_provenance_cards_roundtrip():
 
 
 def test_product_name_format():
-    assert product_name(META, "spec") == "highspec_mgb518_main_20261001T203015_spec.fits"
-    assert product_name(META, "qc", ext=".json") == "highspec_mgb518_main_20261001T203015_qc.json"
+    assert product_name(META, "spec") == "highspec_Mg_main_20261001T203015_spec.fits"
+    assert product_name(META, "qc", ext=".json") == "highspec_Mg_main_20261001T203015_qc.json"
     bare = replace(META, configuration=None, mid_time=None)
     assert product_name(bare, "trace") == "highspec_noconf_main_notime_trace.fits"
     aware = replace(META, mid_time="2026-10-01T22:30:15+02:00")
-    assert product_name(aware, "spec") == "highspec_mgb518_main_20261001T203015_spec.fits"
+    assert product_name(aware, "spec") == "highspec_Mg_main_20261001T203015_spec.fits"
     assert combined_name(META, "HD 1234/b") == (
-        "highspec_mgb518_main_20261001T203015_comb_HD_1234_b.fits"
+        "highspec_Mg_main_20261001T203015_comb_HD_1234_b.fits"
     )
 
 
@@ -271,7 +271,7 @@ def make_trace(index: int, coeffs: list[float], **kwargs) -> Trace:
 def test_traceset_roundtrip_degrees(tmp_path):
     traces = [
         make_trace(0, [0.002, 10.0], role="arc", telescope=None, layout_index=0, aperture=None),
-        make_trace(1, [1e-6, 0.002, 20.0], role="science", telescope="T1", layout_index=1),
+        make_trace(1, [1e-6, 0.002, 20.0], role="science", telescope="mast01", layout_index=1),
         make_trace(2, [1e-9, 1e-6, 0.002, 30.0], aperture=3.5),
     ]
     traceset = TraceSet(traces, shape=(400, N_PIX), layout_shift=0.37, missing=(3,), extra=(44,))
@@ -329,7 +329,7 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         wavelength_status="transferred",
         flux_status="uncalibrated",
         telluric_status="uncorrected",
-        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_id="highspec_Mg_survey45_20261001T180000",
         reference_hash="0011223344aa",
         drift_arcs=(CHECKSUMS[1], CHECKSUMS[2]),
         provenance={"idempotence_key": "abc", "n_arcs": 2},
@@ -416,7 +416,7 @@ def test_spectra_provenance_disagreement_raises(tmp_path):
         meta=META,
         spectra=[make_spectrum(0, rng, with_versions=False)],
         wavelength_status="reference",
-        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_id="highspec_Mg_survey45_20261001T180000",
         reference_hash="0011223344aa",
     )
     prov = Provenance("0.0.1", "abcdef012345", [CHECKSUMS[0]], [], wavelength_status="nominal")
@@ -436,7 +436,7 @@ def test_spectra_bare_provenance_filled_from_exposure(tmp_path):
         meta=META,
         spectra=[make_spectrum(0, rng, with_versions=False)],
         wavelength_status="transferred",
-        reference_id="highspec_mgb518_survey45_20261001T180000",
+        reference_id="highspec_Mg_survey45_20261001T180000",
         reference_hash="0011223344aa",
         drift_arcs=(CHECKSUMS[1],),
     )
@@ -537,7 +537,7 @@ def reference(highspec_effective):
         2: make_solution(2, with_poly, make_lines(x[:2], with_poly.wavelength(np.array(x[:2])))),
     }
     ref = build_reference(
-        "highspec", "mgb518", "survey45", solutions, "2026-10-01T18:00:00", CHECKSUMS[:2]
+        "highspec", "Mg", "survey45", solutions, "2026-10-01T18:00:00", CHECKSUMS[:2]
     )
     return ref, geom
 
@@ -546,7 +546,7 @@ def test_reference_roundtrip(tmp_path, reference):
     ref, geom = reference
     prov = make_provenance()
     path = tmp_path / reference_name(ref)
-    assert path.name == "highspec_mgb518_survey45_20261001T180000_wref.fits"
+    assert path.name == "highspec_Mg_survey45_20261001T180000_wref.fits"
     write_reference(path, ref, prov)
     back, prov_back = read_reference(path, lambda instrument, configuration: geom)
     assert prov_back == prov
@@ -578,7 +578,7 @@ def test_reference_roundtrip(tmp_path, reference):
         header = hdul[0].header
         assert header["MPREFID"] == ref.identifier and header["MPREFH"] == ref.hash
         assert header["MPCREAT"] == ref.created and header["MPVALID"] == ref.valid_from
-        assert header["MPINST"] == "highspec" and header["MPCONF"] == "mgb518"
+        assert header["MPINST"] == "highspec" and header["MPCONF"] == "Mg"
         assert header["MPPRESET"] == "survey45"
         assert hdul["SOLUTIONS"].data["PARAMS"].shape == (2, 12)
         assert list(hdul["SOLUTIONS"].data["NPARAMS"]) == [3, 7]
@@ -606,7 +606,7 @@ def test_combined_roundtrip(tmp_path):
     contributors = pd.DataFrame(
         {
             "fiber": [1, 4],
-            "telescope": ["T1", "T2"],
+            "telescope": ["mast01", "mast02"],
             "source": ["sim_science_01.fits", "sim_science_01.fits"],
             "weight": [0.6, 0.4],
         }
@@ -614,7 +614,7 @@ def test_combined_roundtrip(tmp_path):
     excluded = pd.DataFrame(
         {
             "fiber": [7],
-            "telescope": ["T3"],
+            "telescope": ["mast03"],
             "source": ["sim_science_01.fits"],
             "reason": ["low snr"],
         }
@@ -703,7 +703,7 @@ def test_no_raw_keywords_in_products(tmp_path, reference):
         "HD 1234",
         np.arange(N_SPEC, dtype=float),
         {"raw": SpectrumVersion(np.ones(N_SPEC), np.ones(N_SPEC), np.zeros(N_SPEC, bool))},
-        pd.DataFrame({"fiber": [1], "telescope": ["T1"], "source": ["s"], "weight": [1.0]}),
+        pd.DataFrame({"fiber": [1], "telescope": ["mast01"], "source": ["s"], "weight": [1.0]}),
         pd.DataFrame({"fiber": [], "telescope": [], "source": [], "reason": []}),
         "exposure",
         {},

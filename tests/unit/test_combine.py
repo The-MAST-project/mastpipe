@@ -8,6 +8,7 @@ import pytest
 from mastpipe.config.models import CombineParams
 from mastpipe.core.model import CombinedSpectrum, Spectrum, SpectrumVersion
 from mastpipe.steps.combine import combine_spectra, common_grid, group_by_target
+from mastpipe.vocab import unit_name
 
 N_PIX = 200
 CONTINUUM = 100.0
@@ -51,7 +52,7 @@ def noisy_copies(rng: np.random.Generator, n_copies: int = 4) -> list[Spectrum]:
             fiber=i,
             flux=CONTINUUM + rng.normal(0.0, SIGMA, N_PIX),
             wavelength=wave,
-            telescope=f"T{i}",
+            telescope=unit_name(i + 1),
         )
         for i in range(n_copies)
     ]
@@ -103,8 +104,8 @@ def test_combine_weighted_mean_reduces_noise():
 
 def test_outside_coverage_masked():
     rng = np.random.default_rng(2)
-    short = make_spectrum(0, CONTINUUM + rng.normal(0, SIGMA, 100), grid(n=100), telescope="T0")
-    long = make_spectrum(1, CONTINUUM + rng.normal(0, SIGMA, N_PIX), grid(), telescope="T1")
+    short = make_spectrum(0, CONTINUUM + rng.normal(0, SIGMA, 100), grid(n=100), telescope="mast01")
+    long = make_spectrum(1, CONTINUUM + rng.normal(0, SIGMA, N_PIX), grid(), telescope="mast02")
     cs = combine_spectra([short, long], "star", CombineParams(log_grid=False))
     raw = cs.versions["raw"]
     assert not raw.mask.any()
@@ -130,15 +131,17 @@ def test_all_masked_pixel_is_masked_in_combination():
 def test_exclude_list_and_reason():
     rng = np.random.default_rng(4)
     spectra = noisy_copies(rng)
-    cs = combine_spectra(spectra, "star", CombineParams(exclude=["T2"], log_grid=False))
-    assert list(cs.contributors["telescope"]) == ["T0", "T1", "T3"]
-    assert list(cs.excluded["telescope"]) == ["T2"]
+    cs = combine_spectra(spectra, "star", CombineParams(exclude=["mast03"], log_grid=False))
+    assert list(cs.contributors["telescope"]) == ["mast01", "mast02", "mast04"]
+    assert list(cs.excluded["telescope"]) == ["mast03"]
     assert list(cs.excluded["fiber"]) == [2]
     assert list(cs.excluded["reason"]) == ["excluded by configuration"]
 
-    cs = combine_spectra(spectra, "star", CombineParams(include=["T0", "T1"], log_grid=False))
-    assert list(cs.contributors["telescope"]) == ["T0", "T1"]
-    assert sorted(cs.excluded["telescope"]) == ["T2", "T3"]
+    cs = combine_spectra(
+        spectra, "star", CombineParams(include=["mast01", "mast02"], log_grid=False)
+    )
+    assert list(cs.contributors["telescope"]) == ["mast01", "mast02"]
+    assert sorted(cs.excluded["telescope"]) == ["mast03", "mast04"]
     assert set(cs.excluded["reason"]) == {"excluded by configuration"}
 
 
@@ -146,11 +149,11 @@ def test_rejection_low_snr_listed_not_dropped_silently():
     rng = np.random.default_rng(5)
     spectra = noisy_copies(rng)
     spectra[1] = make_spectrum(
-        1, CONTINUUM + rng.normal(0, 60.0, N_PIX), grid(), telescope="T1", error=60.0
+        1, CONTINUUM + rng.normal(0, 60.0, N_PIX), grid(), telescope="mast02", error=60.0
     )
     params = CombineParams(reject=True, reject_snr_min=3.0, log_grid=False)
     cs = combine_spectra(spectra, "star", params)
-    assert list(cs.contributors["telescope"]) == ["T0", "T2", "T3"]
+    assert list(cs.contributors["telescope"]) == ["mast01", "mast03", "mast04"]
     assert list(cs.excluded["fiber"]) == [1]
     reason = cs.excluded["reason"].iloc[0]
     assert reason.startswith("low S/N (")
@@ -165,7 +168,7 @@ def test_rejection_flux_ratio_and_drift():
     rng = np.random.default_rng(6)
     spectra = noisy_copies(rng)
     spectra[2] = make_spectrum(
-        2, 0.1 * CONTINUUM + rng.normal(0, 0.5, N_PIX), grid(), telescope="T2", error=0.5
+        2, 0.1 * CONTINUUM + rng.normal(0, 0.5, N_PIX), grid(), telescope="mast03", error=0.5
     )
     qc = {0: {"drift_px": 0.1}, 1: {"drift_px": 0.1}, 2: {"drift_px": 0.1}, 3: {"drift_px": 2.5}}
     params = CombineParams(reject=True, reject_drift_px=1.0, log_grid=False)
@@ -220,7 +223,7 @@ def test_default_params_log_grid_fractional_offsets():
             fiber=i,
             flux=CONTINUUM + rng.normal(0.0, SIGMA, N_PIX),
             wavelength=grid() + 0.01 * (0.37 * i),
-            telescope=f"T{i}",
+            telescope=unit_name(i + 1),
         )
         for i in range(4)
     ]
@@ -302,9 +305,9 @@ def test_group_by_target_science_only():
 def test_other_targets_and_no_wavelength_are_not_combined():
     rng = np.random.default_rng(10)
     spectra = noisy_copies(rng, n_copies=2)
-    other = make_spectrum(7, np.ones(N_PIX), grid(), telescope="T7", target="other")
-    sky = make_spectrum(8, np.ones(N_PIX), grid(), role="sky", telescope="T0", target="star")
-    bare = make_spectrum(9, np.ones(N_PIX), None, telescope="T9", target="star")
+    other = make_spectrum(7, np.ones(N_PIX), grid(), telescope="mast08", target="other")
+    sky = make_spectrum(8, np.ones(N_PIX), grid(), role="sky", telescope="mast01", target="star")
+    bare = make_spectrum(9, np.ones(N_PIX), None, telescope="mast10", target="star")
     cs = combine_spectra(
         [*spectra, other, sky, bare], "star", CombineParams(log_grid=False), barycentric={"rv": 1.5}
     )

@@ -2,7 +2,7 @@
 
 Placeholder geometry until the survey fiber head is measured: 45 traces at a pitch of
 8.5 px from y = 12.0 (cropped coordinates), the five arc fibers at slots 0, 11, 22, 33 and
-44, the remaining 40 slots alternating science and sky per telescope T01..T20, and an
+44, the remaining 40 slots alternating science and sky per telescope mast01..mast20, and an
 extraction aperture halfwidth of 4 px on every trace (the pitch leaves no room for the
 instrument default). Writes
 ``src/mastpipe/instruments/highspec/layouts/survey45.csv``; run it again after editing
@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+
+from mastpipe.vocab import unit_name
 
 N_TRACES = 45
 Y_START = 12.0
@@ -44,7 +46,7 @@ def layout_rows() -> list[tuple[str, ...]]:
             (
                 str(index),
                 next_role,
-                f"T{telescope:02d}",
+                unit_name(telescope),
                 y_nominal,
                 f"{SLOPE:.4f}",
                 f"{APERTURE:.1f}",

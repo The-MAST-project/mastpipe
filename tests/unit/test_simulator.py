@@ -104,7 +104,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert pd.Timestamp(header["DATE-OBS"]) == pd.Timestamp(science_row.mid_time) - pd.Timedelta(
         seconds=150
     )
-    assert header["FIBPRE"] == "survey45" and header["GRATING"] == "mgb518"
+    assert header["FIBPRE"] == "survey45" and header["GRATING"] == "Mg"
     assert fits.getheader(frame_path(out_dir, truth, "arc"))["LAMP"] == "thar"
     assert fits.getheader(frame_path(out_dir, truth, "flat"))["LAMP"] == "flat"
     assert fits.getheader(frame_path(out_dir, truth, "bias"))["SHUTTER"] == "closed"
@@ -123,7 +123,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
         assert meta.exposure_type == row.exposure_type
         assert meta.classification_rule == "header"
         assert meta.mid_time == row.mid_time
-        assert meta.configuration == "mgb518" and meta.fiber_preset == "survey45"
+        assert meta.configuration == "Mg" and meta.fiber_preset == "survey45"
         assert meta.arc_kind is None
     loaded = load_frame(by_file[science.name], highspec_effective.detector)
     assert loaded.shape == (398, 1598)
@@ -287,17 +287,17 @@ def test_flat_traces_follow_truth(sim_night):
     np.testing.assert_allclose(ratio, expected, rtol=0.03)
 
 
-def test_no_cal_arcs_and_determinism(tmp_path, highspec_effective, survey_layout, mgb518_lines):
+def test_no_cal_arcs_and_determinism(tmp_path, highspec_effective, survey_layout, mg_lines):
     kwargs = dict(seed=3, n_bias=1, n_dark=1, n_flat=1, n_full_arc=1, n_cal_arc=2, n_science=3)
     first = simulate_night(
-        highspec_effective, survey_layout, mgb518_lines, tmp_path / "a", no_cal_arcs=True, **kwargs
+        highspec_effective, survey_layout, mg_lines, tmp_path / "a", no_cal_arcs=True, **kwargs
     )
     assert first.frames.arc_kind.tolist().count("calfiber") == 0
     assert first.frames.arc_kind.tolist().count("full") == 1
     assert (first.frames.exposure_type == "science").sum() == 3
     assert (first.frames.exposure_type == "background").sum() == 1
     second = simulate_night(
-        highspec_effective, survey_layout, mgb518_lines, tmp_path / "b", no_cal_arcs=True, **kwargs
+        highspec_effective, survey_layout, mg_lines, tmp_path / "b", no_cal_arcs=True, **kwargs
     )
     pd.testing.assert_frame_equal(first.frames, second.frames)
     np.testing.assert_array_equal(first.trace_coeffs, second.trace_coeffs)
@@ -309,7 +309,7 @@ def test_no_cal_arcs_and_determinism(tmp_path, highspec_effective, survey_layout
     third = simulate_night(
         highspec_effective,
         survey_layout,
-        mgb518_lines,
+        mg_lines,
         tmp_path / "c",
         no_cal_arcs=True,
         **{**kwargs, "seed": 4},

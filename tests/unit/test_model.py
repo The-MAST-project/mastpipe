@@ -99,19 +99,19 @@ def test_trace_evaluates_polynomial():
 def test_traceset_by_role_and_telescope():
     traces = [
         make_trace(0, role="arc", y_center=10.0),
-        make_trace(1, role="science", telescope="T1", y_center=20.0),
-        make_trace(2, role="sky", telescope="T1", y_center=30.0),
-        make_trace(3, role="science", telescope="T2", y_center=40.0),
+        make_trace(1, role="science", telescope="mast01", y_center=20.0),
+        make_trace(2, role="sky", telescope="mast01", y_center=30.0),
+        make_trace(3, role="science", telescope="mast02", y_center=40.0),
     ]
     traceset = TraceSet(traces=traces, shape=(100, 50))
     assert len(traceset) == 4
     assert [trace.index for trace in traceset] == [0, 1, 2, 3]
     assert [trace.index for trace in traceset.by_role("science")] == [1, 3]
     assert traceset.by_role("unknown") == []
-    by_t1 = traceset.by_telescope("T1")
+    by_t1 = traceset.by_telescope("mast01")
     assert set(by_t1) == {"science", "sky"}
     assert by_t1["sky"].index == 2
-    assert traceset.by_telescope("T9") == {}
+    assert traceset.by_telescope("mast09") == {}
     assert traceset.missing == () and traceset.extra == ()
 
 
@@ -163,8 +163,8 @@ def test_exposure_spectra_statuses():
 
 def test_reference_identifier_format():
     assert (
-        make_identifier("highspec", "mgb518", "lab3", "2026-09-09T12:34:56")
-        == "highspec_mgb518_lab3_20260909T123456"
+        make_identifier("highspec", "Mg", "lab3", "2026-09-09T12:34:56")
+        == "highspec_Mg_lab3_20260909T123456"
     )
 
 
@@ -225,17 +225,17 @@ def test_tables_require_named_columns():
 
     wavelength = np.linspace(517.0, 519.0, 6)
     contributors = pd.DataFrame(
-        {"fiber": [1], "telescope": ["T1"], "source": ["a.fits"], "weight": [1.0]}
+        {"fiber": [1], "telescope": ["mast01"], "source": ["a.fits"], "weight": [1.0]}
     )
     excluded = pd.DataFrame(
-        {"fiber": [3], "telescope": ["T2"], "source": ["a.fits"], "reason": ["low snr"]}
+        {"fiber": [3], "telescope": ["mast02"], "source": ["a.fits"], "reason": ["low snr"]}
     )
     combined_fields = {
         "target": "star",
         "wavelength": wavelength,
         "versions": {"raw": make_version(), "skysub": make_version()},
         "grouping": "exposure",
-        "barycentric": {"T1": 0.1},
+        "barycentric": {"mast01": 0.1},
     }
     combined = CombinedSpectrum(contributors=contributors, excluded=excluded, **combined_fields)
     assert set(combined.versions) == {"raw", "skysub"}

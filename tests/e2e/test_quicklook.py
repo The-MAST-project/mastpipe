@@ -48,7 +48,7 @@ SHORT_AGE = {"drift": {"max_age_hours": 0.3}}
 """An age limit of 18 minutes: a copied arc pairs with the science frames next to it only."""
 N_SCIENCE = 4
 DROPPED_FIBER = 16
-"""The survey fiber (a science fiber of T08) whose light the missing-fiber night lacks."""
+"""The survey fiber (a science fiber of mast08) whose light the missing-fiber night lacks."""
 DARK_ROWS = 4
 """Rows on either side of the dropped trace set to the bias level in the flats."""
 EXTRA_ROW = 100.0
@@ -99,12 +99,12 @@ def map_error_in_dispersions(lam: np.ndarray, night, shift: float, stretch: floa
 
 
 @pytest.fixture(scope="module")
-def night(sim_night, mgb518_lines) -> SimpleNamespace:
+def night(sim_night, mg_lines) -> SimpleNamespace:
     night_dir, truth = sim_night
-    effective = build_effective(load_instrument("highspec"), "mgb518", "main", layout="survey45")
+    effective = build_effective(load_instrument("highspec"), "Mg", "main", layout="survey45")
     geom = grating_geometry(effective.geometry, effective.detector.pixel_size_um)
     n_pix = truth.extras["n_pix"]
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
     full = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     return SimpleNamespace(
         dir=night_dir,
@@ -146,13 +146,13 @@ def transferred_run(identified, night, out_dir) -> RunSummary:
     return run_quicklook(night.dir, out_dir, options())
 
 
-def no_cal_night(tmp_path: Path, night, survey_layout, mgb518_lines, identified) -> Path:
+def no_cal_night(tmp_path: Path, night, survey_layout, mg_lines, identified) -> Path:
     """A night without calibration-fiber arcs, its library seeded with the reference."""
     folder = tmp_path / "night"
     simulate_night(
         night.effective,
         survey_layout,
-        mgb518_lines,
+        mg_lines,
         folder,
         seed=0,
         n_science=N_SCIENCE,
@@ -271,9 +271,9 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
 
 
 def test_quicklook_without_drift_arcs_gives_reference_status(
-    tmp_path, night, survey_layout, mgb518_lines, identified
+    tmp_path, night, survey_layout, mg_lines, identified
 ):
-    folder = no_cal_night(tmp_path, night, survey_layout, mgb518_lines, identified)
+    folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     summary = run_quicklook(folder, tmp_path / "out", options())
     assert summary.failed == []
     products = spec_products(tmp_path / "out")
@@ -290,9 +290,9 @@ def test_quicklook_without_drift_arcs_gives_reference_status(
 
 
 def test_quicklook_idempotent_then_reduced_again(
-    tmp_path, night, survey_layout, mgb518_lines, identified
+    tmp_path, night, survey_layout, mg_lines, identified
 ):
-    folder = no_cal_night(tmp_path, night, survey_layout, mgb518_lines, identified)
+    folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     out = tmp_path / "out"
     first = run_quicklook(folder, out, options(SHORT_AGE))
     assert first.failed == [] and first.reduced_again == []
@@ -496,11 +496,11 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
 
 
 def test_reference_on_another_pixel_grid_is_refused(
-    tmp_path, night, survey_layout, mgb518_lines, identified
+    tmp_path, night, survey_layout, mg_lines, identified
 ):
     """A reference solved on another detector crop names itself and the frame width in the
     recorded failure instead of breaking inside the product writer."""
-    folder = no_cal_night(tmp_path, night, survey_layout, mgb518_lines, identified)
+    folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     ref = identified.ref
     narrow = build_reference(
         ref.instrument,
@@ -580,7 +580,7 @@ def test_unknown_frames_are_skipped_with_reason(tmp_path):
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,exposure_type\nweird.fits,unknown\n", encoding="utf-8", newline="")
     summary = run_quicklook(
-        folder, tmp_path / "out", RunOptions("highspec", configuration="mgb518", manifest=manifest)
+        folder, tmp_path / "out", RunOptions("highspec", configuration="Mg", manifest=manifest)
     )
     assert any("junk.fits" in item and "rule:4" in item for item in summary.skipped)
     assert any("weird.fits" in item and "manifest" in item for item in summary.skipped)
@@ -592,7 +592,7 @@ def test_unknown_frames_are_skipped_with_reason(tmp_path):
         run_quicklook(
             folder,
             tmp_path / "out",
-            RunOptions("highspec", configuration="mgb518", manifest=manifest, on_error="raise"),
+            RunOptions("highspec", configuration="Mg", manifest=manifest, on_error="raise"),
         )
 
 
@@ -624,9 +624,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
     assert produced == set(good)
     # the stub frame's product (its 300 s start at 23:00 gives a mid-time of 23:02:30)
-    assert not (
-        tmp_path / "out" / "spec" / "highspec_mgb518_main_20261001T230230_spec.fits"
-    ).exists()
+    assert not (tmp_path / "out" / "spec" / "highspec_Mg_main_20261001T230230_spec.fits").exists()
 
     with pytest.raises(ValueError, match="shape"):
         run_quicklook(folder, tmp_path / "out2", options(on_error="raise"))
@@ -664,15 +662,15 @@ def test_cli_quicklook_and_show(transferred_run, identified, night, out_dir, cap
     assert "combined" in capsys.readouterr().out
 
 
-def test_cli_solve_uses_the_library(sim_night_lab3, mgb518_lines, tmp_path, capsys):
+def test_cli_solve_uses_the_library(sim_night_lab3, mg_lines, tmp_path, capsys):
     night_dir, truth = sim_night_lab3
     full = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     arc = str(night_dir / str(full["file"]))
     out = tmp_path / "out"
-    base = ["--out", str(out), "--instrument", "highspec", "--configuration", "mgb518"]
+    base = ["--out", str(out), "--instrument", "highspec", "--configuration", "Mg"]
     assert main(["solve", arc, *base]) == 2
     assert "run identify first" in capsys.readouterr().out
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
     pairs = ",".join(f"{wl}:{px}" for wl, px in truth_anchors(truth, cat_wl))
     assert main(["identify", arc, *base, "--anchors", pairs, "--trace", "0"]) == 0
     capsys.readouterr()

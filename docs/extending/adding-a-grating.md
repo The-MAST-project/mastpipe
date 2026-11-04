@@ -12,7 +12,7 @@ the configuration name the header map's `GRATING` keyword (or the file-name
 pattern) resolves to:
 
 ```yaml
-name: halpha
+name: Halpha
 band_nm: [649.0, 664.0]        # the detector's wavelength range, generous
 resolving_power: 20000
 geometry:
@@ -23,12 +23,14 @@ geometry:
   camera_focal_mm: 479.41
   central_wavelength_nm: 656.3
   dispersion_sign: 1           # -1 when wavelength falls with pixel
-line_table: lines/halpha.csv
+line_table: lines/Halpha.csv
 params: {}                     # per-grating overrides of any step parameter
 ```
 
 The geometry constants are the optical design's, as in the reduction notebook;
-they are never fitted. The `name` must equal the file stem.
+they are never fitted. The `name` must equal the file stem and be one of the
+fleet's grating names, `mastpipe.vocab.GRATING_NAMES` (`Ca`, `Halpha`, `Mg`,
+`Future`, spelled exactly so); the registry rejects any other.
 
 ## 2. The line table
 
@@ -38,7 +40,7 @@ et al. and committed:
 
 ```bash
 MASTPIPE_ATLAS_DIR=<atlas folder> python scripts/make_line_table.py \
-    --instrument highspec --configuration halpha --resolving-power 20000
+    --instrument highspec --configuration Halpha --resolving-power 20000
 ```
 
 The script convolves the atlas to the resolving power and keeps a line when
@@ -77,7 +79,7 @@ full arcs on its own.
 
 ```bash
 pytest tests/unit/test_registry.py       # the block loads and validates
-mastpipe quicklook sim_night/ --out out --instrument highspec --configuration halpha
+mastpipe quicklook sim_night/ --out out --instrument highspec --configuration Halpha
 ```
 
 `tests/unit/test_registry.py::test_extra_grating_file_is_picked_up` is the

@@ -31,9 +31,9 @@ STATIC = Path(__file__).resolve().parent.parent / "docs" / "_static"
 def main() -> int:
     STATIC.mkdir(parents=True, exist_ok=True)
     instrument = load_instrument("highspec")
-    effective = build_effective(instrument, "mgb518", "main", layout="survey45")
+    effective = build_effective(instrument, "Mg", "main", layout="survey45")
     layout = load_layout("highspec", "survey45")
-    lines = load_line_table("highspec", "mgb518")
+    lines = load_line_table("highspec", "Mg")
     with tempfile.TemporaryDirectory() as tmp:
         night = Path(tmp) / "night"
         truth = simulate_night(effective, layout, lines, night, seed=0, n_science=2)

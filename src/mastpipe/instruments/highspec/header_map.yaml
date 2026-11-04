@@ -33,7 +33,12 @@ fields:
   arc_kind: {keys: [ARCKIND], lower: true}
   lamp_state: {keys: [LAMP], lower: true}
   shutter_state: {keys: [SHUTTER], lower: true}
-  configuration: {keys: [GRATING], lower: true, filename_regex: "(?P<value>mgb518|halpha|caiihk)"}
+  # GRATING carries the MAST_common grating name (Mg, Halpha, Ca) as is; laboratory file
+  # names spell the grating mgb518 / halpha / caiihk, which are only aliases mapped here.
+  configuration:
+    keys: [GRATING]
+    filename_regex: "(?P<value>mgb518|halpha|caiihk)"
+    map: {mgb518: Mg, halpha: Halpha, caiihk: Ca}
   fiber_preset: {keys: [FIBPRE]}
   target: {keys: [OBJECT]}
 

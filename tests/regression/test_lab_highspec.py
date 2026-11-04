@@ -53,7 +53,7 @@ CALIB_FRAMES = {"image_bias.fits": "bias", "background.fits": "background", "fla
 """The calibration frames of the laboratory folder and the type the manifest gives them."""
 FULL_ARC = "FOCUS_05_13.30004_mm.fits"
 """The Th-Ar frame at the best focus of the scan: the full arc."""
-CONFIGURATION = "mgb518"
+CONFIGURATION = "Mg"
 PRESET = "lab3"
 
 # The notebook's numbers on the same frames.
@@ -215,7 +215,7 @@ def test_lab_traces_match_notebook(night, effective):
 
 
 def test_lab_reference_from_stored_anchors(reference, night, effective, out_dir):
-    """``run_identify`` with the stored anchor pairs of ``mgb518`` / ``lab3`` on the full arc,
+    """``run_identify`` with the stored anchor pairs of ``Mg`` / ``lab3`` on the full arc,
     with the masters the quick-look run left in ``out/calib``: three solutions at the
     notebook's quality (rms 0.016 / 0.038 / 0.010 px, 23 / 25 / 19 lines, coverage
     513.498-527.315 nm) and fiber-to-fiber agreement below 0.03 px."""

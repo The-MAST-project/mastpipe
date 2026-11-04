@@ -144,16 +144,16 @@ def test_extract_sum_mean_and_metadata():
     frame = toy_frame(data, variance, target="star")
     traces = TraceSet(
         traces=[
-            make_trace(0, 5.0, role="science", telescope="T01"),
-            make_trace(1, 8.0, role="sky", telescope="T01", aperture=1.0),
+            make_trace(0, 5.0, role="science", telescope="mast01"),
+            make_trace(1, 8.0, role="sky", telescope="mast01", aperture=1.0),
         ],
         shape=(ny, nx),
     )
     spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=2.0, aperture="round"))
     assert [s.fiber for s in spectra] == [0, 1]
     science, sky = spectra
-    assert (science.role, science.telescope, science.target) == ("science", "T01", "star")
-    assert (sky.role, sky.telescope, sky.target) == ("sky", "T01", None)
+    assert (science.role, science.telescope, science.target) == ("science", "mast01", "star")
+    assert (sky.role, sky.telescope, sky.target) == ("sky", "mast01", None)
     assert science.pixel.tolist() == list(range(nx))
     # rows 3..7 summed per column, error sqrt(5 * 2)
     assert science.flux == pytest.approx(data[3:8].sum(axis=0))

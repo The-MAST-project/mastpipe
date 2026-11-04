@@ -19,23 +19,23 @@ N_PIX = 1598
 
 
 @pytest.fixture
-def mgb518(highspec_effective) -> GratingGeometry:
+def mg(highspec_effective) -> GratingGeometry:
     return grating_geometry(highspec_effective.geometry, highspec_effective.detector.pixel_size_um)
 
 
-def test_nominal_dispersion_matches_notebook(mgb518: GratingGeometry):
-    assert mgb518.dispersion_nm_px == pytest.approx(0.00866, abs=2e-4)
-    assert mgb518.lambda_littrow == pytest.approx(519.0, abs=0.5)
-    assert mgb518.B_nom == pytest.approx(479.41 * 1000.0 / 16.0)
-    assert mgb518.d_nm == pytest.approx(367.0)
-    assert mgb518.alpha_rad == pytest.approx(math.radians(45.0))
-    assert mgb518.order == 1
-    assert mgb518.lambda_center == pytest.approx(518.0)
-    assert mgb518.dispersion_sign == 1
+def test_nominal_dispersion_matches_notebook(mg: GratingGeometry):
+    assert mg.dispersion_nm_px == pytest.approx(0.00866, abs=2e-4)
+    assert mg.lambda_littrow == pytest.approx(519.0, abs=0.5)
+    assert mg.B_nom == pytest.approx(479.41 * 1000.0 / 16.0)
+    assert mg.d_nm == pytest.approx(367.0)
+    assert mg.alpha_rad == pytest.approx(math.radians(45.0))
+    assert mg.order == 1
+    assert mg.lambda_center == pytest.approx(518.0)
+    assert mg.dispersion_sign == 1
 
 
-def test_grating_x_inverts_theta(mgb518: GratingGeometry):
-    g = mgb518
+def test_grating_x_inverts_theta(mg: GratingGeometry):
+    g = mg
     x_c, B = nominal_solution(g, N_PIX)
     for lam in (513.5, 518.0, 524.0):
         x = grating_x(lam, x_c, B, g.alpha_rad, g)
@@ -52,17 +52,17 @@ def test_grating_x_inverts_theta(mgb518: GratingGeometry):
     assert theta_of_lambda(g.lambda_littrow, g, alpha=math.radians(46.0)) != pytest.approx(0.0)
 
 
-def test_theta_outside_grating_range_raises(mgb518: GratingGeometry):
+def test_theta_outside_grating_range_raises(mg: GratingGeometry):
     with pytest.raises(ValueError):
-        theta_of_lambda(700.0, mgb518)
+        theta_of_lambda(700.0, mg)
     with pytest.raises(ValueError):
-        theta_of_lambda(np.array([518.0, 700.0]), mgb518)
+        theta_of_lambda(np.array([518.0, 700.0]), mg)
     with pytest.raises(ValueError):
-        grating_x(-200.0, 800.0, mgb518.B_nom, mgb518.alpha_rad, mgb518)
+        grating_x(-200.0, 800.0, mg.B_nom, mg.alpha_rad, mg)
 
 
-def test_nominal_solution_centres_lambda_center(highspec_effective, mgb518: GratingGeometry):
-    g = mgb518
+def test_nominal_solution_centres_lambda_center(highspec_effective, mg: GratingGeometry):
+    g = mg
     x_c, B = nominal_solution(g, N_PIX)
     assert B == pytest.approx(g.B_nom)
     assert grating_x(g.lambda_center, x_c, B, g.alpha_rad, g) == pytest.approx(N_PIX / 2)

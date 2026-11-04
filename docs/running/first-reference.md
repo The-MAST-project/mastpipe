@@ -18,9 +18,9 @@ notebook for the three-fiber laboratory layout. If your full arc matches that
 setup, one command does it:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 --stored-anchors
-#   reference highspec_mgb518_lab3_20260909T113659: 3 fibers solved
-#   written: out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg --stored-anchors
+#   reference highspec_Mg_lab3_20260909T113659: 3 fibers solved
+#   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
 Masters already in `out/calib` (bias, background, flat) are applied; traces
@@ -41,7 +41,7 @@ For a new grating, or a layout whose stored anchors do not fit, run without
 anchors first:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg
 #   anchor panels: out/anchor_panels.png
 #   candidates: out/anchor_candidates.csv
 ```
@@ -62,7 +62,7 @@ fix the two free parameters of the grating model. Read them off and pass them
 back:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --anchors 515.8605:267.22,525.836:1423.22 --trace 0
 ```
 
@@ -89,8 +89,8 @@ from the reference; `quicklook` then gives that fiber no wavelength (its
 ## Later full arcs
 
 ```bash
-mastpipe solve night2/arc_full.fits --out out --instrument highspec --configuration mgb518
-#   reference highspec_mgb518_lab3_20261112T010203: 3 fibers solved, seeded by highspec_mgb518_lab3_20260909T113659
+mastpipe solve night2/arc_full.fits --out out --instrument highspec --configuration Mg
+#   reference highspec_Mg_lab3_20261112T010203: 3 fibers solved, seeded by highspec_Mg_lab3_20260909T113659
 ```
 
 `solve` takes the latest reference of the grating and layout from the library

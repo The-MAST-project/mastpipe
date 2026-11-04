@@ -38,11 +38,11 @@ CREATED = "2026-10-29T20:15:00"
 
 
 @pytest.fixture(scope="module")
-def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mgb518_lines) -> SimpleNamespace:
+def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> SimpleNamespace:
     """The simulated full arc's inputs to the solve plus the grating truth."""
     truth = sim_full_arc.truth
     geom = sim_full_arc.geom
-    cat_wl, cat_sp = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, cat_sp = catalogue_arrays(mg_lines, usable_only=True)
     truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, sim_full_arc.n_pix, geom)
     return SimpleNamespace(
         truth=truth,
@@ -234,7 +234,7 @@ def test_solve_full_arc_all_45_from_single_model(arc, solved):
 def test_solve_full_arc_from_previous_reference_is_faster_and_equal(
     arc, anchor, solved, monkeypatch
 ):
-    reference = build_reference("highspec", "mgb518", "survey45", solved, CREATED, ("abc123",))
+    reference = build_reference("highspec", "Mg", "survey45", solved, CREATED, ("abc123",))
     calls: list[int] = []
 
     def counting_fit(*args, **kwargs):
@@ -290,7 +290,7 @@ def test_missing_fiber_absent_not_crash(arc, anchor, solved):
     assert set(result) == set(solved) - {7, 9}
     # a fiber absent from the previous reference seeds from its nearest solved neighbour
     partial = {fiber: solution for fiber, solution in solved.items() if fiber != 7}
-    reference = build_reference("highspec", "mgb518", "survey45", partial, CREATED, ())
+    reference = build_reference("highspec", "Mg", "survey45", partial, CREATED, ())
     result = solve_full_arc(
         arc.tables,
         arc.fluxes,
@@ -362,9 +362,9 @@ def test_fiber_agreement_small_on_truth(arc, solved):
 def test_reference_hash_changes_with_params():
     lines = pd.DataFrame({"x": [100.0, 900.0], "wavelength": [514.0, 521.0], "dx_px": [0.0, 0.0]})
     solutions = {0: make_solution(0, lines), 1: make_solution(1, lines)}
-    reference = build_reference("highspec", "mgb518", "survey45", solutions, CREATED, ("c1", "c2"))
+    reference = build_reference("highspec", "Mg", "survey45", solutions, CREATED, ("c1", "c2"))
     assert isinstance(reference, ReferenceSolution)
-    assert reference.identifier == "highspec_mgb518_survey45_20261029T201500"
+    assert reference.identifier == "highspec_Mg_survey45_20261029T201500"
     assert reference.valid_from == reference.created == CREATED
     assert reference.source_checksums == ("c1", "c2")
     assert reference.solutions is solutions

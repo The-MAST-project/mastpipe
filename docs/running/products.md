@@ -24,8 +24,8 @@ out/
 ## Looking inside
 
 ```bash
-mastpipe show out/spec/highspec_mgb518_main_20261001T221500_spec.fits
-mastpipe show out/calib/highspec_mgb518_lab3_20260909T113702_wref.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_spec.fits
+mastpipe show out/calib/highspec_Mg_lab3_20260909T113702_wref.fits
 ```
 
 `show` prints the product kind, the frame and its statuses, a per-fiber

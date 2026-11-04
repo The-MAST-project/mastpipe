@@ -48,10 +48,10 @@ CSV keyed by file name whose non-empty cells override any metadata field.
 
 ```text
 source,exposure_type,configuration,fiber_preset,arc_kind
-image_bias.fits,bias,mgb518,lab3,
-background.fits,background,mgb518,lab3,
-flat_518.fits,flat,mgb518,lab3,
-FOCUS_05_13.30004_mm.fits,arc,mgb518,lab3,full
+image_bias.fits,bias,Mg,lab3,
+background.fits,background,Mg,lab3,
+flat_518.fits,flat,Mg,lab3,
+FOCUS_05_13.30004_mm.fits,arc,Mg,lab3,full
 ```
 
 ```bash

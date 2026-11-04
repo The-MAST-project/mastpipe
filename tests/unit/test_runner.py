@@ -5,11 +5,19 @@ under the ``interpolate`` policy."""
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
 
 from mastpipe.config.models import DriftParams
 from mastpipe.core.model import PER_FIBER_COLUMNS, DriftModel, FrameMeta, ReferenceSolution
 from mastpipe.pipeline.arcs import pair_arcs
-from mastpipe.pipeline.runner import _arc_weights, _arcs_for, _blend_drifts
+from mastpipe.pipeline.runner import (
+    RunOptions,
+    _arc_weights,
+    _arcs_for,
+    _blend_drifts,
+    run_quicklook,
+)
+from mastpipe.vocab import GRATING_NAMES
 
 N_PIX = 1598
 
@@ -19,7 +27,7 @@ def make_meta(mid_time: str, checksum: str, exposure_type: str = "arc") -> Frame
         instrument="highspec",
         camera="main",
         exposure_type=exposure_type,
-        configuration="mgb518",
+        configuration="Mg",
         mid_time=mid_time,
         checksum=checksum,
         source=f"{checksum}.fits",
@@ -29,7 +37,7 @@ def make_meta(mid_time: str, checksum: str, exposure_type: str = "arc") -> Frame
 def make_reference(identifier: str, valid_from: str) -> ReferenceSolution:
     return ReferenceSolution(
         instrument="highspec",
-        configuration="mgb518",
+        configuration="Mg",
         fiber_preset="survey45",
         solutions={},
         created=valid_from,
@@ -168,3 +176,23 @@ def test_blend_drifts_weights_two_models():
     bad = make_drift("ccc", "2026-10-01T22:00:00", [0.5], [0.0], fibers_a, usable=False)
     assert not _blend_drifts([(first, 0.5), (bad, 0.5)])[0].usable
     assert _arc_weights([(first, 0.3), (second, 0.7)], ["aaa", "bbb"]) == pytest.approx([0.3, 0.7])
+
+
+# ------------------------------------------------------------- no silent configuration
+
+
+def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_path):
+    """A frame whose grating is neither in a GRATING card nor in its file name is not
+    reduced with the instrument's only grating: the group fails and names the choices."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    del header["GRATING"]
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
+    message = f"configuration unknown; pass --configuration one of {GRATING_NAMES}"
+    assert summary.failed == [("group main/None", message)]
+    assert summary.products == [] and summary.qc == []

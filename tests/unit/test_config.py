@@ -150,10 +150,10 @@ def test_build_effective_layers_layout_params_between_block_and_overrides():
     from mastpipe.instruments.registry import load_instrument
 
     highspec = load_instrument("highspec")
-    eff = build_effective(highspec, "mgb518", "main", layout="survey45")
+    eff = build_effective(highspec, "Mg", "main", layout="survey45")
     assert eff.params.trace.trace_halfwidth == 4
     assert eff.params.lines.halfwidth == 4 and eff.params.extract.halfwidth == 4.0
-    default = build_effective(highspec, "mgb518", "main", layout="lab3")
+    default = build_effective(highspec, "Mg", "main", layout="lab3")
     assert default.params.trace.trace_halfwidth == 8 and default.params.extract.halfwidth == 9.0
 
 

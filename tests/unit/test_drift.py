@@ -124,7 +124,7 @@ def make_meta(mid_time: str = "2026-10-01T20:00:00") -> FrameMeta:
         instrument="highspec",
         camera="main",
         exposure_type="arc",
-        configuration="mgb518",
+        configuration="Mg",
         mid_time=mid_time,
         arc_kind="calfiber",
         checksum="abc123",
@@ -132,7 +132,7 @@ def make_meta(mid_time: str = "2026-10-01T20:00:00") -> FrameMeta:
 
 
 def make_reference(solutions: dict[int, WavelengthSolution]) -> ReferenceSolution:
-    return build_reference("highspec", "mgb518", "survey45", solutions, "2026-10-01T18:00:00", ())
+    return build_reference("highspec", "Mg", "survey45", solutions, "2026-10-01T18:00:00", ())
 
 
 def synthetic_tables(
@@ -196,11 +196,11 @@ def test_fit_drift_linear_across_fibers_and_unusable_without_fibers():
 
 
 @pytest.fixture(scope="module")
-def reference(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mgb518_lines) -> ReferenceSolution:
+def reference(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> ReferenceSolution:
     """The reference solution of the simulated full arc, solved from a truth anchor."""
     truth = sim_full_arc.truth
     geom = sim_full_arc.geom
-    cat_wl, cat_sp = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, cat_sp = catalogue_arrays(mg_lines, usable_only=True)
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
@@ -219,7 +219,7 @@ def reference(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mgb518_lines) -> Refe
     )
     full = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     return build_reference(
-        "highspec", "mgb518", "survey45", solutions, str(full["mid_time"]), ("fullarc",)
+        "highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",)
     )
 
 

@@ -17,8 +17,8 @@ SYNTHETIC_MAP = {
         "readout_mode": {"keys": ["READMODE"], "lower": True},
         "configuration": {
             "keys": ["GRATING"],
-            "lower": True,
             "filename_regex": "(?P<value>mgb518|halpha)",
+            "map": {"mgb518": "Mg", "halpha": "Halpha"},
         },
         "target": {"keys": ["OBJECT"]},
     },
@@ -36,14 +36,14 @@ def test_resolve_priority_and_transforms():
         "EXPOSURE": "12.5",
         "IMAGETYP": "OBJECT",
         "READMODE": "Fast",
-        "GRATING": "MGB518",
+        "GRATING": "Mg",
     }
     fields, unresolved = hmap.resolve(header, "frame_0001.fits")
     assert fields["exposure_time"] == pytest.approx(12.5)  # first key in the list wins
     assert isinstance(fields["exposure_time"], float)
     assert fields["exposure_type"] == "science"  # lower-cased, then mapped
     assert fields["readout_mode"] == "fast"  # lower-cased, left as is when unmapped
-    assert fields["configuration"] == "mgb518"
+    assert fields["configuration"] == "Mg"  # case kept
     assert fields["binning_x"] == 1  # default used when no key is present
     assert fields["target"] is None
     assert unresolved == ["target"]
@@ -66,14 +66,21 @@ def test_unconvertible_value_is_unresolved():
 def test_filename_regex_fallback():
     hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
     fields, unresolved = hmap.resolve({}, "night01_halpha_0007.fits")
-    assert fields["configuration"] == "halpha"
+    assert fields["configuration"] == "Halpha"  # the file-name alias, mapped
     assert "configuration" not in unresolved
     fields, unresolved = hmap.resolve({}, "night01_0007.fits")
     assert fields["configuration"] is None
     assert "configuration" in unresolved
     # a present keyword beats the file name
-    fields, _ = hmap.resolve({"GRATING": "mgb518"}, "night01_halpha_0007.fits")
-    assert fields["configuration"] == "mgb518"
+    fields, _ = hmap.resolve({"GRATING": "Mg"}, "night01_halpha_0007.fits")
+    assert fields["configuration"] == "Mg"
+
+
+def test_configuration_keeps_case_and_maps_lab_aliases():
+    hm = HeaderMap.from_dict(load_header_map("highspec"))
+    assert hm.resolve({"GRATING": "Mg"}, "x.fits")[0]["configuration"] == "Mg"
+    assert hm.resolve({}, "FOCUS_00_mgb518.fits")[0]["configuration"] == "Mg"
+    assert hm.resolve({}, "x_halpha.fits")[0]["configuration"] == "Halpha"
 
 
 def test_classify_header_wins_then_rules():
@@ -135,7 +142,7 @@ def test_no_matching_rule_is_unclassified():
             "fields": {"exposure_time": {"keys": ["EXPOSURE"]}},
             "classification": [{"when": {"exposure_time": {"gt": 1}}, "type": "bias"}],
         },
-        {"fields": {"configuration": {"filename_regex": "(mgb518)"}}},
+        {"fields": {"configuration": {"filename_regex": "(Mg)"}}},
     ],
 )
 def test_invalid_map_is_rejected(bad):
