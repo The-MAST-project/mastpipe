@@ -95,8 +95,9 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
         assert hdul[0].data.dtype == np.uint16
     for card in ("IMAGETYP", "EXPOSURE", "DATE-OBS", "TEMP", "HBIN", "VBIN", "READMODE"):
         assert card in header
-    for card in ("GRATING", "LAMP", "OBJECT", "FIBPRE", "SHUTTER"):
+    for card in ("GRATING", "LAMP", "OBJECT", "SHUTTER"):
         assert card in header
+    assert "FIBPRE" not in header  # a MAST fiber preset is a stage position, not a layout
     assert header["IMAGETYP"] == "light" and header["LAMP"] == "off"
     assert header["EXPOSURE"] == pytest.approx(300.0) and header["SHUTTER"] == "open"
     # the header stamps the exposure start; the truth table records the mid-time
@@ -104,7 +105,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert pd.Timestamp(header["DATE-OBS"]) == pd.Timestamp(science_row.mid_time) - pd.Timedelta(
         seconds=150
     )
-    assert header["FIBPRE"] == "survey45" and header["GRATING"] == "Mg"
+    assert header["GRATING"] == "Mg"
     assert fits.getheader(frame_path(out_dir, truth, "arc"))["LAMP"] == "thar"
     assert fits.getheader(frame_path(out_dir, truth, "flat"))["LAMP"] == "flat"
     assert fits.getheader(frame_path(out_dir, truth, "bias"))["SHUTTER"] == "closed"
@@ -123,7 +124,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
         assert meta.exposure_type == row.exposure_type
         assert meta.classification_rule == "header"
         assert meta.mid_time == row.mid_time
-        assert meta.configuration == "Mg" and meta.fiber_preset == "survey45"
+        assert meta.configuration == "Mg" and meta.fiber_preset is None
         assert meta.arc_kind is None
     loaded = load_frame(by_file[science.name], highspec_effective.detector)
     assert loaded.shape == (398, 1598)
@@ -325,8 +326,7 @@ def test_lab3_layout_simulates_arc_fibers_only(sim_night_lab3):
     assert len(truth.layout) == 3 and (truth.layout.role == "arc").all()
     assert truth.layout.target.isna().all()
     assert truth.trace_coeffs.shape == (3, 3)
-    header = fits.getheader(frame_path(out_dir, truth, "science"))
-    assert header["FIBPRE"] == "lab3"
+    assert "FIBPRE" not in fits.getheader(frame_path(out_dir, truth, "science"))
     full = cropped(out_dir / truth.frames.file[truth.frames.arc_kind == "full"].iloc[0], truth)
     level = background_level(
         truth, out_dir / truth.frames.file[truth.frames.arc_kind == "full"].iloc[0]

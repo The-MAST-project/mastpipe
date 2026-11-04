@@ -1,17 +1,21 @@
 """Ingest: scan a folder of raw FITS files into :class:`FrameRef` objects and load frames.
 
-:func:`scan_folder` opens every file matching a pattern, resolves each image HDU's header
-through the instrument's :class:`~mastpipe.io.headers.HeaderMap` and classifies it,
+:func:`scan_folder` walks a night folder and its subfolders (the control software files
+each acquisition in a folder of its own), opens every FITS file, resolves each image HDU's
+header through the instrument's :class:`~mastpipe.io.headers.HeaderMap` and classifies it,
 producing one :class:`~mastpipe.core.model.FrameRef` per image HDU (the primary HDU
 when it carries data, else every image extension, each read with the primary header
-underneath its own). The ``mid_time`` of a frame is derived from the header's time field
-and the exposure time according to the field's ``reference`` (``start``: plus half the
-exposure; ``end``: minus half; ``mid``: as given) and converted to UTC, a stamp without
-an offset read according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
+underneath its own). A frame's ``source`` is its path relative to the night folder, with
+forward slashes; a frame whose header names another instrument is left out. The
+``mid_time`` of a frame is derived from the header's time field and the exposure time
+according to the field's ``reference`` (``start``: plus half the exposure; ``end``:
+minus half; ``mid``: as given) and converted to UTC, a stamp without an offset read
+according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
 ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
 shifted and ``unresolved`` lists ``mid_time``. A manifest CSV can override any metadata
-field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); it is how
-laboratory data without instrument keywords enter the pipeline.
+field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); a row names
+its frames by relative path, glob pattern or unique file name. It is how laboratory data
+without instrument keywords enter the pipeline.
 :func:`load_frame` reads one HDU as ``float32``, crops it and applies the detector's
 orientation. Downstream code sees only the pipeline vocabulary carried by
 :class:`~mastpipe.core.model.FrameMeta`.
@@ -20,7 +24,9 @@ orientation. Downstream code sees only the pipeline vocabulary carried by
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import hashlib
+import re
 from collections import ChainMap
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -43,6 +49,13 @@ ASSUMED_UTC = "assumed-utc"
 """``FrameMeta.timezone`` of a stamp without an offset taken as UTC under ``assume-utc``."""
 TIME_FIELD = "mid_time"
 """The header-map field carrying the exposure's time, whose ``reference`` says which instant."""
+INSTRUMENT_FIELD = "instrument"
+"""The header-map field naming the instrument that wrote a frame: frames of another are skipped."""
+DEFAULT_PATTERN = "*.fit*"
+"""``scan_folder``'s default ``pattern``: any file with a FITS suffix (:data:`FITS_SUFFIXES`)."""
+FITS_SUFFIXES = (".fits", ".fit", ".fits.fz")
+"""File-name endings of FITS files, compared case-insensitively."""
+GLOB_CHARS = frozenset("*?[")
 
 #: Header-map fields copied verbatim into :class:`FrameMeta` when they resolve.
 PASSTHROUGH_FIELDS = (
@@ -56,6 +69,12 @@ PASSTHROUGH_FIELDS = (
     "fiber_preset",
     "target",
 )
+
+
+def _manifest_time(text: str) -> str:
+    """A manifest ``mid_time`` cell, read as UTC unless it carries an offset, in the
+    pipeline's form; ``ValueError`` when it does not parse."""
+    return utc_iso(to_utc(text, UTC))
 
 
 def _parse_binning(text: str) -> tuple[int, int]:
@@ -73,7 +92,7 @@ MANIFEST_FIELDS: dict[str, Callable[[str], Any]] = {
     "exposure_type": str,
     "configuration": str,
     "exposure_time": float,
-    "mid_time": str,
+    "mid_time": _manifest_time,
     "binning": _parse_binning,
     "readout_mode": str,
     "detector_temperature": float,
@@ -99,13 +118,22 @@ def scan_folder(
     folder: Path | str,
     instrument: str,
     header_map: HeaderMap | Mapping[str, Any],
-    pattern: str = "*.fit*",
+    pattern: str = DEFAULT_PATTERN,
     manifest: pd.DataFrame | Path | str | None = None,
     unreadable: list[Path] | None = None,
+    recursive: bool = True,
+    skipped: list[tuple[str, str]] | None = None,
 ) -> list[FrameRef]:
-    """One :class:`FrameRef` per image HDU of every file matching ``pattern``, in name order.
+    """One :class:`FrameRef` per image HDU of every FITS file under ``folder``, in path order.
 
-    ``header_map`` is a parsed :class:`HeaderMap` or the raw mapping it is built from.
+    ``recursive`` walks the subfolders too; ``source`` is the file's path relative to
+    ``folder`` with forward slashes. Files and folders whose name starts with ``.`` are
+    ignored. With the default ``pattern`` a FITS file is one whose name ends in
+    :data:`FITS_SUFFIXES` (any case); another ``pattern`` is matched against the file name
+    instead (``identify`` scans a single file that way). ``header_map`` is a parsed
+    :class:`HeaderMap` or the raw mapping it is built from. A frame whose ``instrument``
+    field resolves to another instrument than ``instrument`` (compared case-insensitively)
+    is left out, and appended to ``skipped`` as ``(source, reason)`` when it is a list.
     ``FileNotFoundError`` when ``folder`` is not a directory; an empty list when it holds
     no matching file. A file astropy cannot open raises ``OSError``, unless ``unreadable``
     is a list: the path is appended to it and scanning continues. ``manifest`` (a table
@@ -117,9 +145,7 @@ def scan_folder(
     if not isinstance(header_map, HeaderMap):
         header_map = HeaderMap.from_dict(header_map)
     refs: list[FrameRef] = []
-    for path in sorted(Path(folder).glob(pattern)):
-        if not path.is_file():
-            continue
+    for path, source in _fits_files(folder, pattern, recursive):
         try:
             with fits.open(path) as hdul:
                 hdus = _image_hdus(hdul)
@@ -128,15 +154,39 @@ def scan_folder(
                 raise
             unreadable.append(path)
             continue
-        checksum = file_checksum(path)
+        checksum: str | None = None
         for index, header in hdus:
-            meta = _build_meta(header_map, header, path.name, instrument, index, checksum)
+            fields, unresolved = header_map.resolve(header, path.name)
+            written = fields.get(INSTRUMENT_FIELD)
+            if written is not None and str(written).lower() != instrument.lower():
+                if skipped is not None:
+                    skipped.append((source, f"instrument {written!r} is not {instrument!r}"))
+                continue
+            if checksum is None:
+                checksum = file_checksum(path)
+            meta = _build_meta(header_map, fields, unresolved, source, instrument, index, checksum)
             refs.append(FrameRef(path=path, extension=index, meta=meta))
     if manifest is not None:
         if not isinstance(manifest, pd.DataFrame):
             manifest = read_manifest(manifest)
         refs = apply_manifest(refs, manifest)
     return refs
+
+
+def _fits_files(folder: Path, pattern: str, recursive: bool) -> list[tuple[Path, str]]:
+    """``(path, source)`` of the files to scan under ``folder``, sorted by ``source``."""
+    found: list[tuple[Path, str]] = []
+    for path in folder.rglob("*") if recursive else folder.iterdir():
+        relative = path.relative_to(folder)
+        if any(part.startswith(".") for part in relative.parts) or not path.is_file():
+            continue
+        if pattern == DEFAULT_PATTERN:
+            if not path.name.lower().endswith(FITS_SUFFIXES):
+                continue
+        elif not fnmatch.fnmatch(path.name, pattern):
+            continue
+        found.append((path, relative.as_posix()))
+    return sorted(found, key=lambda item: item[1])
 
 
 def _image_hdus(hdul: fits.HDUList) -> list[tuple[int, Mapping[str, Any]]]:
@@ -154,13 +204,18 @@ def _image_hdus(hdul: fits.HDUList) -> list[tuple[int, Mapping[str, Any]]]:
 
 def _build_meta(
     header_map: HeaderMap,
-    header: Mapping[str, Any],
-    filename: str,
+    fields: dict[str, Any],
+    unresolved: list[str],
+    source: str,
     instrument: str,
     extension: int,
     checksum: str,
 ) -> FrameMeta:
-    fields, unresolved = header_map.resolve(header, filename)
+    """The :class:`FrameMeta` of one HDU from its resolved header-map ``fields``.
+
+    ``instrument`` is the instrument being reduced, so a header without an ``instrument``
+    field leaves nothing unresolved."""
+    unresolved = [name for name in unresolved if name != INSTRUMENT_FIELD]
     exposure_type, rule = header_map.classify(fields)
     spec = header_map.fields.get(TIME_FIELD)
     reference = "mid" if spec is None else spec.reference
@@ -185,7 +240,7 @@ def _build_meta(
         binning=(_axis_binning(fields.get("binning_x")), _axis_binning(fields.get("binning_y"))),
         arc_kind=arc_kind,
         checksum=checksum,
-        source=filename,
+        source=source,
         extension=extension,
         unresolved=tuple(unresolved),
         classification_rule=rule,
@@ -257,8 +312,9 @@ def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
 
 
 def read_manifest(path: Path | str) -> pd.DataFrame:
-    """A manifest CSV as a table of strings: ``source`` (file name), optional ``extension``,
-    and any column of :data:`MANIFEST_FIELDS`; empty cells mean "no override"."""
+    """A manifest CSV as a table of strings: ``source`` (a relative path, a glob pattern or
+    a file name, see :func:`apply_manifest`), optional ``extension``, and any column of
+    :data:`MANIFEST_FIELDS`; empty cells mean "no override"."""
     path = Path(path)
     table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
     if "source" not in table.columns:
@@ -271,24 +327,93 @@ def read_manifest(path: Path | str) -> pd.DataFrame:
     return table
 
 
-def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame) -> list[FrameRef]:
+def apply_manifest(
+    refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: list[str] | None = None
+) -> list[FrameRef]:
     """New refs with the manifest's non-empty cells written over their metadata.
 
-    A row matches a ref by ``source``; when the row has a non-empty ``extension`` it
-    matches that HDU only. Rows apply in order (later rows win), rows matching no ref are
-    ignored. Overriding ``exposure_type`` records ``"manifest"`` as the classification
-    rule unless the row sets one. ``ValueError`` for a value outside
-    :data:`~mastpipe.core.model.EXPOSURE_TYPES` or :data:`~mastpipe.core.model.ARC_KINDS`.
+    A row's ``source`` matches a ref whose relative path it is; else, when it holds glob
+    characters, the refs whose relative path it matches (``*`` and ``?`` stay within a
+    folder, ``**`` crosses folders); else a bare file name matches the one file of that
+    name, and ``ValueError`` names the candidates when several files have it. When the
+    row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
+    rows win); a row matching no ref is appended to ``unmatched`` as
+    ``"manifest row {index}: {source}"`` when it is a list. Overriding ``exposure_type``
+    records ``"manifest"`` as the classification rule unless the row sets one.
+    ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
+    :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
     """
-    overrides = [_row_overrides(row, index) for index, row in manifest.iterrows()]
+    refs = list(refs)
+    sources = sorted({ref.meta.source for ref in refs})
+    rows: list[tuple[set[str], int | None, dict[str, Any]]] = []
+    for index, row in manifest.iterrows():
+        source, extension, values = _row_overrides(row, index)
+        matched = _match_sources(source, sources, f"manifest row {index}")
+        rows.append((matched, extension, values))
+        hit = any(_applies(ref, matched, extension) for ref in refs)
+        if not hit and unmatched is not None:
+            unmatched.append(f"manifest row {index}: {source}")
     out: list[FrameRef] = []
     for ref in refs:
         meta = ref.meta
-        for source, extension, values in overrides:
-            if source == meta.source and (extension is None or extension == ref.extension):
+        for matched, extension, values in rows:
+            if _applies(ref, matched, extension):
                 meta = dataclasses.replace(meta, **values)
         out.append(dataclasses.replace(ref, meta=meta) if meta is not ref.meta else ref)
     return out
+
+
+def _applies(ref: FrameRef, matched: set[str], extension: int | None) -> bool:
+    return ref.meta.source in matched and (extension is None or extension == ref.extension)
+
+
+def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
+    """The relative ``sources`` a manifest row's ``source`` names (see :func:`apply_manifest`)."""
+    if source in sources:
+        return {source}
+    if GLOB_CHARS & set(source):
+        regex = _glob_regex(source)
+        return {candidate for candidate in sources if regex.fullmatch(candidate)}
+    if "/" in source:
+        return set()
+    named = [candidate for candidate in sources if candidate.rsplit("/", 1)[-1] == source]
+    if len(named) > 1:
+        raise ValueError(f"{label}: {source!r} names several files: {', '.join(named)}")
+    return set(named)
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """A glob over relative POSIX paths as a regex: ``*`` and ``?`` do not cross ``/``,
+    ``**`` does (``**/`` also matches no folder at all); ``[...]`` is a character class
+    (``[!...]`` its complement), never matching ``/``."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        close = pattern.find("]", i + 2) if pattern[i] == "[" else -1
+        if pattern.startswith("**/", i):
+            parts.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        elif close != -1:
+            body = pattern[i + 1 : close].replace("\\", "\\\\")
+            if body.startswith("!"):
+                parts.append(f"[^/{body[1:]}]")
+            else:
+                body = "\\" + body if body.startswith("^") else body
+                parts.append(f"(?!/)[{body}]")
+            i = close + 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(parts))
 
 
 def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[str, Any]]:

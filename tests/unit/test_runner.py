@@ -222,3 +222,30 @@ def test_one_warning_per_run_when_frame_times_carry_no_zone(sim_night, tmp_path)
         (log_file,) = (out / "logs").glob("*.log")
         count = log_file.read_text(encoding="utf-8").count(warning)
         assert count == (1 if name == "naive" else 0), name
+
+
+# ---------------------------------------------------- other instruments, unmatched rows
+
+
+def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tmp_path):
+    """A nested night holding a DeepSpec frame next to HighSpec's: the DeepSpec frame and
+    a manifest row naming no frame are listed in ``skipped`` with their reasons."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    del header["GRATING"]  # the group then fails fast, after the scan
+    for name, instrument in (("highspec", "Highspec"), ("deepspec", "Deepspec")):
+        (folder / name / "acquisition-0001").mkdir(parents=True)
+        header["INSTRUME"] = instrument
+        fits.PrimaryHDU(data, header).writeto(folder / name / "acquisition-0001" / "e-001.fits")
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("source,target\nnothing.fits,x\n", encoding="utf-8")
+    options = RunOptions("highspec", manifest=manifest)
+    summary = run_quicklook(folder, tmp_path / "out", options)
+    assert summary.skipped == [
+        "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
+        "manifest row 0: nothing.fits: matches no frame",
+    ]
+    assert [source for source, _ in summary.failed] == ["group main/None"]

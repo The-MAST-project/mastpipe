@@ -1,9 +1,10 @@
 """The quick-look recipe: a night folder to masters, traces, references, drift models,
 wavelength-calibrated and sky-subtracted spectra and per-target combinations, with QC.
 
-:func:`run_quicklook` scans the folder (manifest applied), drops the frames whose type is
-``unknown`` into ``skipped`` with their classification rule, and reduces every
-``(camera, configuration)`` group in turn:
+:func:`run_quicklook` scans the folder and its subfolders (manifest applied; frames of
+another instrument and manifest rows matching no frame go into ``skipped``), drops the
+frames whose type is ``unknown`` into ``skipped`` with their classification rule, and
+reduces every ``(camera, configuration)`` group in turn:
 
 1. **masters** — bias, dark and background frames are stacked (dark and background one
    exposure time at a time, the largest batch serving the night), the flats calibrated
@@ -12,12 +13,12 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
    one that applies;
 2. **traces** — found on the flat master, or on a full arc with the percentile collapse
    when there is no flat, matched to the layout preset (``options.layout``, else the
-   frames' ``fiber_preset``, else the instrument's default) and keyed by the layout's
-   trace id (detections matching no layout row are dropped, logged and listed in the
-   trace QC as ``extra``), then written with a QC file; the relative throughput comes
-   from the flat (``{}`` without one). Every per-fiber key downstream (spectra, reference
-   solutions, drift models, throughput) is that layout id, so a fiber missing on one
-   night is simply absent rather than shifting its neighbours' identities;
+   frames' ``fiber_preset`` from a manifest, else the instrument's default) and keyed by
+   the layout's trace id (detections matching no layout row are dropped, logged and
+   listed in the trace QC as ``extra``), then written with a QC file; the relative
+   throughput comes from the flat (``{}`` without one). Every per-fiber key downstream
+   (spectra, reference solutions, drift models, throughput) is that layout id, so a fiber
+   missing on one night is simply absent rather than shifting its neighbours' identities;
 3. **arcs** — classified by their lit traces when the header does not say which kind they
    are; a **full arc** is re-solved seeded by the latest reference of the configuration
    and preset and added to the library (skipped with "run identify" when there is none,
@@ -85,7 +86,13 @@ from mastpipe.core.model import (
 from mastpipe.core.times import to_utc, utc_iso
 from mastpipe.instruments.registry import load_header_map, load_instrument, load_layout
 from mastpipe.io import products
-from mastpipe.io.ingest import ASSUMED_UTC, load_frame, read_manifest, scan_folder
+from mastpipe.io.ingest import (
+    ASSUMED_UTC,
+    apply_manifest,
+    load_frame,
+    read_manifest,
+    scan_folder,
+)
 from mastpipe.pipeline.arcs import pair_arcs, status_for
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import CALIB_FOLDER, _arc_lines, _provenance, _solve_and_package
@@ -138,7 +145,8 @@ class RunOptions:
 
     ``overrides`` are nested parameter mappings layered on the instrument configuration
     (see :func:`~mastpipe.config.loader.parse_override`); ``layout`` names the fiber
-    preset (default: the frames' ``fiber_preset``, else the instrument's default);
+    preset (default: the frames' ``fiber_preset`` from a manifest, else the instrument's
+    default);
     ``reference_id`` pins the reference solution instead of the one valid at each frame's
     time; ``time_policy`` overrides ``params.drift.time_policy``; ``library`` is the
     calibration library folder (default ``out_dir/calib``).
@@ -1125,16 +1133,27 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
         instrument = load_instrument(options.instrument)
         manifest = read_manifest(options.manifest) if options.manifest is not None else None
         unreadable: list[Path] = []
+        other: list[tuple[str, str]] = []
         refs = scan_folder(
             night_dir,
             options.instrument,
             load_header_map(options.instrument),
-            manifest=manifest,
             unreadable=unreadable,
+            skipped=other,
         )
         for path in unreadable:
-            summary.failed.append((path.name, "unreadable FITS file"))
-            log.error("unreadable FITS file skipped: %s", path.name)
+            source = path.relative_to(night_dir).as_posix()
+            summary.failed.append((source, "unreadable FITS file"))
+            log.error("unreadable FITS file skipped: %s", source)
+        for source, reason in other:
+            summary.skipped.append(f"{source}: {reason}")
+            log.warning("skipped %s: %s", source, reason)
+        if manifest is not None:
+            unmatched: list[str] = []
+            refs = apply_manifest(refs, manifest, unmatched)
+            for row in unmatched:
+                summary.skipped.append(f"{row}: matches no frame")
+                log.warning("%s: matches no frame", row)
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")

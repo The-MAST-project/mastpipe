@@ -59,7 +59,9 @@ EXTRA_ROW = 100.0
 
 
 def options(*extra_overrides: dict, **kwargs) -> RunOptions:
-    """The survey night runs on the instrument's own per-preset parameters: nothing to set."""
+    """The survey night runs on the instrument's own per-preset parameters; its frames
+    carry no layout, so the survey45 layout is named."""
+    kwargs.setdefault("layout", "survey45")
     return RunOptions(instrument="highspec", overrides=list(extra_overrides), **kwargs)
 
 
@@ -610,7 +612,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
         shutil.copy(night.dir / name, folder / name)
     # a science frame whose image is cut down to a stub: the calibration cannot apply
     header = fits.getheader(night.dir / good[0])
-    cards = {key: header[key] for key in ("IMAGETYP", "EXPOSURE", "GRATING", "FIBPRE", "OBJECT")}
+    cards = {key: header[key] for key in ("IMAGETYP", "EXPOSURE", "GRATING", "OBJECT")}
     cards["DATE-OBS"] = "2026-10-01T23:00:00"
     write_frame(folder / "sim_science_bad.fits", np.full((20, 30), 600, dtype=np.uint16), **cards)
     # and a file that is not FITS at all
@@ -635,10 +637,10 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
 
 def test_cli_quicklook_and_show(transferred_run, identified, night, out_dir, capsys):
     argv = ["quicklook", str(night.dir), "--out", str(out_dir), "--instrument", "highspec"]
-    assert main(argv) == 0
+    assert main(argv + ["--layout", "survey45"]) == 0
     out = capsys.readouterr().out
     assert "skipped" in out and "0 failed" in out
-    # the command line reaches the same configuration (the frames' preset picks the survey
+    # the command line reaches the same configuration (--layout picks the survey
     # parameters) and the same layout: everything is already reduced
     assert len(spec_products(out_dir)) == N_SCIENCE
     assert "already reduced" in out

@@ -153,7 +153,9 @@ def _master_name(kind: str, master: MasterCalib) -> str:
 
 def _frame_ref(full_arc: Path, instrument: str):
     pattern = glob.escape(full_arc.name)
-    refs = scan_folder(full_arc.parent, instrument, load_header_map(instrument), pattern=pattern)
+    refs = scan_folder(
+        full_arc.parent, instrument, load_header_map(instrument), pattern=pattern, recursive=False
+    )
     if not refs:
         raise ValueError(f"{full_arc}: no image HDU to reduce")
     return refs[0]

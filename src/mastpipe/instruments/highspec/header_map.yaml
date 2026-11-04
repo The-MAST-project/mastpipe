@@ -16,7 +16,13 @@
 # Change it to the clock's IANA zone once known. DeepSpec's T_MID (UTC, reference: mid)
 # will be declared in its own map when that instrument lands.
 # TEMP is -999 while the sensor has not been read.
+# INSTRUME names the instrument that wrote a frame ('Highspec'); the unit cameras and
+# DeepSpec file their frames under the same night folder, and ingest skips a frame whose
+# INSTRUME names another instrument. There is no fiber_preset field: in MAST a fiber preset
+# is a stage position, not a fiber layout; the layout comes from --layout, a manifest's
+# fiber_preset column or the instrument's default.
 fields:
+  instrument: {keys: [INSTRUME], lower: true}
   exposure_time: {keys: [EXPOSURE, EXPTIME], type: float}
   mid_time: {keys: [DATE-OBS, FRAME, DATE], type: str, reference: start, timezone: assume-utc}
   detector_temperature: {keys: [TEMP, CCD-TEMP], type: float, missing_values: [-999]}
@@ -46,7 +52,6 @@ fields:
     keys: [GRATING]
     filename_regex: "(?P<value>mgb518|halpha|caiihk)"
     map: {mgb518: Mg, halpha: Halpha, caiihk: Ca}
-  fiber_preset: {keys: [FIBPRE]}
   target: {keys: [OBJECT]}
 
 # classification: applied in order when the header carries no valid exposure type; the

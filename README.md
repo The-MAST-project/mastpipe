@@ -263,14 +263,26 @@ a frame without an exposure time keeps the header time as given and notes
 `missing_values` (the Andor `TEMP = -999` of an unread sensor) counts as
 absent.
 
-A **manifest** (`--manifest`) is a CSV keyed by file name (`source`, optional
-`extension`) whose non-empty cells override any metadata field: `exposure_type`
+The night folder is scanned with its subfolders (the control software files
+each acquisition in a folder of its own); every `*.fits`, `*.fit` or
+`*.fits.fz` file (any case) is read, names starting with `.` are ignored, and a
+frame is known by its path relative to the night folder. A frame whose
+`INSTRUME` names another instrument is skipped with that reason.
+
+A **manifest** (`--manifest`) is a CSV keyed by `source` (optional `extension`)
+whose non-empty cells override any metadata field. A `source` is a relative
+path (`highspec/acquisition-0001/exposure-001.fits`), a glob pattern on it
+(`highspec/acquisition-0001/*.fits`; `*` stays within a folder, `**` crosses
+folders) or a bare file name that only one frame has (two or more is an error);
+a row matching no frame is reported among the skipped. The fields are: `exposure_type`
 (`bias`, `dark`, `flat`, `arc`, `science`, `background`, `unknown`),
 `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`, `target`,
-`exposure_time`, `mid_time` (taken as the mid-exposure time), `binning`,
+`exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless it
+carries an offset), `binning`,
 `readout_mode`, `detector_temperature`, `lamp_state`, `camera`, `instrument`,
 `classification_rule`. It is how frames without instrument keywords, such as
-the laboratory data, enter the pipeline:
+the laboratory data, enter the pipeline, and how a night names its fiber layout
+when `--layout` does not (the headers carry none):
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind

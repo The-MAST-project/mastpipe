@@ -434,7 +434,6 @@ def _cards(
     exposure: float,
     start_time: str,
     configuration: str,
-    fiber_preset: str,
     target: str,
 ) -> dict[str, Any]:
     return {
@@ -448,7 +447,6 @@ def _cards(
         "GRATING": configuration,
         "LAMP": LAMPS.get(exposure_type, "off"),
         "OBJECT": target,
-        "FIBPRE": fiber_preset,
         "SHUTTER": "closed" if exposure_type in SHUTTER_CLOSED else "open",
     }
 
@@ -535,9 +533,7 @@ def simulate_night(
             scene, detector, exposure_type, arc_kind, exposure, shift, stretch, cosmic_rays, rng
         )
         target = science_object if exposure_type == "science" else exposure_type
-        cards = _cards(
-            exposure_type, exposure, start_time, effective.configuration, fiber_preset, target
-        )
+        cards = _cards(exposure_type, exposure, start_time, effective.configuration, target)
         _write_fits(out_dir / name, data, cards)
         if exposure_type == "science":
             hits[name] = cosmic

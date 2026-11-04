@@ -69,8 +69,13 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
         "--configuration", help="configuration of frames whose header has none, e.g. Mg"
     )
     parser.add_argument("--camera", help="reduce this camera only")
-    parser.add_argument("--layout", help="fiber layout preset (default: the frames' preset)")
-    parser.add_argument("--manifest", type=Path, help="CSV of metadata overrides by file name")
+    parser.add_argument(
+        "--layout",
+        help="fiber layout preset (default: a manifest's fiber_preset, else the instrument's)",
+    )
+    parser.add_argument(
+        "--manifest", type=Path, help="CSV of metadata overrides by path, pattern or file name"
+    )
     parser.add_argument(
         "--on-error",
         choices=["continue", "raise"],

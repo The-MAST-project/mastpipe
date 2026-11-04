@@ -351,3 +351,143 @@ def test_mef_extensions_become_separate_refs(tmp_path: Path):
     write_manifest(path, [{"source": "mef.fits", "extension": "", "exposure_type": "flat"}])
     new = apply_manifest(refs, read_manifest(path))
     assert [ref.meta.exposure_type for ref in new] == ["flat", "flat"]
+
+
+# ------------------------------------------- nested night folders, instrument gate, manifest
+
+
+BLANK = np.zeros((2, 2), dtype=np.uint16)
+
+
+@pytest.fixture
+def nested(tmp_path: Path) -> Path:
+    """A night filed the way the control software does it: one folder per acquisition,
+    ``seq.txt`` counters in the parents, ``exposure-001.fits`` in every acquisition."""
+    night = tmp_path / "night"
+    for acquisition, kind in (("acquisition-0001", "Arc"), ("acquisition-0002", "Light")):
+        folder = night / "highspec" / acquisition
+        folder.mkdir(parents=True)
+        cards = {"IMAGETYP": kind, "EXPOSURE": 60.0, "INSTRUME": "Highspec"}
+        write_fits(folder / "exposure-001.fits", BLANK, cards)
+    write_fits(
+        night / "highspec" / "acquisition-0002" / "exposure-002.fits",
+        BLANK,
+        {"IMAGETYP": "Flat", "EXPOSURE": 5.0},
+    )
+    (night / "seq.txt").write_text("2\n", encoding="utf-8")
+    (night / "highspec" / "seq.txt").write_text("2\n", encoding="utf-8")
+    return night
+
+
+def test_fibpre_card_is_ignored(tmp_path: Path, highspec_map: HeaderMap):
+    """In MAST a fiber preset is a stage position, not a fiber layout: FIBPRE is not read."""
+    write_fits(tmp_path / "frame.fits", BLANK, {"IMAGETYP": "Light", "FIBPRE": "survey45"})
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.fiber_preset is None
+
+
+def test_scan_is_recursive_with_relative_sources(nested: Path, highspec_map: HeaderMap):
+    refs = scan_folder(nested, "highspec", highspec_map)
+    assert [ref.meta.source for ref in refs] == [
+        "highspec/acquisition-0001/exposure-001.fits",
+        "highspec/acquisition-0002/exposure-001.fits",
+        "highspec/acquisition-0002/exposure-002.fits",
+    ]
+    assert refs[0].path == nested / "highspec" / "acquisition-0001" / "exposure-001.fits"
+    assert [ref.meta.exposure_type for ref in refs] == ["arc", "science", "flat"]
+    # a flat scan keeps to the folder itself
+    assert scan_folder(nested, "highspec", highspec_map, recursive=False) == []
+
+
+def test_fits_suffixes_are_matched_case_insensitively(tmp_path: Path, highspec_map: HeaderMap):
+    for name in ("a.fits", "b.FITS", "c.fit", "d.Fit"):
+        write_fits(tmp_path / name, BLANK, {"IMAGETYP": "Light"})
+    fits.CompImageHDU(BLANK).writeto(tmp_path / "e.fits.fz")
+    write_fits(tmp_path / "f.fits.gz.bak", BLANK, {"IMAGETYP": "Light"})
+    sources = [ref.meta.source for ref in scan_folder(tmp_path, "highspec", highspec_map)]
+    assert sources == ["a.fits", "b.FITS", "c.fit", "d.Fit", "e.fits.fz"]
+
+
+def test_non_fits_and_hidden_files_are_not_scanned(nested: Path, highspec_map: HeaderMap):
+    (nested / "plan.json").write_text("{}\n", encoding="utf-8")
+    (nested / "highspec" / ".hidden.fits").write_text("not a FITS file\n", encoding="utf-8")
+    hidden = nested / ".sync" / "acquisition-0009"
+    hidden.mkdir(parents=True)
+    (hidden / "exposure-001.fits").write_text("not a FITS file\n", encoding="utf-8")
+    unreadable: list[Path] = []
+    refs = scan_folder(nested, "highspec", highspec_map, unreadable=unreadable)
+    assert unreadable == []
+    assert len(refs) == 3
+    assert not any("hidden" in ref.meta.source or ".sync" in ref.meta.source for ref in refs)
+
+
+def test_instrument_gate_skips_other_instruments(nested: Path, highspec_map: HeaderMap):
+    deepspec = nested / "deepspec" / "acquisition-0001"
+    deepspec.mkdir(parents=True)
+    write_fits(deepspec / "exposure-001.fits", BLANK, {"IMAGETYP": "Light", "INSTRUME": "Deepspec"})
+    skipped: list[tuple[str, str]] = []
+    refs = scan_folder(nested, "highspec", highspec_map, skipped=skipped)
+    sources = [ref.meta.source for ref in refs]
+    assert "highspec/acquisition-0001/exposure-001.fits" in sources  # INSTRUME = 'Highspec'
+    assert "highspec/acquisition-0002/exposure-002.fits" in sources  # no INSTRUME
+    assert len(refs) == 3
+    assert skipped == [
+        ("deepspec/acquisition-0001/exposure-001.fits", "instrument 'deepspec' is not 'highspec'")
+    ]
+    assert all("instrument" not in ref.meta.unresolved for ref in refs)
+    # without a list the other instrument's frames are still left out
+    assert len(scan_folder(nested, "highspec", highspec_map)) == 3
+
+
+def test_manifest_matches_relative_path_glob_and_unique_name(
+    nested: Path, highspec_map: HeaderMap, tmp_path: Path
+):
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(
+        path,
+        [
+            {"source": "highspec/acquisition-0001/*.fits", "target": "", "arc_kind": "full"},
+            {"source": "exposure-002.fits", "target": "flat lamp", "arc_kind": ""},
+            {
+                "source": "highspec/acquisition-0002/exposure-001.fits",
+                "target": "star",
+                "arc_kind": "",
+            },
+            {"source": "*.fits", "target": "top level only", "arc_kind": ""},
+            {"source": "**/exposure-00[12].fits", "target": "", "arc_kind": ""},
+        ],
+    )
+    unmatched: list[str] = []
+    new = apply_manifest(refs, read_manifest(path), unmatched)
+    assert [ref.meta.arc_kind for ref in new] == ["full", None, None]
+    assert [ref.meta.target for ref in new] == [None, "star", "flat lamp"]
+    # "*" does not cross "/": the fourth row matches nothing at the top level
+    assert unmatched == ["manifest row 3: *.fits"]
+
+
+def test_bare_name_ambiguous_is_an_error(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(path, [{"source": "exposure-001.fits", "exposure_type": "flat"}])
+    with pytest.raises(ValueError, match="acquisition-0001.*acquisition-0002"):
+        apply_manifest(refs, read_manifest(path))
+
+
+def test_unmatched_manifest_rows_are_reported(night: Path, highspec_map: HeaderMap, tmp_path):
+    refs = scan_folder(night, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(path, [{"source": "nothing.fits", "target": "x"}])
+    unmatched: list[str] = []
+    apply_manifest(refs, read_manifest(path), unmatched)
+    assert unmatched == ["manifest row 0: nothing.fits"]
+
+
+def test_manifest_mid_time_is_normalised_to_utc(night: Path, highspec_map: HeaderMap, tmp_path):
+    path = tmp_path / "manifest.csv"
+    write_manifest(path, [{"source": "a_bias.fits", "mid_time": "2026-10-01T20:00:00.4+02:00"}])
+    (ref, _) = scan_folder(night, "highspec", highspec_map, manifest=path)
+    assert ref.meta.mid_time == "2026-10-01T18:00:00" and ref.meta.timezone == "utc"
+    write_manifest(path, [{"source": "a_bias.fits", "mid_time": "yesterday-ish"}])
+    with pytest.raises(ValueError, match="manifest row 0: bad mid_time"):
+        scan_folder(night, "highspec", highspec_map, manifest=path)
