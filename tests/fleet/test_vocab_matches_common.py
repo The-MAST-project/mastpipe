@@ -81,5 +81,9 @@ def test_config_lists_match_as_text():
 
 
 def test_unit_names_are_canonical():
+    # common.utils builds a module-level Filer at import, which reaches for the machine's
+    # real storage roots (and raises on macOS, which has no layout). Point it at temporary
+    # folders first, as MAST_common's own test suite does.
+    importlib.import_module("common.testing.filer").isolate_filer(prefix="mastpipe-fleet-")
     canonic = importlib.import_module("common.utils").canonic_unit_name
     assert all(canonic(unit_name(n)) == unit_name(n) for n in range(1, 21))
