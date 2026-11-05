@@ -239,6 +239,31 @@ def test_one_warning_per_run_when_frame_times_carry_no_zone(sim_night, tmp_path)
         assert count == (1 if name == "naive" else 0), name
 
 
+def test_one_warning_per_run_for_an_amplifier_without_its_noise(sim_night, tmp_path):
+    """HighSpec lists gain and read noise for ``conventional`` and ``em``; frames naming
+    another amplifier (here a misspelt one) take the camera's defaults, and the run log
+    says so once, however many frames there are, and not at all for a listed amplifier."""
+    sim_dir, _ = sim_night
+    warning = "no gain and read noise listed for amplifier"
+    for amplifier in ("Conventionl", "Conventional"):
+        folder = tmp_path / amplifier
+        folder.mkdir()
+        for k, source in enumerate(("sim_bias_00.fits", "sim_bias_01.fits")):
+            with fits.open(sim_dir / source) as hdul:
+                data = hdul[0].data.copy()
+                header = hdul[0].header.copy()
+            del header["GRATING"]  # the group then fails fast, after the scan
+            header["OUTPTAMP"] = amplifier
+            fits.PrimaryHDU(data, header).writeto(folder / f"frame_{k:04d}.fits")
+        out = tmp_path / f"out_{amplifier}"
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        text = log_file.read_text(encoding="utf-8")
+        assert text.count(warning) == (1 if amplifier == "Conventionl" else 0), amplifier
+        if amplifier == "Conventionl":
+            assert "conventionl" in text
+
+
 # ---------------------------------------------------- other instruments, unmatched rows
 
 

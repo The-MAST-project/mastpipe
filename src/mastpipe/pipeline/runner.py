@@ -448,6 +448,21 @@ def _check_binning(group: _Group, ref: FrameRef) -> None:
         raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
 
 
+def _unlisted_amplifiers(refs: Iterable[FrameRef], instrument: InstrumentConfig) -> list[str]:
+    """``"<camera>: <amplifier>"`` for every amplifier named by ``refs`` that a camera with
+    a non-empty ``readouts`` table does not list (sorted): such frames take the camera's
+    default gain and read noise, which for a misspelt amplifier is a silent mistake."""
+    unlisted = set()
+    for ref in refs:
+        detector = instrument.cameras.get(ref.meta.camera)
+        amplifier = ref.meta.amplifier
+        if detector is None or not detector.readouts or amplifier is None:
+            continue
+        if amplifier not in detector.readouts:
+            unlisted.add(f"{ref.meta.camera}: {amplifier}")
+    return sorted(unlisted)
+
+
 def _check_readout(group: _Group, ref: FrameRef) -> None:
     """``ValueError`` when ``ref`` was not read out as the group (another readout mode or
     output amplifier: :attr:`~mastpipe.core.model.FrameMeta.readout_key`)."""
@@ -627,9 +642,11 @@ def _resolve_light(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     """Stage 1b: every ``light`` frame, in time order and under the error policy, calibrated
     with the group's masters (no cosmic-ray flagging) and classified from its content: moved
     into ``by_type["arc"]`` or ``by_type["science"]`` with its ``classification_rule``, or
-    skipped with its reason. ``by_type`` loses its ``light`` entry."""
+    skipped with its reason; a frame not read out as the group fails (:func:`_check_readout`).
+    ``by_type`` loses its ``light`` entry."""
 
     def resolve(group: _Group, ref: FrameRef) -> None:
+        _check_readout(group, ref)
         frame, _ = _calibrated(group, ref)
         kind, rule = classify_light(frame, group.params.classify)
         log.info("light %s: %s (%s)", ref.meta.source, kind, rule)
@@ -802,6 +819,7 @@ def _arcs(group: _Group, arc_refs: list[FrameRef]) -> None:
 
 
 def _arc(group: _Group, ref: FrameRef) -> None:
+    _check_readout(group, ref)
     meta = ref.meta
     kind = meta.arc_kind
     detail = "from the header"
@@ -1097,7 +1115,10 @@ def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
 
 
 def _science_frame(group: _Group, ref: FrameRef) -> None:
-    """Stage 4 for one science frame: wavelengths by the time policy, sky, products, QC."""
+    """Stage 4 for one science frame: wavelengths by the time policy, sky, products, QC.
+    A frame not read out as the group (:func:`_check_readout`) fails rather than being
+    calibrated with masters and noise of another amplifier."""
+    _check_readout(group, ref)
     meta, params = ref.meta, group.params
     reference = _reference_for(group, meta.mid_time)
     arcs = [] if reference is None else _arcs_for(group.arcs, reference)
@@ -1400,6 +1421,12 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")
+        unlisted = _unlisted_amplifiers(refs, instrument)
+        if unlisted:
+            log.warning(
+                "no gain and read noise listed for amplifier %s; the camera defaults apply",
+                ", ".join(unlisted),
+            )
         if not refs:
             summary.failed.append((f"night {night_dir.name}", NO_FRAMES))
             log.error("%s: %s", night_dir, NO_FRAMES)

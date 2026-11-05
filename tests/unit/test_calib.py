@@ -212,7 +212,8 @@ def test_calibration_set_uses_the_amplifier_noise():
     for amplifier in ("conventional", None):
         calib = build_calibration_set(bias, None, None, detector, amplifier=amplifier)
         assert (calib.gain, calib.read_noise) == (2.0, 4.0)
-    assert (build_calibration_set(bias, None, None, DET).gain, DET.readouts) == (2.0, {})
+    assert DET.readouts == {}
+    assert build_calibration_set(bias, None, None, DET).gain == 2.0
 
 
 def test_master_records_the_amplifier_and_refuses_a_mix():

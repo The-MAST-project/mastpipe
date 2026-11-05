@@ -821,7 +821,8 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
         shutil.copy(night.dir / name, folder / name)
     # a science frame whose image is cut down to a stub: the calibration cannot apply
     header = fits.getheader(night.dir / good[0])
-    cards = {key: header[key] for key in ("IMAGETYP", "EXPOSURE", "GRATING", "OBJECT")}
+    kept = ("IMAGETYP", "EXPOSURE", "GRATING", "OBJECT", "READMODE", "OUTPTAMP")
+    cards = {key: header[key] for key in kept}
     cards["DATE-OBS"] = "2026-10-01T23:00:00"
     write_frame(folder / "sim_science_bad.fits", np.full((20, 30), 600, dtype=np.uint16), **cards)
     # and a file that is not FITS at all
@@ -907,6 +908,26 @@ def test_quicklook_drops_a_bias_of_another_amplifier(tmp_path, night):
     _, prov = read_master(next((out / "calib").glob("*_bias.fits")))
     assert em_checksum not in prov.inputs and len(prov.inputs) == len(biases) - 1
     assert len(spec_products(out)) == N_SCIENCE
+
+
+def test_quicklook_drops_a_science_frame_of_another_amplifier(tmp_path, night):
+    """A science frame read through the electron-multiplying amplifier in a conventional
+    night is not calibrated with the night's masters and noise: it is recorded in
+    ``failed`` with both readout keys and gets no product; the others are reduced."""
+    folder = tmp_path / "night"
+    shutil.copytree(night.dir, folder)
+    science = science_files(night.truth)
+    em_frame = science[0]
+    with fits.open(folder / em_frame, mode="update") as hdul:
+        hdul[0].header["OUTPTAMP"] = "Electron Multiplying"
+
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options())
+    failed = dict(summary.failed)
+    assert list(failed) == [em_frame]
+    assert "image/em" in failed[em_frame] and "image/conventional" in failed[em_frame]
+    produced = {read_spectra(p)[0].meta.source for p in spec_products(out)}
+    assert produced == set(science[1:])
 
 
 def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, night):
