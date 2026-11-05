@@ -544,6 +544,18 @@ def test_single_object_applies_to_all(tmp_path: Path, highspec_map: HeaderMap):
     assert ref.meta.target_for("mast17") == "target_a"
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_empty_object_is_no_target(tmp_path: Path, highspec_map: HeaderMap, blank: str):
+    """An empty or blank ``OBJECT`` card names no target: the frame's targets are
+    unresolved, as without the card, rather than one target ``''`` for every fiber."""
+    cards = {"EXPOSURE": 300.0, "OBJECT": blank}
+    write_fits(tmp_path / "science.fits", np.ones((2, 3), dtype=np.uint16), cards)
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.targets == ()
+    assert ref.meta.target_for("mast01") is None
+    assert "targets" in ref.meta.unresolved
+
+
 def test_manifest_targets_column(night: Path, highspec_map: HeaderMap, tmp_path: Path):
     path = tmp_path / "manifest.csv"
     write_manifest(

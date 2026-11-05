@@ -157,7 +157,6 @@ from mastpipe.steps.trace import (
     trace_source,
 )
 from mastpipe.steps.wavemodel import model_from_config
-from mastpipe.vocab import GRATING_NAMES
 
 log = logging.getLogger("mastpipe")
 
@@ -1441,7 +1440,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 log.info("skipped %s: not camera %s", label, options.camera)
                 continue
             if configuration is None:
-                summary.failed.append((label, f"configuration unknown; pass --configuration one of {GRATING_NAMES}"))
+                choices = sorted(instrument.configurations)
+                summary.failed.append((label, f"configuration unknown; pass --configuration one of {choices}"))
                 log.error("%s: configuration unknown, group skipped", label)
                 continue
             try:

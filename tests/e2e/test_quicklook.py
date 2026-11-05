@@ -1092,8 +1092,10 @@ def test_site_night_without_configuration_stops_with_a_message(site_night, tmp_p
     assert main(argv) == 2
     out = capsys.readouterr().out
     assert "--configuration" in out
-    for name in GRATING_NAMES:
-        assert name in out
+    configurations = sorted(load_instrument("highspec").configurations)
+    assert str(configurations) in out
+    for name in set(GRATING_NAMES) - set(configurations):
+        assert name not in out
 
 
 # ------------------------------------------------------------------------------- the CLI

@@ -14,8 +14,8 @@ according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
 ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
 shifted and ``unresolved`` lists ``mid_time``. A frame's ``targets`` come from the map's
 per-unit ``targets`` field (one target per telescope unit), else from its single
-``target`` field as ``(("*", target),)``, which applies to every science fiber; when
-neither resolves ``unresolved`` lists ``targets``. A manifest CSV can override any metadata
+``target`` field as ``(("*", target),)``, which applies to every science fiber (an empty
+or blank one names none); when neither resolves ``unresolved`` lists ``targets``. A manifest CSV can override any metadata
 field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); a row names
 its frames by relative path, glob pattern or unique file name. It is how laboratory data
 without instrument keywords enter the pipeline.
@@ -280,7 +280,8 @@ def _build_meta(
     targets = fields.get(TARGETS_FIELD)
     if not targets:
         single = fields.get(TARGET_FIELD)
-        targets = () if single is None else ((ALL_TELESCOPES, str(single)),)
+        # an empty or blank OBJECT card names no target
+        targets = () if not single or not str(single).strip() else ((ALL_TELESCOPES, str(single)),)
     targets = tuple((str(telescope), str(target)) for telescope, target in targets)
     unresolved = [name for name in unresolved if name not in (TARGETS_FIELD, TARGET_FIELD)]
     if not targets:

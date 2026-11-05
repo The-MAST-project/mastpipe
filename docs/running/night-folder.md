@@ -122,8 +122,9 @@ mastpipe quicklook <night>/highspec --out out --instrument highspec --configurat
 ```
 
 There is no silent default: without `--configuration`, frames whose grating is
-unknown are not reduced, the run records a failure that lists the valid names,
-and the exit status is 2. The control software writes no `GRATING` card today,
+unknown are not reduced, the run records a failure that lists the
+configurations the instrument defines (`['Mg']` for HighSpec today, not every
+fleet grating name), and the exit status is 2. The control software writes no `GRATING` card today,
 so a night from the site needs the option.
 
 ### Time

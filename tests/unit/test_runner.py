@@ -19,6 +19,7 @@ from mastpipe.core.model import (
     FrameRef,
     ReferenceSolution,
 )
+from mastpipe.instruments.registry import load_instrument
 from mastpipe.pipeline.arcs import pair_arcs
 from mastpipe.pipeline.runner import (
     RunOptions,
@@ -186,7 +187,9 @@ def test_blend_drifts_weights_two_models():
 
 def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_path):
     """A frame whose grating is neither in a GRATING card nor in its file name is not
-    reduced with the instrument's only grating: the group fails and names the choices."""
+    reduced with the instrument's only grating: the group fails and names the choices,
+    the instrument's configurations (not every fleet grating name, some of which it
+    cannot reduce)."""
     sim_dir, _ = sim_night
     folder = tmp_path / "night"
     folder.mkdir()
@@ -196,8 +199,10 @@ def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_pa
     del header["GRATING"]
     fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
-    message = f"configuration unknown; pass --configuration one of {GRATING_NAMES}"
+    message = "configuration unknown; pass --configuration one of ['Mg']"
     assert summary.failed == [("group main/None", message)]
+    assert sorted(load_instrument("highspec").configurations) == ["Mg"]
+    assert set(GRATING_NAMES) - {"Mg"}  # names the fleet knows but highspec cannot reduce
     assert summary.products == [] and summary.qc == []
 
 
