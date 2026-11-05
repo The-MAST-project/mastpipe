@@ -309,3 +309,27 @@ def test_per_unit_spec_is_validated():
 def test_highspec_map_reads_targets_per_unit(highspec_map):
     assert highspec_map.fields["targets"].per_unit == "OBJ{nn}"
     assert highspec_map.fields["target"].keys == ("OBJECT",)
+
+
+def test_amplifier_is_read_and_keyed(tmp_path, highspec_map):
+    cards = {
+        "IMAGETYP": "Light",
+        "EXPOSURE": 30.0,
+        "DATE-OBS": "2026-10-01T18:00:00",
+        "INSTRUME": "Highspec",
+        "READMODE": "Image",
+    }
+    for name, amplifier in (("em.fits", "Electron Multiplying"), ("conv.fits", "Conventional")):
+        hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+        hdu.header.update({**cards, "OUTPTAMP": amplifier})
+        hdu.writeto(tmp_path / name)
+    hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+    hdu.header.update(cards)
+    hdu.writeto(tmp_path / "bare.fits")
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert refs["em.fits"].amplifier == "em"
+    assert refs["em.fits"].readout_mode == "image"  # OUTPTAMP is no longer a readout-mode key
+    assert refs["em.fits"].readout_key == "image/em"
+    assert refs["conv.fits"].readout_key == "image/conventional"
+    assert refs["bare.fits"].amplifier is None
+    assert refs["bare.fits"].readout_key == "image/unknown"

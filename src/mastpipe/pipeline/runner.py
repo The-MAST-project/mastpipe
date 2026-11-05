@@ -227,7 +227,11 @@ class _Group:
     summary: RunSummary
     cfg_hash: str
     binning: tuple[int, int]
-    readout_mode: str | None
+    readout_key: str
+    """:attr:`~mastpipe.core.model.FrameMeta.readout_key` of the group (:func:`_group_readout`):
+    the readout mode and amplifier library masters must share."""
+    amplifier: str | None
+    """The group's output amplifier, whose gain and read noise calibrate its frames."""
     temperature: float | None
     near_time: str | None
     timezone: str | None = None
@@ -356,6 +360,7 @@ def _master_meta(group: _Group, master: MasterCalib) -> FrameMeta:
         mid_time=validity.get("mid_time"),
         binning=(int(binning[0]), int(binning[1])),
         readout_mode=validity.get("readout_mode"),
+        amplifier=validity.get("amplifier"),
         detector_temperature=validity.get("detector_temperature"),
         fiber_preset=group.preset,
         source=f"master {master.kind}",
@@ -413,11 +418,27 @@ def _master_provenance(
     )
 
 
+def _science_or_all(refs: list[FrameRef]) -> list[FrameRef]:
+    """The frames of ``refs`` that may be science (``science`` and the not yet resolved
+    ``light`` ones), else all of ``refs``: the frames whose readout a group follows."""
+    candidates = [ref for ref in refs if ref.meta.exposure_type in ("science", "light")]
+    return candidates or refs
+
+
 def _group_binning(refs: list[FrameRef]) -> tuple[int, int]:
     """The binning of a group: the most common among the frames that may be science
     (``science`` and the not yet resolved ``light`` ones), else among all ``refs``."""
-    candidates = [ref for ref in refs if ref.meta.exposure_type in ("science", "light")]
-    return Counter(ref.meta.binning for ref in candidates or refs).most_common(1)[0][0]
+    return Counter(ref.meta.binning for ref in _science_or_all(refs)).most_common(1)[0][0]
+
+
+def _group_readout(refs: list[FrameRef]) -> tuple[str, str | None]:
+    """The readout key and amplifier of a group: the most common readout key among the
+    frames that may be science, else among all ``refs`` (as :func:`_group_binning`), with
+    the amplifier of the frames that carry it."""
+    candidates = _science_or_all(refs)
+    key = Counter(ref.meta.readout_key for ref in candidates).most_common(1)[0][0]
+    amplifier = next(ref.meta.amplifier for ref in candidates if ref.meta.readout_key == key)
+    return key, amplifier
 
 
 def _check_binning(group: _Group, ref: FrameRef) -> None:
@@ -540,7 +561,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             kind,
             group.effective.camera,
             group.binning,
-            group.readout_mode,
+            group.readout_key,
             temperature=group.temperature,
             near_time=group.near_time,
         )
@@ -552,7 +573,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     bias = chosen["bias"][0]
     dark = chosen["dark"][0] if "dark" in chosen else None
     background = chosen["background"][0] if "background" in chosen else None
-    group.calib = build_calibration_set(bias, dark, background, detector)
+    group.calib = build_calibration_set(bias, dark, background, detector, group.amplifier)
     applied = [path.name for _, path in chosen.values()]
 
     flats = by_type.get("flat", [])
@@ -578,7 +599,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             "flat",
             group.effective.camera,
             group.binning,
-            group.readout_mode,
+            group.readout_key,
             configuration=group.effective.configuration,
             temperature=group.temperature,
             near_time=group.near_time,
@@ -1290,6 +1311,7 @@ def _run_group(
     temperatures = [
         m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None
     ]
+    readout_key, amplifier = _group_readout(refs)
     group = _Group(
         effective=effective,
         instrument=instrument,
@@ -1301,7 +1323,8 @@ def _run_group(
         summary=summary,
         cfg_hash=config_hash(effective),
         binning=_group_binning(refs),
-        readout_mode=refs[0].meta.readout_mode,
+        readout_key=readout_key,
+        amplifier=amplifier,
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,
         timezone=_timezone(ref.meta for ref in refs),

@@ -104,7 +104,16 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
         header = hdul[0].header
         assert hdul[0].data.shape == highspec_effective.detector.shape
         assert hdul[0].data.dtype == np.uint16
-    for card in ("IMAGETYP", "EXPOSURE", "DATE-OBS", "TEMP", "HBIN", "VBIN", "READMODE"):
+    for card in (
+        "IMAGETYP",
+        "EXPOSURE",
+        "DATE-OBS",
+        "TEMP",
+        "HBIN",
+        "VBIN",
+        "READMODE",
+        "OUTPTAMP",
+    ):
         assert card in header
     for card in ("GRATING", "LAMP", "OBJECT", "SHUTTER"):
         assert card in header

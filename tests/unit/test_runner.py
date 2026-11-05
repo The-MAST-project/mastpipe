@@ -26,6 +26,7 @@ from mastpipe.pipeline.runner import (
     _arcs_for,
     _blend_drifts,
     _group_binning,
+    _group_readout,
     _usable_frames,
     run_quicklook,
 )
@@ -268,7 +269,7 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
 # ------------------------------------------------------------ calibration frames, binning
 
 
-def binned_ref(name: str, exposure_type: str, binning: tuple[int, int]) -> FrameRef:
+def binned_ref(name: str, exposure_type: str, binning: tuple[int, int], **fields) -> FrameRef:
     meta = FrameMeta(
         instrument="highspec",
         camera="main",
@@ -277,6 +278,7 @@ def binned_ref(name: str, exposure_type: str, binning: tuple[int, int]) -> Frame
         binning=binning,
         exposure_time=1.0,
         source=name,
+        **fields,
     )
     return FrameRef(path=Path(name), extension=0, meta=meta)
 
@@ -294,6 +296,22 @@ def test_group_binning_follows_the_science_frames():
     assert _group_binning(calibrations + science) == (2, 2)
     odd = [binned_ref("bias_odd.fits", "bias", (2, 1))]
     assert _group_binning(odd + calibrations) == (1, 1)
+
+
+def test_group_readout_follows_the_science_frames():
+    """The group's readout key and amplifier come from the frames that may be science, as
+    its binning does; without any, all frames vote."""
+    conventional = {"readout_mode": "image", "amplifier": "conventional"}
+    em = {"readout_mode": "image", "amplifier": "em"}
+    calibrations = [binned_ref(f"bias_{k}.fits", "bias", (1, 1), **conventional) for k in range(5)]
+    science = [
+        binned_ref("sci_0.fits", "science", (1, 1), **em),
+        binned_ref("light_0.fits", "light", (1, 1), **em),
+        binned_ref("sci_1.fits", "science", (1, 1), **conventional),
+    ]
+    assert _group_readout(calibrations + science) == ("image/em", "em")
+    assert _group_readout(calibrations) == ("image/conventional", "conventional")
+    assert _group_readout([binned_ref("x.fits", "bias", (1, 1))]) == ("unknown/unknown", None)
 
 
 def usable_group(on_error: str = "continue") -> SimpleNamespace:

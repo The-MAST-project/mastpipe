@@ -29,7 +29,12 @@ fields:
   detector_temperature: {keys: [TEMP, CCD-TEMP], type: float, missing_values: [-999]}
   binning_x: {keys: [HBIN], type: int}
   binning_y: {keys: [VBIN], type: int}
-  readout_mode: {keys: [READMODE, OUTPTAMP], lower: true}
+  # READMODE is the Andor acquisition mode (always Image on the Newton); OUTPTAMP names the
+  # output amplifier, which sets the gain and read noise: electron-multiplying at the site,
+  # conventional in the laboratory. The calibration library matches masters on both
+  # (FrameMeta.readout_key, e.g. image/em).
+  readout_mode: {keys: [READMODE], lower: true}
+  amplifier: {keys: [OUTPTAMP], lower: true, map: {conventional: conventional, "electron multiplying": em}}
   exposure_type:
     keys: [IMAGETYP, OBSTYPE]
     lower: true

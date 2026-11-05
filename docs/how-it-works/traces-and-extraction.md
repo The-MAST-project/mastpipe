@@ -17,7 +17,7 @@ clean = raw − bias − dark_rate · t
 
 Masters are median stacks (per exposure time for dark and background, with
 optional sigma clipping) carrying validity keys — camera, binning, readout
-mode, temperature, time — that the calibration library matches on. The
+mode and amplifier, temperature, time — that the calibration library matches on. The
 variance per pixel is the Poisson term of the detected signal plus the read
 noise, in ADU². Saturated pixels (in the frame or in a master) and non-finite
 values are masked.

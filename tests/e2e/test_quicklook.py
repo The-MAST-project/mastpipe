@@ -210,7 +210,7 @@ def test_quicklook_without_reference_gives_nominal(nominal_run, night, out_dir):
     # masters, traces and the log are in place
     library = CalibLibrary(out_dir / "calib")
     assert {entry["kind"] for entry in library.list()} == {"bias", "dark", "background", "flat"}
-    assert library.find("bias", "main", (1, 1), "image") is not None
+    assert library.find("bias", "main", (1, 1), "image/conventional") is not None
     assert len(list((out_dir / "calib").glob("*_traces.fits"))) == 1
     assert any(path.name.endswith("_traces.json") for path in summary.qc)
     logs = sorted((out_dir / "logs").glob("quicklook_*.log"))

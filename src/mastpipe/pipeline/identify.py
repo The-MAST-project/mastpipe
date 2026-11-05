@@ -182,10 +182,12 @@ def _arc_lines(
     configuration and camera (:func:`_latest_master`). The bias and background calibrate the
     frame, the background only when ``params.calib.subtract_background`` is on (otherwise it
     serves the saturation mask alone, which the steps record and ``calibrations`` does not);
-    without them the frame only gains its variance and mask. ``traceset`` is used as given
-    (a runner's night traces); otherwise the traces are found on the flat master when there
-    is one and on the arc itself with ``collapse="percentile"`` when not, matched to the
-    layout with ``params.trace.layout_tolerance`` and keyed by the layout's trace id
+    without them the frame only gains its variance and mask; the gain and read noise are
+    those of the arc frame's amplifier (:meth:`~mastpipe.config.models.DetectorConfig.noise`).
+    ``traceset`` is used as given (a runner's night traces); otherwise the traces are found
+    on the flat master when there is one and on the arc itself with
+    ``collapse="percentile"`` when not, matched to the layout with
+    ``params.trace.layout_tolerance`` and keyed by the layout's trace id
     (:func:`~mastpipe.steps.trace.layout_indexed`: detections matching no layout row are
     dropped, so ``traceset`` holds layout fibers only). Returns an :class:`ArcLines`; its
     ``calibrations`` are the masters that were applied (file names when read from
@@ -218,13 +220,14 @@ def _arc_lines(
     if bias is not None:
         calibrations.append(bias[1])
     t_background = None if background is None else background[0].validity.get("exposure_time")
+    noise = detector.noise(frame.meta.amplifier)
     calib = CalibrationSet(
         bias=None if bias is None else bias[0].data,
         dark_rate=0.0,
         background=None if background is None else background[0].data,
         t_background=None if t_background is None else float(t_background),
-        gain=detector.gain,
-        read_noise=detector.read_noise,
+        gain=noise.gain,
+        read_noise=noise.read_noise,
         shape=shape,
         bias_variance=None if bias is None else bias[0].variance,
         background_variance=None if background is None else background[0].variance,

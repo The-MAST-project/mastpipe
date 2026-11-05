@@ -16,8 +16,8 @@ header map, and groups the frames by camera and grating.
 | science | the targets; no arc light |
 
 A kind the night lacks (say, no bias was taken) is taken from the calibration
-library in `out/calib`, matched on camera, binning, readout mode and
-temperature. Dark and background frames are stacked per exposure time.
+library in `out/calib`, matched on camera, binning, readout (the readout mode
+and the output amplifier, e.g. `image/em`) and temperature. Dark and background frames are stacked per exposure time.
 
 ## What the headers must say
 
@@ -32,7 +32,9 @@ control software will write:
   (the header map declares it as the *start*; the frame's mid-time is derived by
   adding half the exposure), the temperature from `TEMP` (−999, Andor's
   "unstabilised", counts as missing), binning from `HBIN`/`VBIN`, readout mode
-  from `READMODE`;
+  from `READMODE`, the output amplifier from `OUTPTAMP` (`Conventional` →
+  `conventional`, `Electron Multiplying` → `em`), which selects the gain and
+  read noise;
 - the grating from `GRATING` or the file name, the fiber layout preset from
   `FIBPRE`, each telescope's target from `OBJ01`…`OBJ20` when written, else one
   target for every fiber from `OBJECT`.
@@ -64,7 +66,7 @@ Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
 every telescope; the older `target` column is still read that way),
 `exposure_time`, `mid_time` (taken as the
-mid-exposure time), `binning`, `readout_mode`, `detector_temperature`,
+mid-exposure time), `binning`, `readout_mode`, `amplifier`, `detector_temperature`,
 `lamp_state`, `camera`, `instrument`, `classification_rule`; `extension`
 selects an HDU of a multi-extension file.
 

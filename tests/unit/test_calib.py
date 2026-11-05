@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from mastpipe.config.models import CalibParams, DetectorConfig
+from mastpipe.config.models import CalibParams, DetectorConfig, ReadoutNoise
 from mastpipe.core.model import CalibrationSet, Frame, FrameMeta, MasterCalib
 from mastpipe.steps.calib import (
     build_calibration_set,
@@ -118,6 +118,7 @@ def test_build_master_validity_and_provenance():
         "camera": "main",
         "binning": (1, 1),
         "readout_mode": "Image",
+        "amplifier": None,
         "detector_temperature": pytest.approx(-52.0),
         "mid_time": "2026-10-01T18:10:00",
         "exposure_time": 0.0,
@@ -200,6 +201,26 @@ def test_calibration_set_dark_rate_and_background():
     assert with_bkg.t_background == pytest.approx(6.0)
     with pytest.raises(ValueError):
         build_calibration_set(None, None, None, DET)
+
+
+def test_calibration_set_uses_the_amplifier_noise():
+    bias = build_master([frame(500.0, "bias", 0.0)], "bias", CalibParams())
+    detector = DET.model_copy(update={"readouts": {"em": ReadoutNoise(gain=20.0, read_noise=0.5)}})
+    em = build_calibration_set(bias, None, None, detector, amplifier="em")
+    assert (em.gain, em.read_noise) == (20.0, 0.5)
+    # an amplifier without its own entry, or none, takes the detector's defaults
+    for amplifier in ("conventional", None):
+        calib = build_calibration_set(bias, None, None, detector, amplifier=amplifier)
+        assert (calib.gain, calib.read_noise) == (2.0, 4.0)
+    assert (build_calibration_set(bias, None, None, DET).gain, DET.readouts) == (2.0, {})
+
+
+def test_master_records_the_amplifier_and_refuses_a_mix():
+    frames = [frame(500.0, "bias", 0.0, amplifier="em"), frame(501.0, "bias", 0.0, amplifier="em")]
+    assert build_master(frames, "bias", CalibParams()).validity["amplifier"] == "em"
+    mixed = [frame(500.0, "bias", 0.0, amplifier="em"), frame(501.0, "bias", 0.0)]
+    with pytest.raises(ValueError, match="amplifier"):
+        build_master(mixed, "bias", CalibParams())
 
 
 # -------------------------------------------------------------------- calibrate_frame

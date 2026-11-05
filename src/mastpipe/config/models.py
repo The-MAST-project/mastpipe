@@ -20,8 +20,19 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ReadoutNoise(_Strict):
+    """The gain (e-/ADU) and read noise (e-) of one output amplifier."""
+
+    gain: float
+    read_noise: float
+
+
 class DetectorConfig(_Strict):
-    """One camera: raw frame geometry, noise model and orientation on read."""
+    """One camera: raw frame geometry, noise model and orientation on read.
+
+    ``gain`` and ``read_noise`` are the camera's defaults; ``readouts`` overrides them per
+    output amplifier (``FrameMeta.amplifier``, e.g. ``conventional`` / ``em``).
+    """
 
     name: str
     shape: tuple[int, int]
@@ -34,6 +45,14 @@ class DetectorConfig(_Strict):
     transpose: bool = False
     flip_x: bool = False
     flip_y: bool = False
+    readouts: dict[str, ReadoutNoise] = {}
+
+    def noise(self, amplifier: str | None = None) -> ReadoutNoise:
+        """The gain and read noise of ``amplifier``: its ``readouts`` entry when there is
+        one, else the camera's defaults."""
+        if amplifier is not None and amplifier in self.readouts:
+            return self.readouts[amplifier]
+        return ReadoutNoise(gain=self.gain, read_noise=self.read_noise)
 
 
 class GeometryConfig(_Strict):

@@ -90,6 +90,7 @@ COSMIC_RAY_ADU = 5000.0
 EXPOSURE_S = {"bias": 0.0, "dark": 300.0, "flat": 5.0, "arc": 30.0}
 TEMPERATURE_C = -60.0
 READ_MODE = "Image"
+OUTPUT_AMPLIFIER = "Conventional"
 TARGETS = ("target_a", "target_b", "target_c", "target_d")
 TELESCOPES_PER_TARGET = 5
 PROFILE_HALFWIDTH = 6
@@ -461,10 +462,12 @@ def render_traces(
 
 
 def _read_out(signal: np.ndarray, detector: DetectorConfig, rng: np.random.Generator):
-    """Bias plus Poisson noise on the signal (in electrons) plus Gaussian read noise, in ADU."""
-    electrons = rng.poisson(np.clip(signal, 0.0, None) * detector.gain)
-    read = rng.normal(0.0, detector.read_noise / detector.gain, size=signal.shape)
-    return BIAS_LEVEL_ADU + electrons / detector.gain + read
+    """Bias plus Poisson noise on the signal (in electrons) plus Gaussian read noise, in ADU,
+    with the noise of the amplifier the frames name (:data:`OUTPUT_AMPLIFIER`)."""
+    noise = detector.noise(OUTPUT_AMPLIFIER.lower())
+    electrons = rng.poisson(np.clip(signal, 0.0, None) * noise.gain)
+    read = rng.normal(0.0, noise.read_noise / noise.gain, size=signal.shape)
+    return BIAS_LEVEL_ADU + electrons / noise.gain + read
 
 
 def _cosmic_rays(shape: tuple[int, int], count: int, rng: np.random.Generator) -> list[list[int]]:
@@ -564,6 +567,7 @@ def _cards(
         "HBIN": 1,
         "VBIN": 1,
         "READMODE": READ_MODE,
+        "OUTPTAMP": OUTPUT_AMPLIFIER,
         "GRATING": configuration,
         "LAMP": LAMPS.get(exposure_type, "off"),
         "OBJECT": target,
@@ -727,8 +731,8 @@ def simulate_night(
         drift_gradient_px=float(drift_gradient_px),
         bias_level=BIAS_LEVEL_ADU,
         dark_rate=DARK_RATE_ADU_S,
-        read_noise_e=detector.read_noise,
-        gain=detector.gain,
+        read_noise_e=detector.noise(OUTPUT_AMPLIFIER.lower()).read_noise,
+        gain=detector.noise(OUTPUT_AMPLIFIER.lower()).gain,
         fwhm_px=FWHM_PX,
         crop=detector.crop,
         frames=_frame_table(rows),

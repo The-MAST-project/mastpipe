@@ -413,9 +413,10 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         assert drift_header["MPDNST"] == 1 and drift_header["MPDST01"] == pytest.approx(2e-6)
         assert list(hdul["DRIFT"].data["WEIGHT"]) == [0.6, 0.4]
         primary = hdul[0].header
-        assert primary["MPNMK"] == 19
-        meta_keys = {primary[f"MPMK{n:02d}"] for n in range(1, 20)}
+        assert primary["MPNMK"] == 20
+        meta_keys = {primary[f"MPMK{n:02d}"] for n in range(1, 21)}
         assert {"instrument", "camera", "exposure_type", "binning", "unresolved"} <= meta_keys
+        assert "amplifier" in meta_keys
         assert "timezone" in meta_keys
         assert json.loads(primary["MPMV08"]) == [1, 1]
 

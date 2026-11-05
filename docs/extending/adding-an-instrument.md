@@ -21,6 +21,8 @@ cameras:
     transpose: true            # fibers are vertical stripes in the raw frame
     flip_x: false
     flip_y: false
+    readouts:                  # optional: gain and read noise per output amplifier
+      em: {gain: 1.0, read_noise: 5.0}
 params:                        # step parameters; every field has a default
   trace: {trace_halfwidth: 6, degree: 2}
   extract: {halfwidth: 7.0}

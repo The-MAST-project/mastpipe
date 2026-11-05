@@ -10,7 +10,8 @@ unknown status fails at the boundary, not three steps later.
 `FrameMeta`
 : One raw frame described in the pipeline's vocabulary: instrument, camera,
   exposure type, configuration, exposure time, mid-time (UTC, derived from the
-  header's start time), binning, readout mode, temperature, lamp state, fiber
+  header's start time), binning, readout mode, output amplifier (`readout_key` joins the two, e.g.
+  `image/em`), temperature, lamp state, fiber
   preset, targets (`(telescope, target)` pairs, or one `("*", target)` pair for
   every fiber; `target_for(telescope)` reads them), arc kind (`full`, `calfiber`), checksum, source file name,
   extension, the fields left unresolved, and the classification rule that

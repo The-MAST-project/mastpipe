@@ -277,3 +277,9 @@ def test_tables_require_named_columns():
             excluded=excluded,
             **{**combined_fields, "versions": {"raw": make_version(n=7)}},
         )
+
+
+def test_readout_key_joins_mode_and_amplifier():
+    assert make_meta(readout_mode="image", amplifier="em").readout_key == "image/em"
+    assert make_meta(readout_mode="image").readout_key == "image/unknown"
+    assert make_meta().readout_key == "unknown/unknown"

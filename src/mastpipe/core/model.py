@@ -64,6 +64,13 @@ def _check_columns(name: str, table: pd.DataFrame, columns: tuple[str, ...]) -> 
         raise ValueError(f"{name} is missing columns {missing}; expected {list(columns)}")
 
 
+def readout_key(readout_mode: str | None, amplifier: str | None) -> str:
+    """``"<readout_mode>/<amplifier>"`` (``"image/em"``), each part ``"unknown"`` when not
+    known: the key on which the calibration library matches masters, since the output
+    amplifier, not only the readout mode, sets the gain and read noise."""
+    return f"{readout_mode or 'unknown'}/{amplifier or 'unknown'}"
+
+
 @dataclass(frozen=True)
 class FrameMeta:
     """Pipeline vocabulary for one raw frame, filled by ingest from the header map.
@@ -87,6 +94,7 @@ class FrameMeta:
     timezone: str | None = None
     binning: tuple[int, int] = (1, 1)
     readout_mode: str | None = None
+    amplifier: str | None = None
     detector_temperature: float | None = None
     lamp_state: str | None = None
     fiber_preset: str | None = None
@@ -109,6 +117,11 @@ class FrameMeta:
                 or not all(isinstance(part, str) for part in pair)
             ):
                 raise ValueError(f"targets must be (telescope, target) string pairs, got {pair!r}")
+
+    @property
+    def readout_key(self) -> str:
+        """The readout a master must share to calibrate this frame (:func:`readout_key`)."""
+        return readout_key(self.readout_mode, self.amplifier)
 
     def target_for(self, telescope: str | None) -> str | None:
         """The target of ``telescope``: its own entry, else the ``"*"`` entry, else ``None``."""

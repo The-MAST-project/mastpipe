@@ -32,6 +32,7 @@ def make_meta(kind: str, mid_time: str, **kwargs) -> FrameMeta:
         "exposure_time": 0.0 if kind == "bias" else 300.0,
         "mid_time": mid_time,
         "readout_mode": "image",
+        "amplifier": "conventional",
         "detector_temperature": -60.0,
         "checksum": f"{kind}{mid_time[-8:].replace(':', '')}",
         "source": f"{kind}.fits",
@@ -46,6 +47,7 @@ def make_master(kind: str, mid_time: str, level: float, **kwargs) -> tuple[Maste
         "camera": meta.camera,
         "binning": meta.binning,
         "readout_mode": meta.readout_mode,
+        "amplifier": meta.amplifier,
         "detector_temperature": meta.detector_temperature,
         "mid_time": meta.mid_time,
         "exposure_time": meta.exposure_time,
@@ -189,26 +191,55 @@ def test_callib_find_matches_keys_temperature_and_time(tmp_path):
 
     # the library is re-read from disk by a new instance
     library = CalibLibrary(tmp_path / "calib")
-    found = library.find("bias", "main", (1, 1), "image")
+    found = library.find("bias", "main", (1, 1), "image/conventional")
     assert found is not None
     master, path = found
     assert float(master.data[0, 0]) == 3.0 and path.name.endswith("_bias.fits")  # the latest
-    master, _ = library.find("bias", "main", (1, 1), "image", temperature=-60.0)
+    master, _ = library.find("bias", "main", (1, 1), "image/conventional", temperature=-60.0)
     assert float(master.data[0, 0]) == 2.0  # the warm one is outside the tolerance
-    master, _ = library.find("bias", "main", (1, 1), "image", temperature=-41.0)
+    master, _ = library.find("bias", "main", (1, 1), "image/conventional", temperature=-41.0)
     assert float(master.data[0, 0]) == 3.0
     master, _ = library.find(
-        "bias", "main", (1, 1), "image", temperature=-60.0, near_time="2026-10-01T20:00:00"
+        "bias",
+        "main",
+        (1, 1),
+        "image/conventional",
+        temperature=-60.0,
+        near_time="2026-10-01T20:00:00",
     )
     assert float(master.data[0, 0]) == 1.0  # nearest in time among the matches
-    master, _ = library.find("bias", "main", (2, 2), "image")
+    master, _ = library.find("bias", "main", (2, 2), "image/conventional")
     assert float(master.data[0, 0]) == 4.0
-    assert library.find("bias", "main", (1, 1), "fast") is None
-    assert library.find("bias", "other", (1, 1), "image") is None
-    assert library.find("dark", "main", (1, 1), "image") is None
-    assert library.find("flat", "main", (1, 1), "image", configuration="Mg") is None
-    master, _ = library.find("flat", "main", (1, 1), "image", configuration="Halpha")
+    assert library.find("bias", "main", (1, 1), "fast/conventional") is None
+    assert library.find("bias", "other", (1, 1), "image/conventional") is None
+    assert library.find("dark", "main", (1, 1), "image/conventional") is None
+    assert library.find("flat", "main", (1, 1), "image/conventional", configuration="Mg") is None
+    master, _ = library.find("flat", "main", (1, 1), "image/conventional", configuration="Halpha")
     assert float(master.data[0, 0]) == 5.0
+
+
+def test_callib_find_separates_amplifiers(tmp_path):
+    library = CalibLibrary(tmp_path / "calib")
+    bias, meta = make_master("bias", "2026-10-01T18:00:00", 1.0)
+    library.add(bias, make_provenance(), meta)
+    assert library.list("bias")[0]["readout_key"] == "image/conventional"
+    assert library.find("bias", "main", (1, 1), "image/em") is None
+    assert library.find("bias", "main", (1, 1), "image/conventional") is not None
+
+
+def test_callib_find_keys_an_older_entry_by_its_readout_mode(tmp_path):
+    library = CalibLibrary(tmp_path / "calib")
+    bias, meta = make_master("bias", "2026-10-01T18:00:00", 1.0)
+    library.add(bias, make_provenance(), meta)
+    index = tmp_path / "calib" / INDEX_FILE
+    entries = json.loads(index.read_text(encoding="utf-8"))
+    for entry in entries:
+        del entry["readout_key"]  # as written before the amplifier was recorded
+    index.write_text(json.dumps(entries), encoding="utf-8")
+    library = CalibLibrary(tmp_path / "calib")
+    # its amplifier is unknown, so it never stands for a known one
+    assert library.find("bias", "main", (1, 1), "image/conventional") is None
+    assert library.find("bias", "main", (1, 1), "image/unknown") is not None
 
 
 # ------------------------------------------------------------------------------ references

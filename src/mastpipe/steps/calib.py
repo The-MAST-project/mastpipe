@@ -110,7 +110,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     """Stack ``frames`` with ``params.stack_method`` / ``params.clip_sigma`` into a master.
 
     The validity record holds the keys that decide where the master applies: ``camera``,
-    ``binning`` and ``readout_mode`` (which every input must share, ``ValueError``
+    ``binning``, ``readout_mode`` and ``amplifier`` (which every input must share, ``ValueError``
     otherwise), the mean ``detector_temperature``, the mean ``mid_time`` (ISO-8601) and
     the ``exposure_time``. For any kind but ``"bias"`` the exposure times must agree to
     :data:`EXPOSURE_TOLERANCE` (relative), ``ValueError`` otherwise — a dark or
@@ -122,7 +122,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     if not frames:
         raise ValueError(f"master {kind}: no frames to stack")
     metas = [frame.meta for frame in frames]
-    for key in ("camera", "binning", "readout_mode"):
+    for key in ("camera", "binning", "readout_mode", "amplifier"):
         values = {getattr(meta, key) for meta in metas}
         if len(values) != 1:
             raise ValueError(f"master {kind}: inputs mix {key} values {sorted(map(str, values))}")
@@ -144,6 +144,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
         "camera": metas[0].camera,
         "binning": metas[0].binning,
         "readout_mode": metas[0].readout_mode,
+        "amplifier": metas[0].amplifier,
         "detector_temperature": _mean_or_none(meta.detector_temperature for meta in metas),
         "mid_time": _mean_time_or_none(meta.mid_time for meta in metas),
         "exposure_time": _mean_or_none(meta.exposure_time for meta in metas),
@@ -186,13 +187,15 @@ def build_calibration_set(
     dark: MasterCalib | None,
     background: MasterCalib | None,
     detector: DetectorConfig,
+    amplifier: str | None = None,
 ) -> CalibrationSet:
     """The calibration inputs of one detector from its masters.
 
     ``dark_rate = (dark - bias) / t_dark`` (ADU per second, per pixel) when both a dark and
     a bias master exist and the dark's ``exposure_time`` is positive, ``0.0`` otherwise;
     ``t_background`` is the background master's ``exposure_time``. The gain and read noise
-    come from ``detector``.
+    are those of ``amplifier`` (:meth:`~mastpipe.config.models.DetectorConfig.noise`: its
+    ``detector.readouts`` entry, else the detector's defaults).
 
     The masters' ``variance`` arrays become ``bias_variance`` and ``background_variance``;
     with a dark rate, ``t_dark`` is the dark's exposure time and ``dark_rate_variance =
@@ -218,13 +221,14 @@ def build_calibration_set(
                 variance = np.asarray(dark.variance, dtype=np.float64) / dark_time**2
                 dark_rate_variance = variance.astype(np.float32)
     t_background = None if background is None else background.validity.get("exposure_time")
+    noise = detector.noise(amplifier)
     return CalibrationSet(
         bias=None if bias is None else bias.data,
         dark_rate=dark_rate,
         background=None if background is None else background.data,
         t_background=None if t_background is None else float(t_background),
-        gain=detector.gain,
-        read_noise=detector.read_noise,
+        gain=noise.gain,
+        read_noise=noise.read_noise,
         shape=shape,  # type: ignore[arg-type]
         t_dark=dark_time,
         bias_variance=None if bias is None else bias.variance,

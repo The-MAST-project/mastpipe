@@ -34,7 +34,7 @@ from typing import Any
 
 import pandas as pd
 
-from mastpipe.core.model import MasterCalib, ReferenceSolution
+from mastpipe.core.model import MasterCalib, ReferenceSolution, readout_key
 from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io.atomic import atomic_write, locked
@@ -71,6 +71,13 @@ def registry_geometry(camera: str) -> Any:
         return grating_geometry(block.geometry, definition.cameras[camera].pixel_size_um)
 
     return lookup
+
+
+def _entry_readout_key(entry: dict[str, Any]) -> str:
+    """An index entry's ``readout_key``; for an entry indexed before it was recorded, its
+    ``readout_mode`` with an ``unknown`` amplifier."""
+    key = entry.get("readout_key")
+    return str(key) if key is not None else readout_key(entry.get("readout_mode"), None)
 
 
 class CalibLibrary:
@@ -132,7 +139,9 @@ class CalibLibrary:
         """Write ``master`` as ``root/<product_name(meta_for_name, kind)>`` and index it.
 
         The entry records the master's validity (``camera``, ``binning``, ``readout_mode``,
-        ``detector_temperature``, ``mid_time``, ``exposure_time``), the instrument and
+        ``amplifier``, ``detector_temperature``, ``mid_time``, ``exposure_time``), its
+        ``readout_key`` (:func:`~mastpipe.core.model.readout_key` of the validity's readout
+        mode and amplifier, on which :meth:`find` matches), the instrument and
         configuration of ``meta_for_name``, the number of frames, the sorted checksums of
         the frames it was stacked from (``inputs``, from ``prov.inputs``, which the file's
         header carries too), the checksum of the written file (``file_checksum``) and
@@ -153,6 +162,8 @@ class CalibLibrary:
             "camera": validity.get("camera") or meta_for_name.camera,
             "binning": [int(b) for b in binning],
             "readout_mode": validity.get("readout_mode"),
+            "amplifier": validity.get("amplifier"),
+            "readout_key": readout_key(validity.get("readout_mode"), validity.get("amplifier")),
             "detector_temperature": validity.get("detector_temperature"),
             "mid_time": validity.get("mid_time"),
             "exposure_time": validity.get("exposure_time"),
@@ -169,7 +180,7 @@ class CalibLibrary:
         kind: str,
         camera: str,
         binning: tuple[int, int],
-        readout_mode: str | None,
+        readout_key: str,
         configuration: str | None = None,
         temperature: float | None = None,
         temperature_tolerance: float = 2.0,
@@ -177,7 +188,10 @@ class CalibLibrary:
     ) -> tuple[MasterCalib, Path] | None:
         """The master of ``kind`` that applies, read back, with its path; ``None`` without one.
 
-        ``camera``, ``binning`` and ``readout_mode`` must match exactly; ``configuration``
+        ``camera``, ``binning`` and ``readout_key`` (``FrameMeta.readout_key``, readout mode
+        and output amplifier) must match exactly; an entry indexed before the amplifier was
+        recorded has no ``readout_key`` and is keyed by its ``readout_mode`` with an
+        ``unknown`` amplifier, so it never stands for a known amplifier; ``configuration``
         must match when given (a flat belongs to its grating); the entry's temperature must
         be within ``temperature_tolerance`` of ``temperature`` when both are known. Among
         several matches the nearest ``mid_time`` to ``near_time`` wins (an entry without a
@@ -191,7 +205,7 @@ class CalibLibrary:
                 continue
             if tuple(entry.get("binning") or ()) != tuple(int(b) for b in binning):
                 continue
-            if entry.get("readout_mode") != readout_mode:
+            if _entry_readout_key(entry) != readout_key:
                 continue
             if configuration is not None and entry.get("configuration") != configuration:
                 continue
