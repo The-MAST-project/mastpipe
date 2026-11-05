@@ -4,9 +4,13 @@ the calibration folder, and the Th-Ar focus-scan frame at best focus as the full
 
 The frames live outside the repository under ``$MASTPIPE_TEST_DATA/highspec/lab3/``
 (``calib/`` and ``scan/``, see the README) and the module is skipped when the variable is
-unset. The Andor headers carry the exposure time, temperature, binning and readout mode but
-no frame type, lamp, grating or fiber preset, so a manifest declares them, as a laboratory
-run of ``mastpipe quicklook --manifest`` would. The numbers asserted are the notebook's:
+unset. The Andor headers carry the exposure time, temperature, binning and readout mode, and
+``IMAGETYP`` (``bias`` for the bias, ``light`` for every other frame), but no lamp, grating
+or fiber preset. The manifest, as a laboratory run of ``mastpipe quicklook --manifest``
+would give it, declares only what the content cannot decide: the grating and the fiber
+preset of every frame, and the type of the flat (a continuum, which content calls
+science) and of the lamp-off background (no signal). The full arc is left to the runner,
+which resolves it from its content. The numbers asserted are the notebook's:
 trace centres, per-fiber rms and line counts, band coverage and the fiber-to-fiber
 agreement of the reference solution.
 
@@ -55,9 +59,12 @@ pytestmark = [
 
 LAB_FOLDER = Path("highspec") / "lab3"
 CALIB_FRAMES = {"image_bias.fits": "bias", "background.fits": "background", "flat_518.fits": "flat"}
-"""The calibration frames of the laboratory folder and the type the manifest gives them."""
+"""The calibration frames of the laboratory folder and their types."""
 FULL_ARC = "FOCUS_05_13.30004_mm.fits"
 """The Th-Ar frame at the best focus of the scan: the full arc."""
+MANIFEST_TYPES = {"image_bias.fits": "", "background.fits": "background", "flat_518.fits": "flat", FULL_ARC: ""}
+"""The type the manifest gives each staged frame: none for the bias (its header says
+``bias``) and the full arc (resolved from its content, as is its arc kind)."""
 CONFIGURATION = "Mg"
 PRESET = "lab3"
 
@@ -105,9 +112,8 @@ def night(lab_root: Path, tmp_path_factory: pytest.TempPathFactory) -> SimpleNam
     for name in CALIB_FRAMES:
         shutil.copy(lab_root / "calib" / name, folder / name)
     shutil.copy(lab_root / "scan" / FULL_ARC, folder / FULL_ARC)
-    rows = ["source,exposure_type,configuration,fiber_preset,arc_kind"]
-    rows += [f"{name},{kind},{CONFIGURATION},{PRESET}," for name, kind in CALIB_FRAMES.items()]
-    rows.append(f"{FULL_ARC},arc,{CONFIGURATION},{PRESET},full")
+    rows = ["source,exposure_type,configuration,fiber_preset"]
+    rows += [f"{name},{kind},{CONFIGURATION},{PRESET}" for name, kind in MANIFEST_TYPES.items()]
     manifest = folder.parent / f"{folder.name}_manifest.csv"
     manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="")
     return SimpleNamespace(dir=folder, manifest=manifest, arc=folder / FULL_ARC)
@@ -167,7 +173,7 @@ def arc_y_centers(traceset) -> list[float]:
 # --------------------------------------------------------------------------------- tests
 
 
-def test_lab_traces_match_notebook(night, effective):
+def test_lab_traces_match_notebook(night, effective, first_run, out_dir):
     """Trace finding on the calibrated flat with the HighSpec default ``TraceParams``.
 
     The flat is calibrated as the runner does it (bias subtracted, the lamp-off background
@@ -177,14 +183,24 @@ def test_lab_traces_match_notebook(night, effective):
     light of the background frame has structure; ``match_layout`` sets them aside as
     ``extra`` and they are absent from the background-subtracted flat, which yields the
     three fibers alone.
+
+    The bias is typed by its header; the full arc, untyped by the manifest, reaches the run
+    as ``light`` and the runner resolves it from its content into an arc
+    (``content:arc_like``), which the arc stage takes as the full arc (skipped with "run
+    identify" before a reference exists).
     """
     detector, params = effective.detector, effective.params
     refs = {
         ref.meta.source: ref
         for ref in scan_folder(night.dir, "highspec", load_header_map("highspec"), manifest=night.manifest)
     }
-    assert {refs[name].meta.exposure_type for name in CALIB_FRAMES} == set(CALIB_FRAMES.values())
-    assert refs[FULL_ARC].meta.exposure_type == "arc" and refs[FULL_ARC].meta.arc_kind == "full"
+    assert {name: refs[name].meta.exposure_type for name in CALIB_FRAMES} == CALIB_FRAMES
+    assert refs["image_bias.fits"].meta.classification_rule == "header"
+    assert (refs[FULL_ARC].meta.exposure_type, refs[FULL_ARC].meta.arc_kind) == ("light", None)
+    log = "".join(path.read_text(encoding="utf-8") for path in (out_dir / "logs").glob("quicklook_*.log"))
+    assert f"light {FULL_ARC}: arc (content:arc_like)" in log
+    assert f"arc {FULL_ARC}: full" in log
+    assert any(item.startswith(FULL_ARC) and "run identify" in item for item in first_run.skipped)
     masters = {
         kind: build_master([load_frame(refs[name], detector)], kind, params.calib)
         for name, kind in CALIB_FRAMES.items()
