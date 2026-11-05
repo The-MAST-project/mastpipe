@@ -1,8 +1,45 @@
 # The night folder
 
-`quicklook` reads one folder of raw FITS frames. It does not care about file
-names; it classifies every frame from its header, through the instrument's
-header map, and groups the frames by camera and grating.
+`quicklook` reads one night folder of raw FITS frames. It does not care about
+file names; it classifies every frame from its header, through the
+instrument's header map, and groups the frames by camera and grating.
+
+## The folder shape
+
+At the observatory the spectrograph control software (`MAST_spec`) files every
+HighSpec exposure in an acquisition folder of its own:
+
+```text
+<night>/
+  highspec/
+    seq.txt
+    acquisition-0001/
+      exposure-001.fits
+      exposure-002.fits
+    acquisition-0002/
+      exposure-001.fits
+    ...
+```
+
+Point `quicklook` at `<night>/highspec/`. Pointing it at `<night>/` works too:
+the unit cameras and DeepSpec file their frames under the same night, and
+ingest leaves out every frame whose `INSTRUME` card names another instrument
+than the one requested (each such frame is listed under *skipped* with the
+reason). A frame with no `INSTRUME` card, such as a laboratory frame, is
+accepted. Where `MAST_spec` will file the HighSpec biases, darks and flats is
+not settled yet; any acquisition folder under the root is read.
+
+The folder is scanned **recursively**. A FITS file is any file whose name ends
+in `.fits`, `.fit` or `.fits.fz`, in any case; files and folders whose name
+starts with `.` are ignored, and other files (`seq.txt`, logs, notes) are not
+scanned at all. A file with a FITS name that cannot be opened is recorded as a
+**failure** (`unreadable FITS file`), and the run's exit status is 2.
+
+Every frame is known by its path **relative to the night folder**, with forward
+slashes: `acquisition-0012/exposure-003.fits` and
+`acquisition-0013/exposure-003.fits` are two frames. That relative path is
+what the logs, the QC files and the products' provenance call the frame's
+*source*.
 
 ## What a night needs
 
@@ -17,64 +54,149 @@ header map, and groups the frames by camera and grating.
 
 A kind the night lacks (say, no bias was taken) is taken from the calibration
 library in `out/calib`, matched on camera, binning, readout (the readout mode
-and the output amplifier, e.g. `image/em`) and temperature. Dark and background frames are stacked per exposure time.
+and the output amplifier, e.g. `image/em`) and temperature. Dark and
+background frames are stacked per exposure time.
+
+A group follows the binning and readout of its science frames (the most common
+among them). A calibration or science frame binned or read out otherwise is
+dropped and recorded as a failure with the reason. A night that mixes frames
+with and without the `READMODE` and `OUTPTAMP` cards therefore loses the
+frames without them (their readout is `unknown/unknown`) whenever the group's
+own readout is known; give such frames their readout through the manifest
+(`readout_mode`, `amplifier`) to keep them.
 
 ## What the headers must say
 
 The HighSpec header map reads the Andor Solis keywords and the ones the
-control software will write:
+control software writes or will write.
 
-- the exposure type from `IMAGETYP` or `OBSTYPE` (`bias`/`zero`, `dark`, `flat`,
-  `arc`/`comp`, `light`/`object`/`science`, `background`); when it is missing, from rules on the exposure time
-  (≈ 0 s → bias) and the lamp (`LAMP = thar` → arc, `flat` → flat, `off` with the
-  shutter closed → dark), else science;
-- the exposure time from `EXPOSURE`/`EXPTIME`, the start time from `DATE-OBS`
-  (the header map declares it as the *start*; the frame's mid-time is derived by
-  adding half the exposure), the temperature from `TEMP` (−999, Andor's
-  "unstabilised", counts as missing), binning from `HBIN`/`VBIN`, readout mode
-  from `READMODE`, the output amplifier from `OUTPTAMP` (`Conventional` →
-  `conventional`, `Electron Multiplying` → `em`), which selects the gain and
-  read noise;
-- the grating from `GRATING` or the file name, the fiber layout preset from
-  `FIBPRE`, each telescope's target from `OBJ01`…`OBJ20` when written, else one
-  target for every fiber from `OBJECT`.
+### Exposure type
 
-An arc is told to be *full* or *calibration-fiber* from which traces carry
-light, so no keyword is needed for that. A frame the map cannot classify is
-skipped and listed with the rule that matched (or `unclassified` when none did).
+The type comes from `IMAGETYP` or `OBSTYPE`: `bias`/`zero`, `dark`, `flat`,
+`arc`/`comp`, `object`/`science`, `background`, and `light`.
+
+`light` is what the control software writes for every shutter-open exposure,
+arcs and science frames alike, so it is a **provisional** type: "shutter open,
+source not stated". It is resolved in three ways, in order:
+
+1. **By rule, at ingest.** The header map's classification rules that carry a
+   condition refine a `light` frame: an exposure time below 1 ms makes it a
+   bias, a lamp card (`LAMP = thar`, `flat`, or `off` with the shutter closed)
+   makes it an arc, a flat or a dark, and a missing exposure time makes it
+   `unknown`. A frame with no valid type at all goes through the same rules and
+   falls back to `science`.
+2. **By content, in the runner.** Every frame still `light` after ingest is
+   calibrated with the night's masters and collapsed along the slit into one
+   spectrum before the traces are found (on a night without a flat the full
+   arc is itself a `light` frame and is the trace source). A spectrum whose
+   fiber light sits mostly in narrow peaks makes the frame an **arc**
+   (`content:arc_like`); a continuum makes it **science**
+   (`content:continuum`); a frame with no signal above the noise is skipped
+   (`content:no_signal`). The rule is written in the frame's QC and in the
+   product's provenance.
+3. **By the manifest**, which always wins: a frame whose manifest row sets
+   `exposure_type` is never `light`.
+
+Content cannot tell a flat from a science frame (both are continua), and a
+lamp-off background with a little ambient light in it may resolve as `science`.
+Declare flats and backgrounds with a header type (`flat`, `background`) or a
+manifest row. Whether an arc is a *full* or a *calibration-fiber* arc is told
+afterwards from which traces carry light, so no keyword is needed for that.
+A frame that ends up `unknown` is skipped and listed with the rule that
+decided it (or `unclassified` when none did).
+
+### Grating
+
+The grating comes from the `GRATING` card, spelled as the MAST fleet spells it
+(`Mg`, `Halpha`, `Ca`), or from a laboratory file name carrying the old alias
+(`mgb518`, `halpha`, `caiihk`), which the header map translates. When neither
+names it, pass it on the command line:
+
+```bash
+mastpipe quicklook <night>/highspec --out out --instrument highspec --configuration Mg
+```
+
+There is no silent default: without `--configuration`, frames whose grating is
+unknown are not reduced, the run records a failure that lists the valid names,
+and the exit status is 2. The control software writes no `GRATING` card today,
+so a night from the site needs the option.
+
+### Time
+
+The exposure's time comes from `DATE-OBS`, else `FRAME` (the camera driver's
+start of frame exposure, with milliseconds), else `DATE` (file creation). The
+header map declares the instant the card records (`reference: start`), and
+ingest adds half the exposure time to reach the mid-time.
+
+Each time field carries a `timezone` option saying how a stamp without an
+offset is read: `utc`, an IANA zone name (`Asia/Jerusalem`), or `assume-utc`.
+A stamp with an explicit offset is honoured whatever the option says. Under
+`assume-utc` a naive stamp is taken as UTC, the run logs one warning, and
+every product records the assumption in its `MPTZ` card (`assumed-utc`).
+HighSpec ships with `assume-utc` until it is established whether the control
+computer's clock keeps UTC; the option then changes in one line of
+`header_map.yaml`. Mid-times are stored and printed as ISO UTC without a zone
+suffix (`2026-10-01T18:02:30`).
+
+### Everything else
+
+- the exposure time from `EXPOSURE` or `EXPTIME`;
+- the temperature from `TEMP` or `CCD-TEMP` (−999, Andor's "unstabilised",
+  counts as missing);
+- the binning from `HBIN`/`VBIN`;
+- the readout from `READMODE` and the output amplifier from `OUTPTAMP`
+  (`Conventional` → `conventional`, `Electron Multiplying` → `em`), which
+  together select the gain and read noise and are matched by the library;
+- the targets, one per telescope: the cards `OBJ01`…`OBJ20` when the control
+  software writes them (none does yet), else one `OBJECT` card that applies to
+  every science fiber.
 
 ## The manifest
 
 Frames whose headers lack the instrument keywords (laboratory data, or a
 header the control software did not write) enter through a **manifest**: a
-CSV keyed by file name whose non-empty cells override any metadata field.
+CSV whose rows name frames by `source` and whose non-empty cells override any
+metadata field.
 
 ```text
 source,exposure_type,configuration,fiber_preset,arc_kind
 image_bias.fits,bias,Mg,lab3,
 background.fits,background,Mg,lab3,
 flat_518.fits,flat,Mg,lab3,
-FOCUS_05_13.30004_mm.fits,arc,Mg,lab3,full
+FOCUS_*.fits,,Mg,lab3,
 ```
 
 ```bash
 mastpipe quicklook night/ --out out --instrument highspec --manifest night/manifest.csv
 ```
 
+A row's `source` is one of:
+
+- a **relative path** from the night folder (`acquisition-0012/exposure-003.fits`);
+- a **glob pattern** over relative paths (`acquisition-0012/*.fits`;
+  `*` and `?` stay within one folder, `**` crosses folders);
+- a **bare file name**, which matches the one file of that name anywhere in the
+  tree; a name that several files share is an error that lists them.
+
+An `extension` column restricts a row to one HDU of a multi-extension file.
+Rows apply in order, so a later row wins over an earlier one for the frames
+both name. A row that matches no frame is listed under *skipped*, never
+dropped silently.
+
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
 every telescope; the older `target` column is still read that way),
-`exposure_time`, `mid_time` (taken as the
-mid-exposure time), `binning`, `readout_mode`, `amplifier`, `detector_temperature`,
-`lamp_state`, `camera`, `instrument`, `classification_rule`; `extension`
-selects an HDU of a multi-extension file.
+`exposure_time`, `mid_time` (taken as the mid-exposure time, in UTC),
+`binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,
+`camera`, `instrument`, `classification_rule`.
 
 ## Layouts
 
 The **fiber layout** says which trace is which: role (`arc`, `science`, `sky`),
-telescope, nominal position. It is an input table, never inferred from the
-data. HighSpec ships two presets:
+telescope (`mast01`…`mast20`), nominal position. It is an input table, never
+inferred from the data, and no header card selects it (in MAST a "fiber
+preset" is a stage position, not a layout). HighSpec ships two presets:
 
 `lab3`
 : the three-fiber laboratory setup (all arc fibers), the default.
@@ -82,10 +204,19 @@ data. HighSpec ships two presets:
 `survey45`
 : the survey quasi-slit, 45 traces at an 8.5 px pitch: 5 arc, 20 science and
   20 sky, one science and one sky fiber per telescope. Choosing it also selects
-  its narrower extraction and trace parameters, so no override is needed.
+  its narrower extraction and trace parameters, so no override is needed. Which
+  physical trace belongs to which telescope is a placeholder until the
+  instrument team confirms it.
 
-`quicklook` reads the preset from the frames' `FIBPRE` keyword and falls back
-to `--layout`, then to the instrument's default; `identify` and `solve` use
-`--layout` or the default only, so pass it for a survey arc.
-Detections that match no layout row are dropped and listed in the trace QC; a
-fiber missing on a night is simply absent from its products.
+`quicklook` takes the preset from `--layout`, else from a manifest's
+`fiber_preset` column, else the instrument's default; `identify` and `solve`
+use `--layout` or the default, so pass it for a survey arc. Detections that
+match no layout row are dropped and listed in the trace QC; a fiber missing on
+a night is simply absent from its products.
+
+## Leftovers of an interrupted run
+
+Every product, master, reference, index and QC file is written under a
+temporary name in its own folder (`<name>.tmp-<pid>`) and moved into place in
+one step, so a reader never sees a partial file. A run that is killed may
+leave such a temporary behind; it is never read and is safe to delete.

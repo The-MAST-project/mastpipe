@@ -28,7 +28,8 @@ come from the flat master when there is one, otherwise from the arc itself.
 
 `identify` and `solve` use the instrument's default layout (`lab3` for
 HighSpec) unless told otherwise: for a survey full arc pass `--layout survey45`.
-Only `quicklook` reads the preset from the frames' `FIBPRE` keyword. The
+No header card names the layout; `quicklook` also reads a manifest's
+`fiber_preset` column. The
 reference is keyed by grating *and* layout, so a reference made with the wrong
 preset is not found by `quicklook` later. The
 reference is registered in the library and `fiber_agreement.csv` beside it

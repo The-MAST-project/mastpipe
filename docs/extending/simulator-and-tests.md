@@ -69,7 +69,18 @@ assertions:
   against truth, sky-subtracted versions present, one combined file per
   target, the idempotence and re-reduce behaviour, the `interpolate` blend;
 - a night with one fiber darkened: the other 44 keep their own solutions;
-- a night with two fibers swapped: exactly those two fail the truth comparison.
+- a night with two fibers swapped: exactly those two fail the truth comparison;
+- a night with a 2 px drift gradient across the detector: the fitted drift
+  follows the planted shift at every arc fiber's row, which a drift flat in `y`
+  does not.
+
+The default jitter (0.3 px) and gradient (0.05 px) are deliberately small, so
+that the end-to-end tolerances stay stable and every fixture night reduces
+cleanly. At those values a fiber-identity or drift-row mistake could hide
+inside the tolerances, which is why sensitivity is proven by the two dedicated
+tests above rather than by the default nights: `test_swapped_fibers_are_detected`
+(end to end, at a jitter of 1 px) and `test_fit_drift_follows_a_y_gradient`.
+Keep both when changing the simulator or the tolerances.
 
 ## Tiers and markers
 

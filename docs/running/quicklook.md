@@ -1,7 +1,7 @@
 # Quick-look: reducing a night
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec
+mastpipe quicklook night/ --out out --instrument highspec --configuration Mg
 ```
 
 One command reduces everything in the folder it can, records what it could
@@ -44,12 +44,20 @@ Per camera and grating found in the folder:
   against the frame's reference, and within `drift.max_age_hours` (default 12)
   qualify. With none, the frame gets status `reference`.
 
+`--configuration Mg | Halpha | Ca`
+: The grating of frames whose header does not name it (no `GRATING` card and
+  no grating alias in the file name). The control software writes no such card
+  today, so a night from the site needs this option; without it those frames
+  are not reduced and the run fails with the list of valid names. A frame that
+  names its grating keeps it.
+
 `--manifest file.csv`
-: Metadata overrides by file name; see [The night folder](night-folder.md).
+: Metadata overrides by relative path, glob pattern or file name; see
+  [The night folder](night-folder.md).
 
 `--layout lab3 | survey45`
-: The fiber preset when the frames do not name it; selects the preset's
-  parameters too.
+: The fiber preset (else a manifest's `fiber_preset`, else the instrument's
+  default); selects the preset's parameters too.
 
 `--reference ID`
 : Pin one reference solution for every frame instead of the one valid at each
@@ -97,7 +105,7 @@ The same command on the same folder and output gives the same products. To
 redo a night with a different policy:
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec --time-policy interpolate --force
+mastpipe quicklook night/ --out out --instrument highspec --configuration Mg --time-policy interpolate --force
 ```
 
 Products from earlier runs are overwritten only when `--force` is given or

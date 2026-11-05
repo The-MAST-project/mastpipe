@@ -2,6 +2,98 @@
 
 ## 0.0.1 (unreleased)
 
+- **Plan 1.5, hardening at the boundaries — upgrade notes.** These changes break
+  compatibility with Plan 1 outputs and invocations:
+  - the Mg b grating is `Mg` (the `MAST_common` name), no longer `mgb518`; `Halpha` and
+    `Ca` likewise. `--configuration`, `--set`, grating files (`gratings/Mg.yaml`,
+    `lines/Mg.csv`, `anchors/Mg_lab3.yaml`) and product names use the new names; the old
+    spellings are read only from laboratory file names;
+  - telescopes are `mast01`…`mast20` in layouts, products and QC;
+  - `FrameMeta.target` is replaced by `FrameMeta.targets`, a mapping of telescope to
+    target (`"*"` for every fiber);
+  - product names gain a six-character input-checksum segment after the time stamp
+    (`highspec_Mg_main_20261001T221500_3f9a1c_spec.fits`);
+  - `SimTruth.science_flux` and `sky_flux` are per trace (`(n_traces, n_pix)`), as are
+    `line_pixels`;
+  - the configuration hash and the masters' calibration hash change, and the idempotence
+    key gains parts: after upgrading, existing masters are rebuilt and every product is
+    reduced again once;
+  - `tzdata` is a new runtime dependency (the IANA zones on Windows);
+  - `quicklook` needs `--configuration` when no header card or file name names the
+    grating (no silent default; the run fails with the list of valid names).
+- Fleet vocabulary: `mastpipe.vocab` mirrors `MAST_common`'s grating, disperser,
+  instrument and unit names and is what the code uses; a `fleet` CI job checks
+  `MAST_common` out as a sibling (paired branch, else `master`) and a test fails when the
+  mirror diverges (`MASTPIPE_FLEET_CHECK=1`). Grating ids are case-sensitive; the
+  registry refuses a grating block whose name is not a fleet grating name.
+- Time: one helper, `mastpipe.core.times`, parses every ISO stamp. Header-map time fields
+  carry a `timezone` option (`utc`, an IANA zone, `assume-utc`); a stamp with an offset is
+  honoured. HighSpec reads `DATE-OBS`, then `FRAME`, then `DATE`, under `assume-utc`,
+  which logs one warning per run and writes `MPTZ = 'assumed-utc'` on every product.
+  Mid-times stay naive ISO UTC strings.
+- Ingest: night folders are scanned recursively (`<night>/highspec/acquisition-NNNN/
+  exposure-NNN.fits`), a frame's `source` is its path relative to the night folder, and
+  files without a FITS suffix are not scanned; a FITS file that cannot be opened is a
+  failure. Frames whose `INSTRUME` names another instrument are skipped with the reason.
+  Manifest rows name frames by relative path, glob pattern (`**` crosses folders) or
+  unique file name (an ambiguous name is an error), and rows matching nothing are
+  reported among the skipped.
+- Frame type: `IMAGETYP = 'light'` maps to the provisional type `light`, refined at ingest
+  by any conditional header-map rule (zero exposure → bias, lamp cards) and otherwise
+  resolved by the runner from the frame's content (`steps.classify.classify_light`,
+  `ClassifyParams`) into `arc` (`content:arc_like`) or `science` (`content:continuum`), or
+  skipped (`content:no_signal`), before the trace stage; a manifest's `exposure_type`
+  wins. `FIBPRE` is no longer read: the layout comes from `--layout`, a manifest's
+  `fiber_preset` or the instrument's default.
+- Targets per fiber: a header-map field kind `per_unit` (`OBJ{nn}`, one card per
+  telescope unit), a manifest column `targets` (`mast01=HD 1234;mast02=…`; the old
+  `target` column is still read), and a single `OBJECT` as the fallback for every science
+  fiber; combination groups by target across fibers.
+- Runner robustness: master building loads calibration frames one at a time, and a frame
+  that cannot be read, is binned otherwise than the group's science frames, has another
+  shape than the detector's (crop and orientation, scaled by binning:
+  `io.ingest.expected_shape`) or another readout is dropped and recorded as a failure
+  (exit status 2); the night is still reduced. A failing full-arc candidate is recorded
+  and skipped. Products, masters, references, indexes and QC files are written
+  atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>` temporary moved into place),
+  and the calibration library's index is read and updated under a lock on `index.lock`
+  (`io.atomic.locked`).
+- Idempotence: a science product's key covers the frame's checksum, the configuration
+  hash (time policy and every override included), the reference solution's hash
+  (`MPWREFH`), the drift arcs' checksums, the layout preset and its file's hash
+  (`MPLAYH`), the masters' checksums (`MPMKH`) and the time zone (`MPTZ`). A master the
+  library already holds from the same frames, stacking parameters and detector
+  (`calib_hash`) is reused instead of rebuilt; `--force` rebuilds.
+- Fibers are keyed by the layout's `trace` column, not by the row position, so a layout
+  with shuffled rows keys the same physical fibers.
+- Simulator: every fiber has its own dispersion (`dispersion_jitter_px`, 0.3 px by
+  default) and the drift varies with the row (`drift_gradient_px`, 0.05 px); `swap_fibers`
+  exchanges two traces' light while the truth stays unswapped; `SimTruth` gains
+  `x_c_per_trace`, `B_per_trace`, `row_of(trace_id)` and `trace_shifts(file)`. New tests
+  prove the comparisons are sensitive: an end-to-end swap test and a drift fit against a
+  2 px y-gradient. `simulate_night(site_layout=True)` writes a night in the site's shape
+  (`highspec/acquisition-NNNN/exposure-NNN.fits`, `seq.txt`, the cards the control
+  software writes, `IMAGETYP = 'light'` for arcs and science frames, no grating card),
+  which quick-look reduces with `--configuration Mg` and no manifest; the laboratory
+  regression's manifest types only what content cannot (the flat and the background).
+- Numerics: the master variances enter the calibrated frame's variance with exact
+  propagation (the bias correlated through both subtractions); lines flagged saturated
+  are excluded from the wavelength fit; a drift model is usable only with at least
+  `drift.min_fibers` (3) usable arc fibers, recorded in the QC and `MPDUSE`; a combined
+  spectrum keeps every version some contributor carries, listing the fibers without it
+  in `MPVMISS`.
+- Readout: `FrameMeta.readout_key` combines `READMODE` and the output amplifier
+  (`OUTPTAMP`, `image/em`), the calibration library matches masters on it, and the
+  detector configuration gains an optional `readouts` table of gain and read noise per
+  amplifier (one warning per run for an amplifier missing from it).
+- Tooling: the fleet's ruff rules (`F,E,W,I,N,B,UP,C90,SIM,TID` plus `NPY`), line length
+  125, `ruff==0.16.0` pinned in the `dev` extra, `ruff format --check` before
+  `ruff check`; CI gains a separate `lint` job and a concurrency group per ref.
+- Documents: the design documents under `docs/design/` are published, with roles in
+  place of names; the night-folder guide describes the site's folder shape, the
+  provisional `light` type, `--configuration`, the time-zone option, manifest patterns
+  and per-fiber targets; README and install pages say the PypeIt adapter is planned and
+  does not exist yet.
 - The documentation is hosted on Read the Docs at <https://mastpipe.readthedocs.io/>
   (project `mastpipe`, built from `.readthedocs.yaml`); the README links to it.
 - The repository is public under `The-MAST-project/mastpipe`. Documentation, comments

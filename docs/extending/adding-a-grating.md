@@ -29,8 +29,13 @@ params: {}                     # per-grating overrides of any step parameter
 
 The geometry constants are the optical design's, as in the reduction notebook;
 they are never fitted. The `name` must equal the file stem and be one of the
-fleet's grating names, `mastpipe.vocab.GRATING_NAMES` (`Ca`, `Halpha`, `Mg`,
-`Future`, spelled exactly so); the registry rejects any other.
+fleet's grating names, spelled exactly as the MAST fleet's shared vocabulary
+(the `MAST_common` repository) spells them and the control software writes
+them in `GRATING`. `mastpipe.vocab.GRATING_NAMES` mirrors that list (`Ca`,
+`Halpha`, `Mg`, `Future`) and a CI job fails when the mirror and `MAST_common`
+diverge; the registry refuses a block with any other name. A new grating is
+therefore named in `MAST_common` first, then added to the mirror, then given
+its block here.
 
 ## 2. The line table
 
@@ -53,9 +58,12 @@ table does.
 
 ## 3. Add the header mapping
 
-If the control software names the grating differently from `<name>`, add the
-spelling to the `configuration` field's `map` in `header_map.yaml`, and to its
-`filename_regex` if laboratory files carry the name instead.
+The `GRATING` card carries the canonical name, which the header map passes
+through unchanged (names are case-sensitive). Only when laboratory files carry
+another spelling in their file names (as `mgb518` stands for `Mg`) add it to
+the `configuration` field's `filename_regex` and map it to `<name>` in its
+`map` in `header_map.yaml`. Frames that name no grating at all are reduced
+with `--configuration <name>`.
 
 ## 4. The first reference
 

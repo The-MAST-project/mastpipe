@@ -84,8 +84,8 @@ mastpipe --version
 
 The `dev` extra adds the test and lint tools (`pytest`, `pytest-cov`, `ruff`,
 `nbstripout`); the `docs` extra builds this documentation (`pip install -e
-".[dev,docs]"`); the `pypeit` extra installs PypeIt for the optional adapter,
-which this release does not use.
+".[dev,docs]"`); the `pypeit` extra pre-installs the dependency of a planned
+PypeIt adapter; no adapter module exists yet.
 
 ### Checking the installation
 

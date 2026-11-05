@@ -286,3 +286,95 @@ group.
 - **`CLAUDE.md` and `DECISIONS.md` are committed**, as in the other MAST
   repositories (nine of which track a `CLAUDE.md`, four a `DECISIONS.md`);
   the design documents under `docs/design/` stay local.
+
+## 2026-11-04 — Plan 1.5: hardening at the boundaries
+
+Recorded from the Plan 1.5 design (`docs/design/2026-11-04-mastpipe-plan-1.5-hardening-design.md`,
+§4), whose decisions D1–D4 were taken with the project lead and whose calls C1–C7 the
+designer made, and from the rulings made while the plan was executed.
+
+- **Canonical identifiers are `MAST_common`'s spellings** (D1): gratings `Mg`, `Halpha`,
+  `Ca` (and `Future`, `Empty` as known but unsupported), instruments `highspec` and
+  `deepspec`, telescopes `mast01`…`mast20`. The fleet's control software writes these
+  names, so mastpipe's own spellings (`mgb518`, `halpha`, `caiihk`) survive only as
+  file-name aliases of the laboratory data.
+- **`MAST_common` is mirrored, not imported** (D2): `mastpipe.vocab` restates the
+  literals and is what the code uses; a CI job checks `MAST_common` out as a sibling
+  (the paired branch, else `master`, as `MAST_control` does) and a test fails when the
+  mirror diverges. mastpipe stays installable without the fleet's library.
+- **The design documents are published** (D3): `docs/design/` leaves `.gitignore` and is
+  committed once the privacy scan passes and every personal name is replaced by a role
+  (the HighSpec laboratory reduction notebook and its author, the DeepSpec instrument
+  team, the project lead). This reverses the 2026-11-02 entry's "stay local", so that
+  the citations in this file resolve. The documents are not pages of the Sphinx site.
+- **An arc that the header calls `light` is detected from its content** (D4): `light`
+  becomes a provisional exposure type that the runner refines to `arc` or `science`
+  from the frame, before the trace stage (on a night without a flat the full arc is the
+  trace source); a manifest still overrides. The control software writes `light` for
+  every shutter-open exposure and no lamp card, so no header rule can tell them apart.
+- **Grating ids are case-sensitive** (C1) and spelled exactly as `MAST_common` does; the
+  header map no longer lower-cases `configuration`.
+- **The time-zone question stays open, and the assumption is explicit** (C2): every
+  header-map time field declares a `timezone` (`utc`, an IANA zone, or `assume-utc`); a
+  stamp with an offset is honoured; HighSpec ships with `assume-utc`, which logs one
+  warning per run and records `MPTZ = 'assumed-utc'` on every product, until one frame
+  with a known UTC time settles the control computer's clock.
+- **Python 3.11 support stays** (C3): the fleet pins 3.12 for services, but mastpipe is a
+  library. Ruff's rule set, line length (125) and pin (`ruff==0.16.0`) follow the fleet,
+  with `NPY` added and physics-named variables allowed by per-file ignores.
+- **`FIBPRE` leaves the header map** (C4): in MAST a "fiber preset" is a stage position
+  (`deepspec` / `highspec`), not a fiber layout. The layout comes from `--layout`, a
+  manifest's `fiber_preset` or the instrument's default.
+- **Masters enter the idempotence key by checksum** (C5), and an equal master already in
+  the library is reused rather than rebuilt and overwritten on every run; `--force`
+  rebuilds.
+- **Numerical changes are limited to four bounded items** (C6): master variances in the
+  error budget, saturated lines out of the wavelength fit, a drift gate that needs three
+  usable arc fibers (`drift.min_fibers`), and versions never dropped in combination
+  (`MPVMISS`). The cosmic-ray filter question goes to Plan 2.
+- **Calls after the builder check** (C7): arc detection is frame-level and runs before
+  the trace stage; product names gain a short input-checksum segment, so two frames with
+  the same mid-time to the second never share a name; ingest gates on `INSTRUME`; a
+  dropped calibration frame is a recorded failure with exit status 2; the fleet test
+  compares against `common.spec` only, reading the configuration lists as text; the
+  laboratory regression keeps manifest rows for the flat and the background.
+- **Any conditional header-map rule may refine a `light` frame**, not only the bias rule
+  the design names: a `light` frame with a lamp card is typed by it, and one with no
+  exposure time is `unknown` at ingest rather than resolved from its content. The rules
+  already express what a header can prove; content is the fallback for what it cannot.
+- **`mid_time` strings stay naive ISO UTC** (`2026-10-01T18:02:30`), not the design's
+  `Z`-suffixed form: parsing always yields an aware UTC instant, but the stored and
+  printed form is unchanged from Plan 1, so product names, identifiers and tests keep
+  their shape. The design document was corrected accordingly.
+- **An unopenable FITS file is a failure; a non-FITS file is not scanned**: a file with a
+  FITS suffix that astropy cannot open is recorded in `failed` (exit status 2), because
+  a supervisor should see it; anything else in the folder (`seq.txt`, notes) is not a
+  frame and is ignored. The design's "skipped" means "not scanned".
+- **The expected frame shape comes from the detector configuration**, not from the first
+  good frame of a batch, which was order-dependent: the crop and shape are unbinned
+  pixels, and `expected_shape(detector, binning)` and `load_frame` both scale the crop by
+  the binning factors. A group's binning is the most common among its science (and
+  unresolved `light`) frames, computed before the masters are built.
+- **Master reuse matches the inputs and a calibration-parameter hash, not the
+  configuration**: `find_by_inputs` compares kind, camera, input checksums and
+  `calib_hash` (the `calib` parameters and the detector), so a changed stacking method
+  rebuilds the master and moves the science key. Equal input checksums already imply the
+  binning and readout, and a bias shared across gratings is physically right.
+- **The master variances propagate exactly**: a frame of exposure `t` calibrated with a
+  background of exposure `t_bkg` is `raw − (1 − s)·bias − s·background` with
+  `s = t / t_bkg` and carries `(1 − s)²·V_bias + s²·V_background`; with a dark, `s = t /
+  t_dark` and it carries `(1 − s)²·V_bias + s²·V_dark` (the dark-rate variance is
+  `V_dark / t_dark²`, with `t_dark` carried by the master). The bias enters both subtractions, so its variance is
+  correlated and must not be counted twice.
+- **Frames of another readout than their group are dropped per frame**: the readout key
+  is `READMODE`/`OUTPTAMP` (`image/em`), the group follows its science frames' most
+  common key, and a calibration or science frame with another key is recorded as a
+  failure, since `build_master` refuses mixed amplifiers and would otherwise fail the
+  whole group. A night mixing frames with and without those cards loses the uncarded
+  ones when the group's key is known.
+- **The simulator's default jitter and gradient are deliberately small**
+  (`dispersion_jitter_px = 0.3`, `drift_gradient_px = 0.05`), below what the end-to-end
+  tolerances could detect, so the fixture nights reduce with stable tolerances.
+  Sensitivity to fiber-identity and drift-row mistakes is proven by dedicated tests
+  instead: the end-to-end swap test at a jitter of 1 px and the drift-fit test at a
+  2 px gradient, which a drift flat in `y` fails.

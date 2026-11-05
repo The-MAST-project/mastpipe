@@ -43,8 +43,9 @@ pip install "git+<repository>"
 mastpipe --version
 ```
 
-(`pip install .` from a downloaded copy does the same.) The optional `pypeit`
-extra installs PypeIt for the adapter module; the package runs without it.
+(`pip install .` from a downloaded copy does the same.) An optional PypeIt
+adapter is planned; the `pypeit` extra pre-installs its dependency. No adapter
+module exists yet, and the package runs without PypeIt.
 
 ### Developer install
 
@@ -161,8 +162,8 @@ mastpipe <command> --help
 The reduction commands (`identify`, `solve`, `quicklook`) take `--instrument`
 (e.g. `highspec`), `--configuration` where the frames' headers do not say which
 grating was used (e.g. `Mg`), `--camera` when the instrument has several,
-`--layout` to name the fiber preset (`lab3`, `survey45`; default: the frames'
-preset, else the instrument's), `--out` for the output folder, `--library` for
+`--layout` to name the fiber preset (`lab3`, `survey45`; default: a manifest's
+`fiber_preset`, else the instrument's), `--out` for the output folder, `--library` for
 a calibration library elsewhere than `OUT/calib`, and repeatable
 `--set group.key=value` overrides of any step parameter
 (`trace.trace_halfwidth=4`, `drift.time_policy=interpolate`, …). `show` takes
@@ -233,13 +234,19 @@ not replace the old one: each is valid from its own arc's time.
 ### `quicklook` — reduce a night folder
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec
+mastpipe quicklook night/highspec --out out --instrument highspec --configuration Mg
 mastpipe quicklook night/ --out out --instrument highspec --manifest night/manifest.csv \
     --time-policy interpolate --on-error raise
 ```
 
-Frames are classified from their headers (`IMAGETYP`, `LAMP`, exposure time)
-and the folder is reduced per camera and configuration: masters are stacked
+Frames are classified from their headers (`IMAGETYP`, `LAMP`, exposure time);
+a frame whose header type is `light` (what the control software writes for arcs
+and science frames alike) is resolved into an arc or a science frame from its
+content, and a manifest's `exposure_type` overrides both. `--configuration` is
+required when no header card or file name names the grating (the control
+software writes none today); without it those frames are not reduced and the
+run fails with the list of valid names. The folder is reduced per camera and
+configuration: masters are stacked
 into the library (a kind the night lacks is taken from it), traces are found on
 the flat master (or a full arc), full arcs are re-solved from the library's
 reference, calibration-fiber arcs are fitted for drift, and science frames are
@@ -247,9 +254,9 @@ calibrated with cosmic rays flagged, extracted, given wavelengths by the time
 policy, sky-subtracted with the telescope's sky fiber, passed through the flux
 and telluric stages, written with provenance and QC, and combined per target.
 A product already on disk with the same idempotence key (input checksum,
-configuration hash, reference identifier, drift-arc checksums, layout preset)
-is skipped; one whose key changed is reduced again; `--force` reduces
-everything. `--reference ID` pins one reference solution instead of the one
+configuration hash, reference solution's hash, drift-arc checksums, layout
+preset and its file's hash, the masters' checksums, the time zone) is
+skipped; one whose key changed is reduced again; `--force` reduces everything. `--reference ID` pins one reference solution instead of the one
 valid at each frame's time. Frames the headers cannot classify are skipped
 with their rule, failures are recorded and the run goes on (`--on-error
 continue`, the default). The exit status is 2 when anything failed, when the
@@ -261,7 +268,10 @@ start) and ingest derives each frame's mid-time from it and the exposure time;
 a frame without an exposure time keeps the header time as given and notes
 `mid_time` among its unresolved fields. A header value listed under a field's
 `missing_values` (the Andor `TEMP = -999` of an unread sensor) counts as
-absent.
+absent. A stamp without an offset is read according to the field's `timezone`
+(`utc`, an IANA zone, or `assume-utc`, HighSpec's setting until the control
+computer's clock is known; the assumption is then recorded as `MPTZ` on every
+product).
 
 The night folder is scanned with its subfolders (the control software files
 each acquisition in a folder of its own); every `*.fits`, `*.fit` or
