@@ -1,6 +1,3 @@
-# design/implementation documents stay local for now (user decision 2026-09-24)
-docs/design/
-
 # python
 __pycache__/
 *.py[cod]

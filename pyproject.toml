@@ -77,6 +77,9 @@ version = { attr = "mastpipe.__version__.__version__" }
 # formatter output can differ between ruff versions.
 line-length = 125
 target-version = "py311"
+# The design documents are a historical record: their code blocks are quoted as planned,
+# not formatted or linted.
+extend-exclude = ["docs/design"]
 
 [tool.ruff.lint]
 # The fleet's rule set plus NPY, stated as `select` rather than `extend-select` so the
