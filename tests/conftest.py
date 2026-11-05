@@ -96,9 +96,10 @@ def sim_night_lab3(
 
 
 def truth_model(truth: SimTruth, fiber: int, geom: GratingGeometry, n_pix: int) -> GratingModel:
-    """The grating model the simulator drew trace ``fiber`` (its truth row, which is its
-    layout id on the shipped layouts) from: every trace has its own ``(x_c, B)``."""
-    x_c, B = truth.x_c_per_trace[fiber], truth.B_per_trace[fiber]
+    """The grating model the simulator drew fiber ``fiber`` (a layout trace id) from: every
+    trace has its own ``(x_c, B)``."""
+    row = truth.row_of(fiber)
+    x_c, B = truth.x_c_per_trace[row], truth.B_per_trace[row]
     return GratingModel(float(x_c), float(B), geom.alpha_rad, None, n_pix, geom)
 
 

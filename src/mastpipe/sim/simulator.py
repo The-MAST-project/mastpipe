@@ -29,9 +29,10 @@ adding half the exposure time. The simulation model:
   the full arc's mid-time to ``drift_px[1]`` / ``drift_stretch[1]`` /
   ``drift_gradient_px`` at the last frame's mid-time (frames before the full arc carry the
   start value, so with the default ``drift_px = (0.0, 0.6)`` the full arc is undrifted);
-- ``swap_fibers = (a, b)`` lights trace ``a`` with what trace ``b`` would carry (its
-  solution) and vice versa on every frame while the truth keeps each trace's own solution,
-  so that a pipeline keying fibers correctly disagrees with the truth on exactly those two;
+- ``swap_fibers = (a, b)`` (layout trace ids) lights fiber ``a`` with what fiber ``b``
+  would carry (its solution) and vice versa on every frame while the truth keeps each
+  trace's own solution, so that a pipeline keying fibers correctly disagrees with the truth
+  on exactly those two;
 - science frames carry no arc light: science fibers show a flat continuum with Gaussian
   absorption dips at fixed wavelengths, sky fibers a faint continuum plus emission lines,
   both drifted by the same law at the frame's own time and scaled by the throughput, plus
@@ -159,7 +160,8 @@ class SimTruth:
     gradient applied to that frame's content (the drift law at its mid-time; the shift at
     trace ``i`` is :meth:`trace_shifts`); ``drift_gradient_px`` is the gradient at the end
     of the law; ``extras`` holds JSON-native scalars and the cosmic-ray positions. All of
-    it describes the unswapped fibers, whatever ``extras["swap_fibers"]`` says.
+    it describes the unswapped fibers, whatever ``extras["swap_fibers"]`` says. The arrays
+    are indexed by layout row; :meth:`row_of` turns a fiber's trace id into its row.
     """
 
     layout: pd.DataFrame
@@ -186,9 +188,17 @@ class SimTruth:
     frames: pd.DataFrame
     extras: dict[str, Any]
 
+    def row_of(self, trace_id: int) -> int:
+        """The layout row (the index into the truth arrays) of the fiber with trace id
+        ``trace_id``; ``KeyError`` when the layout has no such fiber."""
+        rows = np.flatnonzero(self.layout["trace"].to_numpy(dtype=int) == int(trace_id))
+        if rows.size != 1:
+            raise KeyError(f"no layout row has trace id {trace_id}")
+        return int(rows[0])
+
     def trace_shifts(self, file: str) -> np.ndarray:
-        """The shift (px) of every trace's content on frame ``file``: its ``shift_px`` plus
-        ``gradient_px (y_i - ny/2) / ny``, ``y_i`` the trace's centre row."""
+        """The shift (px) of every trace's content on frame ``file``, by layout row: its
+        ``shift_px`` plus ``gradient_px (y_i - ny/2) / ny``, ``y_i`` the trace's centre row."""
         row = self.frames.loc[self.frames["file"] == file].iloc[0]
         ny, n_pix = self.extras["shape"]
         y_center = np.array([np.polyval(c, n_pix / 2.0) for c in self.trace_coeffs])
@@ -613,24 +623,26 @@ def simulate_night(
     last frame's; without a full arc it runs from ``night_start``. ``dispersion_jitter_px``
     sets the per-trace solutions, ``drift_gradient_px`` the shift difference between the
     bottom and the top of the detector at the end of the drift law, and ``swap_fibers``
-    (two layout rows) exchanges what two traces carry while the truth stays unswapped (see
+    (two layout trace ids) exchanges what two traces carry while the truth stays unswapped (see
     the module docstring). Every random number comes from ``numpy.random.default_rng(seed)``
     except the per-trace jitter, which comes from ``default_rng([seed, JITTER_STREAM])``.
     """
     if dispersion_jitter_px < 0:
         raise ValueError(f"dispersion_jitter_px must be >= 0, got {dispersion_jitter_px}")
+    swap_rows = None
     if swap_fibers is not None:
+        ids = layout["trace"].to_numpy(dtype=int).tolist()
         a, b = (int(k) for k in swap_fibers)
-        if a == b or not (0 <= a < len(layout) and 0 <= b < len(layout)):
-            raise ValueError(f"swap_fibers needs two different layout rows, got {swap_fibers}")
-        swap_fibers = (a, b)
+        if a == b or a not in ids or b not in ids:
+            raise ValueError(f"swap_fibers needs two different layout trace ids, got {swap_fibers}")
+        swap_fibers, swap_rows = (a, b), (ids.index(a), ids.index(b))
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     jitter_rng = np.random.default_rng([seed, JITTER_STREAM])
     detector = effective.detector
     scene = _build_scene(effective, layout, line_table, rng, jitter_rng, dispersion_jitter_px)
-    lit = scene.swapped(swap_fibers)
+    lit = scene.swapped(swap_rows)
     y_center = scene.y_center
     schedule = _schedule(
         n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science

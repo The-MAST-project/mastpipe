@@ -217,7 +217,8 @@ def test_extract_recovers_simulated_flux(night):
         assert spectrum.target == night.science.meta.target_for(trace.telescope)
         row = truth.layout.loc[truth.layout.trace == trace.index]
         assert spectrum.target == row.target.item()
-        expected = truth.throughput[trace.index] * truth.science_flux[trace.index]
+        row_i = truth.row_of(trace.index)
+        expected = truth.throughput[row_i] * truth.science_flux[row_i]
         good = ~spectrum.mask
         assert good.mean() > 0.95
         ratios.append(float(np.median(spectrum.flux[good] / expected[good])))

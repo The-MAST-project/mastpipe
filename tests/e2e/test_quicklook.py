@@ -100,7 +100,7 @@ def map_error_in_dispersions(lam: np.ndarray, night, fiber: int, source: str) ->
     truth = night.truth
     x = np.arange(night.n_pix, dtype=float)
     model = truth_model(truth, fiber, night.geom, night.n_pix)
-    shift = truth.trace_shifts(source)[fiber]
+    shift = truth.trace_shifts(source)[truth.row_of(fiber)]
     stretch = float(truth.frames.loc[truth.frames["file"] == source, "stretch"].iloc[0])
     lam_true = model.wavelength(undrift_x(x, shift, stretch, night.n_pix))
     return float(np.max(np.abs(lam - lam_true) / model.dispersion(x)))

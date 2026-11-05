@@ -111,7 +111,7 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     line_px = {}
     for spectrum in spectra:
         model = truth_model(truth, spectrum.fiber, geom, n_pix)
-        drifted = undrift_x(x, shifts[spectrum.fiber], stretch, n_pix)
+        drifted = undrift_x(x, shifts[truth.row_of(spectrum.fiber)], stretch, n_pix)
         wavelength = np.asarray(model.wavelength(drifted), dtype=float)
         spectrum.wavelength = wavelength
         order = np.argsort(wavelength)

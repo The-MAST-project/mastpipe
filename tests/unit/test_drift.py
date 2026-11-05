@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mastpipe.config.loader import build_effective
 from mastpipe.config.models import CalibParams, DriftParams, WavecalParams
 from mastpipe.core.model import (
     LINE_COLUMNS,
@@ -21,16 +22,17 @@ from mastpipe.core.model import (
     TraceSet,
     WavelengthSolution,
 )
-from mastpipe.instruments.registry import load_header_map
+from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.pipeline.identify import _arc_lines
-from mastpipe.sim.simulator import drift_x, undrift_x
+from mastpipe.sim.simulator import drift_x, simulate_night, undrift_x
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_master
 from mastpipe.steps.drift import apply_drift, fit_drift, fit_fiber_drift
+from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import build_reference, solve_full_arc
 from mastpipe.steps.wavemodel import anchor_model, model_from_solution
-from tests.conftest import truth_model
+from tests.conftest import truth_model, truth_traceset
 
 N_PIX = 1000
 ANCHOR_LOG_INTENSITY = 2.0
@@ -265,19 +267,128 @@ def test_fit_drift_on_simulated_cal_arc(cal_arc, drift, sim_full_arc):
     assert sorted(per_fiber.index) == sorted(cal_arc.fibers)
     assert per_fiber["usable"].all()
     assert (per_fiber["n_lines"] >= 15).all()
-    expected = truth_shift[per_fiber.index.to_numpy()]
+    expected = truth_shift[[cal_arc.truth.row_of(fiber) for fiber in per_fiber.index]]
     assert np.allclose(per_fiber["shift_px"], expected, atol=MAX_SHIFT_ERROR_PX)
     assert np.allclose(per_fiber["stretch"], truth_stretch, atol=5e-5)
     for trace in sim_full_arc.traces.by_role("arc"):
         assert per_fiber.loc[trace.index, "y_center"] == pytest.approx(trace.y_center)
         assert drift.shift_at(trace.y_center) == pytest.approx(
-            truth_shift[trace.index], abs=MAX_SHIFT_ERROR_PX
+            truth_shift[cal_arc.truth.row_of(trace.index)], abs=MAX_SHIFT_ERROR_PX
         )
     assert drift.scatter_px <= MAX_SHIFT_ERROR_PX
     assert drift.usable
     assert drift.arc_checksums == (cal_arc.meta.checksum,)
     assert drift.arc_mid_time == cal_arc.meta.mid_time == str(cal_arc.row["mid_time"])
     assert drift.n_pix == sim_full_arc.n_pix
+
+
+GRADIENT_PX = 2.0
+"""Bottom-to-top shift difference of the gradient night at its last frame, px."""
+
+
+@pytest.fixture(scope="module")
+def gradient_night(tmp_path_factory, survey_layout, mg_lines) -> SimpleNamespace:
+    """A night with a 2 px drift gradient across the detector (default jitter): its full arc
+    taken to a reference from truth anchors, its calibration-fiber arc to line tables, both
+    through the pipeline's own ``_arc_lines`` on the truth traces."""
+    effective = build_effective(load_instrument("highspec"), "Mg", "main", layout="survey45")
+    night_dir = tmp_path_factory.mktemp("gradient_night")
+    truth = simulate_night(
+        effective,
+        survey_layout,
+        mg_lines,
+        night_dir,
+        seed=5,
+        n_bias=3,
+        n_dark=1,
+        n_flat=1,
+        n_cal_arc=1,
+        n_science=1,
+        drift_gradient_px=GRADIENT_PX,
+    )
+    detector = effective.detector
+    refs = scan_folder(night_dir, "highspec", load_header_map("highspec"))
+    by_type: dict[str, list[Frame]] = {}
+    for ref in refs:
+        if ref.meta.exposure_type in ("bias", "background"):
+            by_type.setdefault(ref.meta.exposure_type, []).append(load_frame(ref, detector))
+    masters = {kind: build_master(frames, kind, CalibParams()) for kind, frames in by_type.items()}
+    frames = truth.frames
+    full = frames.loc[frames["arc_kind"] == "full"].iloc[0]
+    cal = frames.loc[frames["arc_kind"] == "calfiber"].iloc[0]
+    traces = truth_traceset(truth, tuple(truth.extras["shape"]))
+
+    def lines_of(row):
+        path = night_dir / str(row["file"])
+        return _arc_lines(path, effective, survey_layout, night_dir, masters, traces)
+
+    full_lines = lines_of(full)
+    geom = grating_geometry(effective.geometry, detector.pixel_size_um)
+    cat_wl, cat_sp = catalogue_arrays(mg_lines, usable_only=True)
+    bright = np.isin(truth.lines_nm, cat_wl) & truth.lines_on_chip
+    bright &= truth.line_logI > ANCHOR_LOG_INTENSITY
+    first, last = np.flatnonzero(bright)[[0, -1]]
+    row0 = truth.row_of(0)
+    pairs = [(float(truth.lines_nm[i]), float(truth.line_pixels[row0][i])) for i in (first, last)]
+    solutions = solve_full_arc(
+        full_lines.tables,
+        full_lines.fluxes,
+        traces,
+        anchor_model(pairs, geom, int(truth.extras["n_pix"])),
+        cat_wl,
+        cat_sp,
+        effective.params.wavecal,
+    )
+    reference = build_reference(
+        "highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",)
+    )
+    cal_lines = lines_of(cal)
+    arc_fibers = [trace.index for trace in traces.by_role("arc")]
+    return SimpleNamespace(
+        truth=truth,
+        traces=traces,
+        reference=reference,
+        tables={fiber: cal_lines.tables[fiber] for fiber in arc_fibers},
+        meta=cal_lines.frame.meta,
+        row=cal,
+        params=effective.params.drift,
+    )
+
+
+def test_fit_drift_follows_a_y_gradient(gradient_night):
+    """The pipeline's drift model follows a shift that varies across the detector: fitted
+    against the night's own reference, ``shift_at(y_i)`` matches the simulator's shift at
+    every arc fiber's row and its slope in ``y`` has the planted sign and size. A model
+    flat in ``y`` (``degree = 0``) misses the outer fibers, which is what makes this test
+    sensitive to a drift step that ignores ``y`` or applies the drift at the wrong row."""
+    night = gradient_night
+    truth = night.truth
+    gradient = float(night.row["gradient_px"])
+    assert gradient > 0.5  # the cal arc is late enough for the gradient to have grown
+    shifts = truth.trace_shifts(str(night.row["file"]))
+    arc = night.traces.by_role("arc")
+    expected = np.array([shifts[truth.row_of(t.index)] for t in arc])
+    ys = np.array([t.y_center for t in arc])
+    assert np.ptp(expected) > 10 * MAX_SHIFT_ERROR_PX
+
+    drift = fit_drift(night.tables, night.reference, night.traces, night.meta, night.params)
+    assert drift.usable and night.params.degree == 1
+    fitted = np.array([drift.shift_at(y) for y in ys])
+    np.testing.assert_allclose(fitted, expected, atol=MAX_SHIFT_ERROR_PX)
+    ny = truth.extras["shape"][0]
+    slope = (fitted[-1] - fitted[0]) / (ys[-1] - ys[0])
+    assert slope == pytest.approx(gradient / ny, rel=0.1)  # positive: top drifts further
+
+    # the same fit with the configuration forcing a drift model flat in y
+    overrides = [{"drift": {"degree": 0}}]
+    flat_params = build_effective(
+        load_instrument("highspec"), "Mg", "main", overrides=overrides, layout="survey45"
+    ).params.drift
+    assert flat_params.degree == 0
+    flat = fit_drift(night.tables, night.reference, night.traces, night.meta, flat_params)
+    flat_fit = np.array([flat.shift_at(y) for y in ys])
+    assert np.ptp(flat_fit) == 0.0
+    assert np.max(np.abs(flat_fit - expected)) > 5 * MAX_SHIFT_ERROR_PX
 
 
 def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_arc):
@@ -298,7 +409,8 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     x = np.arange(n_pix, dtype=float)
     dips = np.array(truth.extras["absorption_nm"], dtype=float)
     for trace in sim_full_arc.traces.by_role("science"):
-        model, shift = truth_model(truth, trace.index, geom, n_pix), shifts[trace.index]
+        model = truth_model(truth, trace.index, geom, n_pix)
+        shift = shifts[truth.row_of(trace.index)]
         lam_true = model.wavelength(undrift_x(x, shift, stretch, n_pix))
         dispersion = model.dispersion(x)
         x_dips = drift_x(model.pixel(dips), shift, stretch, n_pix)

@@ -493,8 +493,10 @@ def test_drift_varies_linearly_with_trace_row(
 def test_swapped_fibers_swap_their_spectra_not_the_truth(
     tmp_path, highspec_effective, survey_layout, mg_lines
 ):
-    """``swap_fibers=(a, b)`` lights trace ``a`` with trace ``b``'s spectrum and vice versa;
-    the truth keeps every trace's own map, so the truth comparison flags exactly those two."""
+    """``swap_fibers=(a, b)`` (layout trace ids) lights fiber ``a`` with fiber ``b``'s
+    spectrum and vice versa; the truth keeps every trace's own map, so the truth comparison
+    flags exactly those two. On a layout whose ids are not its row positions the ids, not
+    the rows, are swapped, and ``row_of`` finds a fiber's truth row."""
     kwargs = dict(seed=1, n_bias=1, n_dark=1, n_flat=1, n_cal_arc=0, n_science=0)
     kwargs["dispersion_jitter_px"] = 3.0
     plain = simulate_night(highspec_effective, survey_layout, mg_lines, tmp_path / "a", **kwargs)
@@ -523,4 +525,20 @@ def test_swapped_fibers_swap_their_spectra_not_the_truth(
             tmp_path / "c",
             swap_fibers=(1, 1),
             **kwargs,
+        )
+    # ids that are not row positions: the same two fibers swapped by id give the same frames
+    renumbered = survey_layout.assign(trace=survey_layout["trace"] + 100)
+    by_id = simulate_night(
+        highspec_effective, renumbered, mg_lines, tmp_path / "d", swap_fibers=(101, 103), **kwargs
+    )
+    assert by_id.row_of(103) == 3 and swapped.row_of(3) == 3
+    with pytest.raises(KeyError):
+        by_id.row_of(3)
+    for name in by_id.frames.file:
+        np.testing.assert_array_equal(
+            fits.getdata(tmp_path / "d" / name), fits.getdata(out_dir / name), err_msg=name
+        )
+    with pytest.raises(ValueError, match="swap_fibers"):
+        simulate_night(
+            highspec_effective, renumbered, mg_lines, tmp_path / "e", swap_fibers=(1, 3), **kwargs
         )
