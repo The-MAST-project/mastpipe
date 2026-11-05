@@ -18,7 +18,8 @@ reduces every ``(camera, configuration)`` group in turn:
    and orientation) is recorded in ``failed`` and left out. A kind the night lacks, or
    none of whose frames survive, is taken from the library when it holds one that
    applies;
-1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
+
+   1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
    control software writes for arcs and science frames alike) is calibrated with the
    masters (no cosmic-ray flagging) and resolved from its content
    (:func:`~mastpipe.steps.classify.classify_light`) into an arc or a science frame, its
@@ -28,6 +29,7 @@ reduces every ``(camera, configuration)`` group in turn:
    manifest row's ``exposure_type`` wins: such a frame is never ``light``. The rule is in
    the QC of every arc and science frame and, when it came from the content, in the
    product's provenance steps;
+
 2. **traces** — found on the flat master, or on a full arc with the percentile collapse
    when there is no flat, matched to the layout preset (``options.layout``, else the
    frames' ``fiber_preset`` from a manifest, else the instrument's default) and keyed by
