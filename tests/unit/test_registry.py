@@ -10,6 +10,7 @@ from mastpipe.instruments.registry import (
     LAYOUT_COLUMNS,
     LINE_TABLE_COLUMNS,
     instrument_dir,
+    layout_hash,
     list_instruments,
     load_anchor_trace,
     load_anchors,
@@ -117,6 +118,22 @@ def test_extra_grating_file_is_picked_up(tmp_path, monkeypatch):
     inst = registry.load_instrument("highspec")
     assert set(inst.configurations) >= {"Mg", "Halpha"}
     assert inst.configurations["Halpha"].geometry.central_wavelength_nm == pytest.approx(656.3)
+
+
+def test_layout_hash_follows_the_csv_bytes(tmp_path, monkeypatch):
+    first = layout_hash("highspec", "survey45")
+    assert len(first) == 12 and int(first, 16) >= 0
+    assert first == layout_hash("highspec", "survey45")
+    assert first != layout_hash("highspec", "lab3")
+    copy = tmp_path / "highspec"
+    shutil.copytree(registry.instrument_dir("highspec"), copy)
+    monkeypatch.setattr(registry, "instrument_dir", lambda name: copy)
+    assert layout_hash("highspec", "survey45") == first
+    with (copy / "layouts" / "survey45.csv").open("ab") as handle:
+        handle.write(b"\n")
+    assert layout_hash("highspec", "survey45") != first
+    with pytest.raises(KeyError):
+        layout_hash("highspec", "nope")
 
 
 def test_anchor_trace_loads_with_default():

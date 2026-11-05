@@ -82,7 +82,9 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
         default="continue",
         help="record a frame's failure and go on (default), or stop at the first",
     )
-    parser.add_argument("--force", action="store_true", help="reduce products that exist")
+    parser.add_argument(
+        "--force", action="store_true", help="reduce products that exist and rebuild masters"
+    )
     parser.add_argument(
         "--reference", metavar="ID", help="use this reference solution instead of the one valid"
     )

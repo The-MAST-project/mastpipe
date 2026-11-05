@@ -21,7 +21,8 @@ from astropy.io import fits
 
 from mastpipe.cli import main
 from mastpipe.config.loader import build_effective
-from mastpipe.instruments.registry import load_instrument
+from mastpipe.instruments import registry
+from mastpipe.instruments.registry import layout_hash, load_instrument
 from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import (
     combined_name,
@@ -336,6 +337,110 @@ def test_quicklook_idempotent_then_reduced_again(
     forced = run_quicklook(folder, out, options(SHORT_AGE, force=True))
     assert forced.failed == []
     assert not any("already reduced" in item for item in forced.skipped)
+
+
+MASTERS = ("bias", "dark", "background", "flat")
+
+
+def master_files(out: Path) -> dict[str, int]:
+    """The master files of the library with their modification times (ns)."""
+    calib = out / "calib"
+    names = [entry["path"] for entry in CalibLibrary(calib).list() if entry["kind"] in MASTERS]
+    return {name: (calib / name).stat().st_mtime_ns for name in names}
+
+
+def config_hashes(out: Path) -> set[str]:
+    return {read_spectra(path)[1].config_hash for path in spec_products(out)}
+
+
+def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
+    tmp_path, night, survey_layout, mg_lines, identified, monkeypatch
+):
+    """Every part of the idempotence key reduces the night again when it changes: the time
+    policy (in the configuration hash), the layout CSV, the reference under the same
+    identifier and the masters (rebuilt by ``force``); otherwise masters are reused."""
+    folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
+    out = tmp_path / "out"
+    first = run_quicklook(folder, out, options())
+    assert first.failed == [] and first.reduced_again == []
+    sources = sorted(read_spectra(path)[0].meta.source for path in spec_products(out))
+    assert len(sources) == N_SCIENCE
+    index = (out / "calib" / "index.json").read_text(encoding="utf-8")
+    masters = master_files(out)
+    assert {name.rsplit("_", 1)[1] for name in masters} >= {"bias.fits", "flat.fits"}
+    for path in spec_products(out):
+        prov = read_spectra(path)[1]
+        assert prov.layout_hash == layout_hash("highspec", "survey45")
+        assert prov.masters_hash is not None and len(prov.masters_hash) == 12
+        assert prov.reference_hash == identified.ref.hash
+
+    # (a) nothing changed: nothing is reduced again and the masters are reused untouched
+    again = run_quicklook(folder, out, options())
+    assert again.failed == [] and again.reduced_again == []
+    assert sum("already reduced" in item for item in again.skipped) == N_SCIENCE
+    assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
+    assert master_files(out) == masters
+    assert not any(path.name in masters for path in again.products)
+
+    # (b) another time policy is another configuration: every science frame again
+    plain = config_hashes(out)
+    nearest = run_quicklook(folder, out, options(time_policy="nearest"))
+    assert nearest.failed == [] and sorted(nearest.reduced_again) == sources
+    assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
+    back = run_quicklook(folder, out, options())
+    assert sorted(back.reduced_again) == sources and config_hashes(out) == plain
+
+    # (c) a byte appended to the layout CSV
+    copy = tmp_path / "instrument" / "highspec"
+    shutil.copytree(registry.instrument_dir("highspec"), copy)
+    with (copy / "layouts" / "survey45.csv").open("ab") as handle:
+        handle.write(b"\n")
+    with monkeypatch.context() as patch:
+        patch.setattr(registry, "instrument_dir", lambda name: copy)
+        edited = run_quicklook(folder, out, options())
+        assert edited.failed == [] and sorted(edited.reduced_again) == sources
+        assert all(
+            read_spectra(path)[1].layout_hash == layout_hash("highspec", "survey45")
+            for path in spec_products(out)
+        )
+    assert sorted(run_quicklook(folder, out, options()).reduced_again) == sources
+
+    # (d) the reference re-solved under the same identifier, with another hash
+    ref = identified.ref
+    solutions = {}
+    for fiber, solution in ref.solutions.items():
+        params = np.array(solution.params, dtype=float)
+        params[0] += 0.01
+        solutions[fiber] = replace(solution, params=params)
+    resolved = build_reference(
+        ref.instrument,
+        ref.configuration,
+        ref.fiber_preset,
+        solutions,
+        ref.created,
+        ref.source_checksums,
+    )
+    assert resolved.identifier == ref.identifier and resolved.hash != ref.hash
+    CalibLibrary(out / "calib").add_reference(resolved, identified.prov, "main")
+    rehashed = run_quicklook(folder, out, options())
+    assert rehashed.failed == [] and sorted(rehashed.reduced_again) == sources
+    assert all(read_spectra(path)[1].reference_hash == resolved.hash for path in spec_products(out))
+    index = (out / "calib" / "index.json").read_text(encoding="utf-8")
+    assert master_files(out) == masters
+
+    # (e) --force rebuilds the masters (and so reduces everything again)
+    forced = run_quicklook(folder, out, options(force=True))
+    assert forced.failed == [] and sorted(forced.reduced_again) == sources
+    rebuilt = master_files(out)
+    assert set(rebuilt) == set(masters)
+    assert all(rebuilt[name] != masters[name] for name in masters)
+    assert {path.name for path in forced.products} >= set(masters)
+    # and the next plain run reuses the rebuilt masters
+    index = (out / "calib" / "index.json").read_text(encoding="utf-8")
+    last = run_quicklook(folder, out, options())
+    assert last.failed == [] and last.reduced_again == []
+    assert master_files(out) == rebuilt
+    assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
 
 
 def test_quicklook_interpolate_blends_the_two_arcs(

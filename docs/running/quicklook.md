@@ -61,7 +61,7 @@ Per camera and grating found in the folder:
   With `raise` the first error stops the run with its traceback.
 
 `--force`
-: Reduce products that already exist.
+: Reduce products that already exist, and rebuild masters the library holds.
 
 `--set group.key=value`
 : Override any step parameter for this run, e.g. `--set drift.max_age_hours=24`
@@ -71,9 +71,12 @@ Per camera and grating found in the folder:
 ## Idempotence and re-reduction
 
 A science product on disk is skipped when its **key** matches the run's: the
-input frame's checksum, the configuration hash, the reference identifier, the
-sorted checksums of the drift arcs it would use, and the layout preset. A
-product whose key changed is reduced again. The case this is built for: the
+input frame's checksum, the configuration hash (overrides and `--time-policy`
+included), the reference solution's hash, the sorted checksums of the drift
+arcs it would use, the layout preset and the hash of its CSV file, a hash of
+the masters used and the frame's time zone. A product whose key changed is
+reduced again. Masters the calibration library already holds, stacked from
+the same frames, are reused rather than rebuilt; `--force` rebuilds them. The case this is built for: the
 first science frames of a night are reduced before any calibration-fiber arc
 exists and get status `reference`; when the night's first arc lands and the
 quick-look runs again, those frames are reduced once more and become

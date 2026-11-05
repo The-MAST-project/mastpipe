@@ -9,11 +9,14 @@ reduces every ``(camera, configuration)`` group in turn:
 1. **masters** — bias, dark and background frames are stacked (dark and background one
    exposure time at a time, the largest batch serving the night), the flats calibrated
    and stacked, and every master is added to the calibration library (``out/calib`` or
-   ``options.library``). The frames are loaded one at a time: one that cannot be read, is
-   not binned as the group's science frames (the most common binning among them) or has
-   another shape than the detector's (after crop and orientation) is recorded in
-   ``failed`` and left out. A kind the night lacks, or none of whose frames survive, is
-   taken from the library when it holds one that applies;
+   ``options.library``) — unless the library already holds one stacked from the same
+   frames (and, for the flat, calibrated with the same masters), which is reused rather
+   than rebuilt and overwritten; ``options.force`` rebuilds. The frames are loaded one at
+   a time: one that cannot be read, is not binned as the group's science frames (the
+   most common binning among them) or has another shape than the detector's (after crop
+   and orientation) is recorded in ``failed`` and left out. A kind the night lacks, or
+   none of whose frames survive, is taken from the library when it holds one that
+   applies;
 1b. **light frames** — a frame whose header type is the provisional ``light`` (what the
    control software writes for arcs and science frames alike) is calibrated with the
    masters (no cosmic-ray flagging) and resolved from its content
@@ -50,11 +53,15 @@ reduces every ``(camera, configuration)`` group in turn:
    pixel grid than the frame's is refused with ``ValueError``.
 
 A science product is identified by its idempotence key — the frame's checksum, the
-configuration hash, the reference identifier, the sorted drift-arc checksums and the
-layout preset (``MPLAYOUT`` in the product header); a product on disk with the same key is
-skipped unless ``options.force``. A product whose key changed (a ``reference`` product
-whose exposure now has a drift arc, a ``nominal`` one once a reference exists) is reduced
-again and listed in ``reduced_again``.
+configuration hash (which covers every override, ``options.time_policy`` included), the
+reference solution's hash (``MPWREFH``), the sorted drift-arc checksums, the layout preset
+and the hash of its CSV file (``MPLAYOUT``, ``MPLAYH``), the hash of the masters' file
+checksums (``MPMKH``) and the frame's time zone (``MPTZ``); a product on disk with the same
+key is skipped unless ``options.force``. A product whose key changed (a ``reference``
+product whose exposure now has a drift arc, a ``nominal`` one once a reference exists, an
+edited layout, a reference re-solved under the same identifier, a rebuilt master, another
+time policy) is reduced again and listed in ``reduced_again``; one written before a part
+of the key existed is reduced again once.
 
 Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is logged and
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
@@ -67,6 +74,7 @@ removed when it ends.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -98,12 +106,18 @@ from mastpipe.core.model import (
     TraceSet,
 )
 from mastpipe.core.times import to_utc, utc_iso
-from mastpipe.instruments.registry import load_header_map, load_instrument, load_layout
+from mastpipe.instruments.registry import (
+    layout_hash,
+    load_header_map,
+    load_instrument,
+    load_layout,
+)
 from mastpipe.io import products
 from mastpipe.io.ingest import (
     ASSUMED_UTC,
     apply_manifest,
     expected_shape,
+    file_checksum,
     load_frame,
     read_manifest,
     scan_folder,
@@ -164,8 +178,10 @@ class RunOptions:
     preset (default: the frames' ``fiber_preset`` from a manifest, else the instrument's
     default);
     ``reference_id`` pins the reference solution instead of the one valid at each frame's
-    time; ``time_policy`` overrides ``params.drift.time_policy``; ``library`` is the
-    calibration library folder (default ``out_dir/calib``).
+    time; ``time_policy`` overrides ``params.drift.time_policy`` (as the last override, so
+    the configuration hash covers it); ``force`` rebuilds masters and science products that
+    are up to date; ``library`` is the calibration library folder (default
+    ``out_dir/calib``).
     """
 
     instrument: str
@@ -213,7 +229,11 @@ class _Group:
     near_time: str | None
     timezone: str | None = None
     """How the group's frame times were read (:func:`_timezone` of their metadata)."""
+    layout_hash: str | None = None
+    """:func:`~mastpipe.instruments.registry.layout_hash` of the group's preset."""
     masters: dict[str, tuple[MasterCalib, Path]] = field(default_factory=dict)
+    masters_hash: str | None = None
+    """:func:`_masters_hash` of ``masters``, set once they are chosen."""
     calib: CalibrationSet | None = None
     traceset: TraceSet | None = None
     traces_path: Path | None = None
@@ -231,10 +251,9 @@ class _Group:
 
     @property
     def drift_params(self) -> DriftParams:
-        policy = self.options.time_policy
-        if policy is None:
-            return self.params.drift
-        return self.params.drift.model_copy(update={"time_policy": policy})
+        """``params.drift``; ``options.time_policy`` is already in it (and so in the
+        configuration hash) as an override of the effective configuration."""
+        return self.params.drift
 
     @property
     def spec_dir(self) -> Path:
@@ -434,12 +453,50 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
     return frames
 
 
+MASTERS_HASH_LENGTH = 12
+"""Hex characters kept of the SHA-256 in :func:`_masters_hash`."""
+
+
+def _masters_hash(masters: dict[str, tuple[MasterCalib, Path]]) -> str | None:
+    """SHA-256 over the sorted file checksums of ``masters``' files (first
+    :data:`MASTERS_HASH_LENGTH` hex characters), part of a science product's idempotence
+    key; ``None`` without masters."""
+    if not masters:
+        return None
+    checksums = sorted(file_checksum(path) for _, path in masters.values())
+    return hashlib.sha256("\n".join(checksums).encode()).hexdigest()[:MASTERS_HASH_LENGTH]
+
+
+def _library_master(
+    group: _Group, kind: str, frames: list[Frame], calibrations: list[str]
+) -> tuple[MasterCalib, Path] | None:
+    """The library's master of ``kind`` stacked from exactly ``frames`` (by checksum) with
+    exactly ``calibrations`` applied, to reuse instead of building it again; ``None``
+    under ``options.force`` or without one."""
+    if group.options.force:
+        return None
+    checksums = [frame.meta.checksum for frame in frames]
+    found = group.library.find_by_inputs(kind, checksums, group.effective.camera)
+    if found is None:
+        return None
+    stored = Provenance.from_header(fits.getheader(found[1])).calibrations
+    if stored != calibrations:
+        log.info("master %s in the library was calibrated with %s; building it again", kind, stored)
+        return None
+    log.info("master %s reused from the library: %s", kind, found[1].name)
+    return found
+
+
 def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     """Stage 1: stack the night's masters into the library and build the calibration set.
-    Every frame goes through :func:`_usable_frames`; a kind none of whose frames survive is
-    sought in the library."""
+    Every frame goes through :func:`_usable_frames`; a master the library already holds,
+    stacked from the same surviving frames (and, for the flat, calibrated with the same
+    masters, none of them built in this run), is reused rather than built and overwritten
+    unless ``options.force``; a kind none of whose frames survive is sought in the library.
+    Sets ``group.masters`` and ``group.masters_hash``."""
     detector, params, library = group.effective.detector, group.params, group.library
     chosen: dict[str, tuple[MasterCalib, Path]] = {}
+    built = False
     for kind in MASTER_KINDS:
         refs = by_type.get(kind, [])
         batches = [refs] if kind == "bias" and refs else _by_exposure(refs)
@@ -448,12 +505,24 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             frames = _usable_frames(group, batch, calibrate=False)
             if not frames:
                 continue
-            master = build_master(frames, kind, params.calib)
+            found = _library_master(group, kind, frames, [])
+            if found is not None:
+                master, path = found
+            else:
+                master = build_master(frames, kind, params.calib)
+                steps = [f"stack {params.calib.stack_method} of {len(frames)} {kind} frames"]
+                prov = _master_provenance(group, frames, [], steps)
+                path = library.add(master, prov, frames[0].meta)
+                group.summary.products.append(path)
+                built = True
+                log.info(
+                    "master %s: %d frames at %s s -> %s",
+                    kind,
+                    len(frames),
+                    master.validity.get("exposure_time"),
+                    path.name,
+                )
             exposure = master.validity.get("exposure_time")
-            steps = [f"stack {params.calib.stack_method} of {len(frames)} {kind} frames"]
-            path = library.add(master, _master_provenance(group, frames, [], steps), frames[0].meta)
-            group.summary.products.append(path)
-            log.info("master %s: %d frames at %s s -> %s", kind, len(frames), exposure, path.name)
             score = (len(frames), float(exposure or 0.0))
             if best is None or score > best[0]:
                 best = (score, master, path)
@@ -484,7 +553,10 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     if flats:
         batch = max(_by_exposure(flats), key=lambda b: (len(b), b[0].meta.exposure_time or 0.0))
         frames = _usable_frames(group, batch, calibrate=True)
-    if frames:
+    found = None if not frames or built else _library_master(group, "flat", frames, applied)
+    if found is not None:
+        chosen["flat"] = found
+    elif frames:
         subtract = params.calib.flat_subtract_background and background is not None
         master = build_master(frames, "flat", params.calib)
         steps = calibration_steps(group.calib, float(frames[0].meta.exposure_time or 0.0), subtract)
@@ -509,6 +581,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             chosen["flat"] = found
             log.info("master flat from the library: %s", found[1].name)
     group.masters = chosen
+    group.masters_hash = _masters_hash(chosen)
 
 
 # ------------------------------------------------------------------------------- traces
@@ -969,9 +1042,12 @@ def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
     key = (
         prov.inputs[0] if prov.inputs else None,
         prov.config_hash,
-        prov.reference_id,
+        prov.reference_hash,
         tuple(sorted(prov.drift_arcs)),
         prov.layout,
+        prov.layout_hash,
+        prov.masters_hash,
+        prov.timezone,
     )
     return key, prov.wavelength_status
 
@@ -983,12 +1059,16 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
     arcs = [] if reference is None else _arcs_for(group.arcs, reference)
     pairs = [] if reference is None else pair_arcs(meta, arcs, reference, group.drift_params)
     drift_arcs = sorted({c for model, _ in pairs for c in model.arc_checksums})
+    reference_hash = None if reference is None else (reference.hash or None)
     key = (
         meta.checksum,
         group.cfg_hash,
-        None if reference is None else reference.identifier,
+        reference_hash,
         tuple(drift_arcs),
         group.preset,
+        group.layout_hash,
+        group.masters_hash,
+        meta.timezone,
     )
     path = group.spec_dir / products.product_name(meta, "spec")
     stored = _stored_key(path)
@@ -1047,7 +1127,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         flux_status=flux_status(spectra),
         telluric_status=telluric_status(spectra),
         reference_id=None if reference is None else reference.identifier,
-        reference_hash=None if reference is None else (reference.hash or None),
+        reference_hash=reference_hash,
         drift_arcs=tuple(drift_arcs),
     )
     prov = Provenance(
@@ -1064,6 +1144,8 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         steps=steps,
         layout=group.preset,
         timezone=meta.timezone,
+        layout_hash=group.layout_hash,
+        masters_hash=group.masters_hash,
     )
     products.write_spectra(path, es, prov, drift=drift, weights=weights)
     group.summary.products.append(path)
@@ -1181,7 +1263,11 @@ def _run_group(
         if presets:
             log.warning("frames carry presets %s; using the default %s", sorted(presets), preset)
     layout = load_layout(instrument.name, preset)
-    effective = build_effective(instrument, configuration, camera, options.overrides, layout=preset)
+    overrides = list(options.overrides)
+    if options.time_policy is not None:
+        # an override like any --set, so that the configuration hash covers it
+        overrides.append({"drift": {"time_policy": options.time_policy}})
+    effective = build_effective(instrument, configuration, camera, overrides, layout=preset)
     by_type: dict[str, list[FrameRef]] = defaultdict(list)
     for ref in refs:
         by_type[ref.meta.exposure_type].append(ref)
@@ -1207,6 +1293,7 @@ def _run_group(
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,
         timezone=_timezone(ref.meta for ref in refs),
+        layout_hash=layout_hash(instrument.name, preset),
     )
     log.info(
         "group %s/%s: %s, layout %s, config %s",

@@ -28,6 +28,7 @@ re-created, which is acceptable for finding calibrations.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from mastpipe.core.model import MasterCalib, ReferenceSolution
 from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io.atomic import atomic_write, locked
+from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import (
     product_name,
     read_master,
@@ -125,8 +127,10 @@ class CalibLibrary:
 
         The entry records the master's validity (``camera``, ``binning``, ``readout_mode``,
         ``detector_temperature``, ``mid_time``, ``exposure_time``), the instrument and
-        configuration of ``meta_for_name`` and the number of frames. A master of the same
-        file name replaces the earlier entry.
+        configuration of ``meta_for_name``, the number of frames, the sorted checksums of
+        the frames it was stacked from (``inputs``, from ``prov.inputs``, which the file's
+        header carries too) and the checksum of the written file (``file_checksum``). A
+        master of the same file name replaces the earlier entry.
         """
         name = product_name(meta_for_name, master.kind)
         path = self.root / name
@@ -145,6 +149,8 @@ class CalibLibrary:
             "mid_time": validity.get("mid_time"),
             "exposure_time": validity.get("exposure_time"),
             "n_frames": int(master.n_frames),
+            "inputs": sorted(str(checksum) for checksum in prov.inputs),
+            "file_checksum": file_checksum(path),
         }
         self._replace("path", name, entry)
         return path
@@ -211,6 +217,29 @@ class CalibLibrary:
             )
         path = self.root / str(chosen["path"])
         return read_master(path)[0], path
+
+    def find_by_inputs(
+        self, kind: str, inputs: Sequence[str], camera: str
+    ) -> tuple[MasterCalib, Path] | None:
+        """The master of ``kind`` and ``camera`` stacked from exactly the frames whose
+        checksums are ``inputs`` (in any order), read back, with its path; ``None`` when the
+        library holds none, when ``inputs`` is empty or when the indexed file is gone. An
+        entry indexed before inputs were recorded never matches. Reads this instance's view
+        of the index without the lock, like :meth:`find`: a master another process added
+        since may be missed (it is then built again, which is only slower).
+        """
+        wanted = sorted(str(checksum) for checksum in inputs)
+        if not wanted:
+            return None
+        for entry in reversed(self._entries):
+            if entry.get("kind") != kind or entry.get("camera") != camera:
+                continue
+            if entry.get("inputs") != wanted:
+                continue
+            path = self.root / str(entry["path"])
+            if path.is_file():
+                return read_master(path)[0], path
+        return None
 
     # ------------------------------------------------------------------------ references
 

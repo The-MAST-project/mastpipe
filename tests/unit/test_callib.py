@@ -11,6 +11,7 @@ import pytest
 
 from mastpipe.core.model import LINE_COLUMNS, FrameMeta, MasterCalib, WavelengthSolution
 from mastpipe.io.atomic import locked
+from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import read_master, reference_name
 from mastpipe.pipeline.callib import INDEX_FILE, LOCK_FILE, CalibLibrary
 from mastpipe.pipeline.provenance import Provenance
@@ -118,6 +119,39 @@ def test_callib_add_writes_master_and_index(tmp_path):
     assert len(CalibLibrary(tmp_path / "calib").list()) == 1
     assert [entry["kind"] for entry in library.list(kind="bias")] == ["bias"]
     assert library.list(kind="flat") == []
+
+
+def test_find_by_inputs_matches_sorted_checksums(tmp_path):
+    library = CalibLibrary(tmp_path / "calib")
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    prov = Provenance("0.0.1", "cfg123", ["c3", "c1", "c2"], [])
+    path = library.add(master, prov, meta)
+    entry = library.list(kind="bias")[0]
+    assert entry["inputs"] == ["c1", "c2", "c3"]
+    assert entry["file_checksum"] == file_checksum(path)
+
+    # the same frames in any order find it, read back with its path
+    found = library.find_by_inputs("bias", ["c2", "c3", "c1"], "main")
+    assert found is not None
+    back, found_path = found
+    assert found_path == path and float(back.data[0, 0]) == 500.0
+    # the index as written, seen by a fresh instance, finds it too
+    assert CalibLibrary(tmp_path / "calib").find_by_inputs("bias", ["c1", "c2", "c3"], "main")
+    # another set of frames, another kind or another camera does not
+    assert library.find_by_inputs("bias", ["c1", "c2"], "main") is None
+    assert library.find_by_inputs("bias", ["c1", "c2", "c3", "c4"], "main") is None
+    assert library.find_by_inputs("dark", ["c1", "c2", "c3"], "main") is None
+    assert library.find_by_inputs("bias", ["c1", "c2", "c3"], "other") is None
+    # an empty set of frames never matches
+    assert library.find_by_inputs("bias", [], "main") is None
+
+
+def test_find_by_inputs_ignores_a_missing_file(tmp_path):
+    library = CalibLibrary(tmp_path / "calib")
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    path = library.add(master, Provenance("0.0.1", "cfg123", ["c1"], []), meta)
+    path.rename(tmp_path / "moved.fits")
+    assert library.find_by_inputs("bias", ["c1"], "main") is None
 
 
 def test_callib_find_matches_keys_temperature_and_time(tmp_path):

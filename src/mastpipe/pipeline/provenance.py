@@ -7,9 +7,11 @@ eight characters, so lists are numbered schemes with a count card: ``MPNIN`` /
 scalar cards are ``MPVER`` (pipeline version), ``MPCFGH`` (effective-configuration hash),
 ``MPWSTAT`` / ``MPFSTAT`` / ``MPTSTAT`` (wavelength, flux and telluric status), ``MPWREF``
 and ``MPWREFH`` (reference-solution identifier and hash), ``MPLAYOUT`` (the fiber layout
-preset the product was reduced with) and ``MPTZ`` (the time zone of the frame's clock, as
-ingest recorded it: ``utc``, ``assumed-utc`` or an IANA zone name). Counts are written as
-integers, everything else as strings; an unset value is the string ``"none"``.
+preset the product was reduced with), ``MPLAYH`` (the hash of that preset's CSV file),
+``MPMKH`` (the hash of the masters' file checksums) and ``MPTZ`` (the time zone of the
+frame's clock, as ingest recorded it: ``utc``, ``assumed-utc`` or an IANA zone name).
+Counts are written as integers, everything else as strings; an unset value is the string
+``"none"``.
 
 :meth:`Provenance.to_header_cards` and :meth:`Provenance.from_header` are each other's
 inverse. Nothing here touches a file.
@@ -48,6 +50,11 @@ def _from_card(value: Any) -> str | None:
     return None if text == NONE else text
 
 
+def _optional(header: Any, key: str) -> str | None:
+    """A scalar card added after the first products were written: unset when absent."""
+    return _from_card(header[key]) if key in header else None
+
+
 @dataclass
 class Provenance:
     """What a product was made from and what was applied to it.
@@ -74,6 +81,8 @@ class Provenance:
     steps: list[str] = field(default_factory=list)
     layout: str | None = None
     timezone: str | None = None
+    layout_hash: str | None = None
+    masters_hash: str | None = None
 
     def __post_init__(self) -> None:
         _check_choice("wavelength_status", self.wavelength_status, WAVELENGTH_STATUSES)
@@ -97,6 +106,8 @@ class Provenance:
             ("MPWREFH", _to_card(self.reference_hash), "reference solution hash"),
             ("MPLAYOUT", _to_card(self.layout), "fiber layout preset"),
             ("MPTZ", _to_card(self.timezone), "time zone of the frame's clock"),
+            ("MPLAYH", _to_card(self.layout_hash), "fiber layout file hash"),
+            ("MPMKH", _to_card(self.masters_hash), "hash of the masters' checksums"),
         ]
         for count_key, prefix, digits, attribute, comment in NUMBERED:
             items = getattr(self, attribute)
@@ -112,7 +123,8 @@ class Provenance:
         """The inverse of :meth:`to_header_cards` on a FITS header (or any mapping).
 
         ``KeyError`` when a scalar card or a numbered card the count announces is missing;
-        ``MPLAYOUT`` and ``MPTZ``, added later than the others, read as unset when absent.
+        ``MPLAYOUT``, ``MPTZ``, ``MPLAYH`` and ``MPMKH``, added later than the others, read
+        as unset when absent.
         """
         lists: dict[str, list[str]] = {}
         for count_key, prefix, digits, attribute, _ in NUMBERED:
@@ -130,6 +142,8 @@ class Provenance:
             reference_hash=_from_card(header["MPWREFH"]),
             drift_arcs=lists["drift_arcs"],
             steps=lists["steps"],
-            layout=_from_card(header["MPLAYOUT"]) if "MPLAYOUT" in header else None,
-            timezone=_from_card(header["MPTZ"]) if "MPTZ" in header else None,
+            layout=_optional(header, "MPLAYOUT"),
+            timezone=_optional(header, "MPTZ"),
+            layout_hash=_optional(header, "MPLAYH"),
+            masters_hash=_optional(header, "MPMKH"),
         )
