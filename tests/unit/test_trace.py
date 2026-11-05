@@ -272,7 +272,7 @@ def test_match_layout_with_global_shift_and_missing(night, survey_layout):
     assert matched.shape == traces.shape
     assert len(matched) == 44
     for trace in matched:
-        row = survey_layout.iloc[trace.layout_index]
+        row = survey_layout.set_index("trace").loc[trace.layout_index]
         assert trace.role == row["role"]
         assert trace.telescope == row["telescope"]
         assert trace.aperture == 4.0  # the survey layout fixes the aperture halfwidth
@@ -299,7 +299,7 @@ def test_match_layout_reports_extra_and_copies_aperture(lab3_layout):
     assert [trace.layout_index for trace in matched] == [0, 1, None, 2]
     for trace in matched:
         if trace.layout_index is not None:
-            expected = lab3_layout.iloc[trace.layout_index]["aperture"]
+            expected = lab3_layout.set_index("trace").loc[trace.layout_index, "aperture"]
             assert trace.aperture is None if np.isnan(expected) else trace.aperture == expected
 
 
@@ -498,3 +498,34 @@ def test_trace_source_fallback_order():
     assert trace_source({"flat": [], "arc_full": [arc_a, arc_b]}) == ("arc_full", arc_a)
     assert trace_source({"arc_calfiber": [arc_a], "science": [flat]}) == ("none", None)
     assert trace_source({}) == ("none", None)
+
+
+def test_match_layout_keys_by_trace_column_not_row(survey_traces, survey_layout):
+    """The layout's ``trace`` column is the fiber id: shuffling the layout's rows changes
+    nothing in the keyed traces."""
+    detected = TraceSet(
+        traces=[make_trace(t.index, t.y_center, 799.0) for t in survey_traces],
+        shape=survey_traces.shape,
+    )
+    shuffled = survey_layout.sample(frac=1, random_state=3).reset_index(drop=True)
+    assert shuffled["trace"].tolist() != survey_layout["trace"].tolist()
+    a = layout_indexed(match_layout(detected, survey_layout, 2.0))
+    b = layout_indexed(match_layout(detected, shuffled, 2.0))
+    assert [t.index for t in a] == [t.index for t in b] == list(range(45))
+    assert [t.telescope for t in a] == [t.telescope for t in b]
+    assert [t.role for t in a] == [t.role for t in b] == survey_layout["role"].tolist()
+    assert [t.y_center for t in a] == [t.y_center for t in b]
+
+
+def test_match_layout_reports_missing_as_trace_ids(lab3_layout):
+    """Layout ids that are not row positions: ``layout_index`` and ``missing`` carry the
+    ids, in the layout's own numbering, whatever the row order."""
+    renumbered = lab3_layout.assign(trace=lab3_layout["trace"] + 10).iloc[::-1]
+    renumbered = renumbered.reset_index(drop=True)  # rows now hold ids 12, 11, 10
+    nominal = lab3_layout["y_nominal"].to_numpy()
+    traces = [make_trace(i, y, 799.0) for i, y in enumerate([nominal[0], nominal[2]])]
+    matched = match_layout(TraceSet(traces=traces, shape=(398, 1598)), renumbered, 3.0)
+    assert [t.layout_index for t in matched] == [10, 12]
+    assert matched.missing == (11,)
+    keyed = layout_indexed(matched)
+    assert [t.index for t in keyed] == [10, 12] and keyed.missing == (11,)

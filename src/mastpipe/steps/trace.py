@@ -354,10 +354,10 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
     reaches the alias. Each layout row then takes the detected trace closest to
     ``y_nominal + layout_shift`` within ``tolerance``, one-to-one, the smallest distances
     first. Matched traces receive ``role``, ``telescope``, ``layout_index`` (the row's
-    position in ``layout``) and ``aperture`` (``None`` when the layout leaves it unset);
-    unmatched ones keep ``None`` in all four. ``missing`` lists the layout indices without
-    a detection, ``extra`` the trace indices without a layout row. The input traces are
-    not modified.
+    ``trace`` id, the fiber's identity whatever the row order) and ``aperture`` (``None``
+    when the layout leaves it unset); unmatched ones keep ``None`` in all four. ``missing``
+    lists the ``trace`` ids of the rows without a detection, in row order, ``extra`` the
+    trace indices without a layout row. The input traces are not modified.
     """
     detected = np.array([trace.y_center for trace in traceset.traces], dtype=float)
     nominal = layout["y_nominal"].to_numpy(dtype=float)
@@ -370,6 +370,7 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
         if max_shift > 0:
             shift = -comb_shift(detected, nominal, max_shift, width=float(tolerance))
     predicted = nominal + shift
+    ids = layout["trace"].to_numpy(dtype=int)
 
     pairs = sorted(
         (abs(y - predicted[i]), i, j)
@@ -398,11 +399,11 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
                 trace,
                 role=_layout_value(row["role"], str),
                 telescope=_layout_value(row["telescope"], str),
-                layout_index=int(i),
+                layout_index=int(ids[i]),
                 aperture=_layout_value(row["aperture"], float),
             )
         )
-    missing = tuple(i for i in range(nominal.shape[0]) if i not in rows_taken)
+    missing = tuple(int(ids[i]) for i in range(nominal.shape[0]) if i not in rows_taken)
     extra = tuple(j for j in range(detected.shape[0]) if j not in layout_of)
     return TraceSet(
         traces=traces,
