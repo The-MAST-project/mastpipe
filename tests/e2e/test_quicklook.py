@@ -9,6 +9,7 @@ the nominal run, the reference made by ``run_identify`` and the transferred run,
 tests share them read-only.
 """
 
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -41,6 +42,7 @@ from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.combine import group_by_target
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import build_reference
+from mastpipe.vocab import GRATING_NAMES
 from tests.conftest import truth_model
 
 pytestmark = pytest.mark.slow
@@ -948,6 +950,103 @@ def test_resolve_light_sorts_frames_by_content(tmp_path, night):
     assert set(rules.values()) == {"content:continuum"}
     log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
     assert "content:arc_like" in log
+
+
+# ------------------------------------------------------------------- the site-shaped night
+
+SITE_FLUX_SIGMAS = 5.0
+"""Largest per-pixel difference between a site product's flux and the labelled night's, in
+units of their combined flux error (the two errors added in quadrature). The two nights
+hold the same pixels (same seed); their reductions differ in the master that removes the
+dark current: the labelled night subtracts its single ``background`` frame, while the
+site night's background is a lamp-off ``light`` that content cannot type, so the site run
+subtracts the stack of its three 300 s darks. The difference is therefore the noise of
+those two masters, read noise mostly, comparable to a science frame's own: about 0.7
+combined errors rms, about 3.3 at most over the ~2.9e5 compared pixels, as a Gaussian of
+that width gives. Five combined errors leaves room for another noise draw and still
+fails on any systematic difference (a wrong fiber, a lost master, another trace)."""
+
+
+@pytest.fixture(scope="module")
+def site_night(tmp_path_factory, highspec_effective, survey_layout, mg_lines) -> SimpleNamespace:
+    """The labelled night's frames (same seed) written as the control software writes them."""
+    folder = tmp_path_factory.mktemp("site_night")
+    truth = simulate_night(
+        highspec_effective, survey_layout, mg_lines, folder, seed=0, n_science=N_SCIENCE, site_layout=True
+    )
+    return SimpleNamespace(dir=folder, truth=truth)
+
+
+def test_site_layout_writes_the_control_software_shape(site_night, night):
+    truth = site_night.truth
+    files = truth.frames["file"].tolist()
+    assert files == [f"highspec/acquisition-{k:04d}/exposure-001.fits" for k in range(1, len(files) + 1)]
+    assert (site_night.dir / "seq.txt").is_file() and (site_night.dir / "highspec" / "seq.txt").is_file()
+    assert truth.frames["exposure_type"].tolist() == night.truth.frames["exposure_type"].tolist()
+    site_types = {"bias": "bias", "dark": "dark", "flat": "flat"}
+    for row in truth.frames.itertuples():
+        header = fits.getheader(site_night.dir / row.file)
+        assert header["IMAGETYP"] == site_types.get(row.exposure_type, "light")
+        assert header["INSTRUME"] == "Highspec" and header["PROGRAM"] == "MAST"
+        assert header["FRAME"] == header["DATE"] and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}", header["FRAME"])
+        for card in ("EXPOSURE", "EXPREQ", "CCD-TEMP", "HBIN", "VBIN", "READMODE", "OUTPTAMP"):
+            assert card in header
+        for card in ("GRATING", "LAMP", "OBJECT", "OBJ01", "FIBPRE", "SHUTTER", "DATE-OBS", "TEMP"):
+            assert card not in header
+        labelled = fits.getdata(night.dir / night.truth.frames.loc[row.Index, "file"])
+        assert np.array_equal(fits.getdata(site_night.dir / row.file), labelled)
+
+
+def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, transferred_run, identified, night, out_dir):
+    """Acceptance 1: the site's folder shape and cards, ``--configuration Mg --layout survey45``
+    and a library holding the reference: the night reduces with no manifest, and its spectra
+    are the labelled night's within noise."""
+    library = tmp_path / "calib"
+    CalibLibrary(library).add_reference(identified.ref, identified.prov, "main")
+    out = tmp_path / "out"
+    summary = run_quicklook(
+        site_night.dir, out, RunOptions("highspec", configuration="Mg", layout="survey45", library=library)
+    )
+    assert summary.failed == []
+    products = spec_products(out)
+    assert len(products) == N_SCIENCE
+
+    site_of = dict(zip(night.truth.frames["file"], site_night.truth.frames["file"], strict=True))
+    labelled = {}
+    for path in spec_products(out_dir):
+        es, _, _ = read_spectra(path)
+        labelled[site_of[es.meta.source]] = es
+    site_files = site_night.truth.frames
+    background = site_files.loc[site_files["exposure_type"] == "background", "file"].iloc[0]
+    assert any(item.startswith(f"{background}: ") and "content:" in item for item in summary.skipped)
+    assert not any(background in str(p) for p in summary.products)
+
+    worst = 0.0
+    for path in products:
+        es, prov, _ = read_spectra(path)
+        assert es.wavelength_status == prov.wavelength_status == "transferred"
+        qc = read_qc(out / "qa" / path.with_suffix(".json").name)
+        assert qc.values["classification_rule"] == "content:continuum"
+        reference = labelled.pop(es.meta.source)
+        assert sorted(s.fiber for s in es.spectra) == sorted(s.fiber for s in reference.spectra)
+        by_fiber = {s.fiber: s for s in reference.spectra}
+        for spectrum in es.spectra:
+            other = by_fiber[spectrum.fiber]
+            usable = (spectrum.mask == 0) & (other.mask == 0)
+            error = np.hypot(spectrum.error, other.error)[usable]
+            difference = np.abs(spectrum.flux - other.flux)[usable] / error
+            worst = max(worst, float(difference.max()))
+    assert labelled == {}
+    assert worst < SITE_FLUX_SIGMAS
+
+
+def test_site_night_without_configuration_stops_with_a_message(site_night, tmp_path, capsys):
+    argv = ["quicklook", str(site_night.dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main(argv) == 2
+    out = capsys.readouterr().out
+    assert "--configuration" in out
+    for name in GRATING_NAMES:
+        assert name in out
 
 
 # ------------------------------------------------------------------------------- the CLI

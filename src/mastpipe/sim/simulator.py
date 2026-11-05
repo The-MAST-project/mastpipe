@@ -114,6 +114,19 @@ IMAGE_TYPES = {
     "science": "light",
     "background": "background",
 }
+SITE_IMAGE_TYPES = {
+    "bias": "bias",
+    "dark": "dark",
+    "flat": "flat",
+    "arc": "light",
+    "science": "light",
+    "background": "light",
+}
+"""``IMAGETYP`` as the control software writes it: ``light`` for every shutter-open frame
+but a requested flat."""
+SITE_INSTRUMENT = "Highspec"
+SITE_PROGRAM = "MAST"
+SITE_FOLDER = "highspec"
 LAMPS = {"arc": "thar", "flat": "flat"}
 SHUTTER_CLOSED = ("bias", "dark")
 ON_CHIP_MARGIN_PX = 10
@@ -565,6 +578,25 @@ def _cards(
     }
 
 
+def _site_cards(exposure_type: str, exposure: float, start_time: str) -> dict[str, Any]:
+    """The cards the control software writes: no grating, lamp, target, fiber-preset,
+    shutter or ``DATE-OBS`` card; ``FRAME`` and ``DATE`` both stamp the exposure start."""
+    return {
+        "IMAGETYP": SITE_IMAGE_TYPES[exposure_type],
+        "EXPOSURE": exposure,
+        "EXPREQ": exposure,
+        "FRAME": start_time,
+        "DATE": start_time,
+        "CCD-TEMP": TEMPERATURE_C,
+        "HBIN": 1,
+        "VBIN": 1,
+        "READMODE": READ_MODE,
+        "OUTPTAMP": OUTPUT_AMPLIFIER,
+        "INSTRUME": SITE_INSTRUMENT,
+        "PROGRAM": SITE_PROGRAM,
+    }
+
+
 def _write_fits(path: Path, data: np.ndarray, cards: dict[str, Any]) -> None:
     hdu = fits.PrimaryHDU(data)
     hdu.header.update(cards)
@@ -603,6 +635,7 @@ def simulate_night(
     dispersion_jitter_px: float = 0.3,
     drift_gradient_px: float = 0.05,
     swap_fibers: tuple[int, int] | None = None,
+    site_layout: bool = False,
 ) -> SimTruth:
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
@@ -617,7 +650,13 @@ def simulate_night(
     sets the per-trace solutions, ``drift_gradient_px`` the shift difference between the
     bottom and the top of the detector at the end of the drift law, and ``swap_fibers``
     (two layout trace ids) exchanges what two traces carry while the truth stays unswapped (see
-    the module docstring). Every random number comes from ``numpy.random.default_rng(seed)``
+    the module docstring). ``site_layout`` writes the night as the control software does:
+    frame ``k`` (from 1) is ``highspec/acquisition-<kkkk>/exposure-001.fits``, ``out_dir`` and
+    ``highspec`` each hold a ``seq.txt`` counter, and the headers carry the site's cards only
+    (:func:`_site_cards`: ``IMAGETYP = 'light'`` on arcs, science and background frames,
+    ``FRAME`` and ``DATE`` with milliseconds, ``INSTRUME``, no grating, lamp or target);
+    the truth table's ``file`` is then that relative path. The pixels are the same either
+    way. Every random number comes from ``numpy.random.default_rng(seed)``
     except the per-trace jitter, which comes from ``default_rng([seed, JITTER_STREAM])``.
     """
     if dispersion_jitter_px < 0:
@@ -661,21 +700,27 @@ def simulate_night(
         exposure = exposures[exposure_type]
         mid = start + timedelta(seconds=seconds)
         mid_time = mid.isoformat(timespec="seconds")
-        start_time = (mid - timedelta(seconds=exposure / 2.0)).isoformat()
+        exposure_start = mid - timedelta(seconds=exposure / 2.0)
         index = counters.get(exposure_type, 0)
         counters[exposure_type] = index + 1
-        name = f"sim_{exposure_type}_{index:02d}.fits"
         data, cosmic = _build_frame(lit, detector, exposure_type, arc_kind, exposure, shifts, stretch, cosmic_rays, rng)
-        target = science_object if exposure_type == "science" else exposure_type
-        cards = _cards(
-            exposure_type,
-            exposure,
-            start_time,
-            effective.configuration,
-            target,
-            unit_targets if exposure_type == "science" else None,
-        )
-        _write_fits(out_dir / name, data, cards)
+        if site_layout:
+            name = f"{SITE_FOLDER}/acquisition-{k + 1:04d}/exposure-001.fits"
+            cards = _site_cards(exposure_type, exposure, exposure_start.isoformat(timespec="milliseconds"))
+        else:
+            name = f"sim_{exposure_type}_{index:02d}.fits"
+            target = science_object if exposure_type == "science" else exposure_type
+            cards = _cards(
+                exposure_type,
+                exposure,
+                exposure_start.isoformat(),
+                effective.configuration,
+                target,
+                unit_targets if exposure_type == "science" else None,
+            )
+        path = out_dir.joinpath(*name.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_fits(path, data, cards)
         if exposure_type == "science":
             hits[name] = cosmic
         rows.append(
@@ -689,6 +734,10 @@ def simulate_night(
                 "gradient_px": gradient,
             }
         )
+
+    if site_layout:
+        for folder in (out_dir, out_dir / SITE_FOLDER):
+            (folder / "seq.txt").write_text(f"{len(schedule)}\n", encoding="utf-8", newline="")
 
     every_row = np.arange(len(scene.layout))
     undrifted = np.zeros(len(scene.layout))
@@ -728,6 +777,7 @@ def simulate_night(
             "drift_stretch": list(drift_stretch),
             "dispersion_jitter_px": dispersion_jitter_px,
             "swap_fibers": None if swap_fibers is None else list(swap_fibers),
+            "site_layout": site_layout,
             "exposures": exposures,
             "absorption_nm": list(ABSORPTION_NM),
             "absorption_depth": ABSORPTION_DEPTH,
