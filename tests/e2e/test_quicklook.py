@@ -1107,6 +1107,10 @@ def test_cli_solve_uses_the_library(sim_night_lab3, mg_lines, tmp_path, capsys):
     other = tmp_path / "library"
     assert main(["solve", arc, *base, "--library", str(other)]) == 2
     assert "run identify first" in capsys.readouterr().out
+    # identify with --library adds its reference to that library as well
+    assert main(["identify", arc, *base, "--anchors", pairs, "--trace", "0", "--library", str(other)]) == 0
+    capsys.readouterr()
+    assert [e["identifier"] for e in CalibLibrary(other).list(kind="reference")] == [entries[0]["identifier"]]
     # the seeded solve of the same arc replaces the reference instead of adding a second
     assert main(["solve", arc, *base]) == 0
     text = capsys.readouterr().out

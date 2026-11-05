@@ -2,7 +2,8 @@
 panels and candidate table without anchors, the reference product written from truth
 anchors, the seeded re-solve, the anchor-pair parsing and the command line."""
 
-import shutil
+import logging
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,12 +18,12 @@ from mastpipe.config.models import CalibParams
 from mastpipe.core.model import Frame, ReferenceSolution
 from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.io.products import product_name, read_reference, reference_name, write_master
+from mastpipe.io.products import read_reference, reference_name
 from mastpipe.io.qa import plot_anchor_panels, strongest_spread
 from mastpipe.pipeline import identify
+from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import (
     _arc_lines,
-    _latest_master,
     parse_anchor_pairs,
     read_anchors_file,
     run_identify,
@@ -78,7 +79,8 @@ def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
 
 @pytest.fixture(scope="module")
 def calib_dir(sim_night, survey_effective, tmp_path_factory) -> Path:
-    """An output folder whose ``calib/`` holds bias, background and flat masters."""
+    """An output folder whose calibration library ``calib/`` holds bias, background and
+    flat masters."""
     night_dir, _ = sim_night
     detector = survey_effective.detector
     out_dir = tmp_path_factory.mktemp("identify_calib")
@@ -94,9 +96,9 @@ def calib_dir(sim_night, survey_effective, tmp_path_factory) -> Path:
     flats = [calibrate_frame(f, calib, subtract_background=False) for f in by_type["flat"]]
     flat = build_master(flats, "flat", params)
     prov = Provenance("0.0.1", "abc", [], [])
+    library = CalibLibrary(out_dir / "calib")
     for master in (bias, background, flat):
-        name = product_name(by_type[master.kind][0].meta, master.kind)
-        write_master(out_dir / "calib" / name, master, prov)
+        library.add(master, prov, by_type[master.kind][0].meta)
     return out_dir
 
 
@@ -262,42 +264,80 @@ def test_identify_uses_stored_anchors_and_trace(tmp_path, sim_night_lab3, highsp
     assert not (tmp_path / "dry").exists()
 
 
-def test_latest_master_sorts_by_stamp_within_the_configuration(tmp_path, survey_effective):
-    names = [
-        "highspec_Mg_main_20260930T235900_bias.fits",
-        "highspec_Mg_main_20261001T180000_bias.fits",
-        "highspec_Mg_main_notime_bias.fits",  # sorts after every digit stamp by name
-        "highspec_noconf_main_20270101T000000_bias.fits",  # another configuration, later
-        "highspec_Mg_other_20270101T000000_bias.fits",  # another camera, later
-        "highspec_Mg_main_20270101T000000_flat.fits",  # another kind
-    ]
-    for name in names:
-        (tmp_path / name).write_bytes(b"")
-    assert sorted(names)[-1] != "highspec_Mg_main_20261001T180000_bias.fits"
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_Mg_main_20261001T180000_bias.fits"
-    assert _latest_master(tmp_path, survey_effective, "background") is None
-    for name in names[:2]:
-        (tmp_path / name).unlink()
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_Mg_main_notime_bias.fits"
+def _readout_ref(night_dir, truth, amplifier: str):
+    """The simulated full arc of the laboratory night, read out through ``amplifier``."""
+    row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
+    pattern = str(row["file"])
+    ref = scan_folder(night_dir, "highspec", load_header_map("highspec"), pattern=pattern, recursive=False)[0]
+    return replace(ref, meta=replace(ref.meta, readout_mode="image", amplifier=amplifier))
 
 
-def test_latest_master_reads_the_stamp_before_the_checksum(tmp_path, survey_effective):
-    names = [
-        "highspec_Mg_main_20260930T235900_ffffff_bias.fits",
-        "highspec_Mg_main_20261001T180000_000000_bias.fits",  # latest, lowest checksum
-        "highspec_Mg_main_notime_nosum_bias.fits",
-        "highspec_Mg_main_20270101T000000_abcdef_flat.fits",  # another kind
-    ]
-    for name in names:
-        (tmp_path / name).write_bytes(b"")
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_Mg_main_20261001T180000_000000_bias.fits"
-    for name in names[:2]:
-        (tmp_path / name).unlink()
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_Mg_main_notime_nosum_bias.fits"
+def _readout_library(night_dir, highspec_effective, root: Path) -> dict[str, str]:
+    """A library at ``root`` holding an ``image/em`` and an ``image/conventional`` bias
+    (the EM one dated later, so neither time nor order favours the conventional one) and
+    an ``image/em`` flat of another configuration; returns the file names by key."""
+    detector = highspec_effective.detector
+    refs = scan_folder(night_dir, "highspec", load_header_map("highspec"))
+    bias_meta = next(ref.meta for ref in refs if ref.meta.exposure_type == "bias")
+    biases = [load_frame(ref, detector) for ref in refs if ref.meta.exposure_type == "bias"]
+    library = CalibLibrary(root)
+    prov = Provenance("0.0.1", "abc", [], [])
+    names = {}
+    for amplifier, checksum, mid_time in (
+        ("conventional", "c0ffee00", "2026-10-01T12:00:00"),
+        ("em", "e0e0e0e0", "2026-10-01T18:00:00"),
+    ):
+        meta = replace(bias_meta, readout_mode="image", amplifier=amplifier, checksum=checksum, mid_time=mid_time)
+        master = build_master([replace(f, meta=meta) for f in biases], "bias", CalibParams())
+        names[f"bias image/{amplifier}"] = library.add(master, prov, meta).name
+    meta = replace(bias_meta, readout_mode="image", amplifier="em", configuration="other", checksum="f1a7f1a7")
+    flat = build_master([replace(f, meta=replace(meta, exposure_type="flat")) for f in biases], "flat", CalibParams())
+    names["flat image/em other"] = library.add(flat, prov, meta).name
+    return names
+
+
+def test_arc_lines_takes_the_masters_of_the_arcs_own_readout(sim_night_lab3, highspec_effective, lab3_layout, tmp_path):
+    """Without injected masters the library gives the arc the masters of its own readout
+    key (and a flat of its own configuration only), not the latest file of any readout."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "calib")
+    for amplifier in ("conventional", "em"):
+        ref = _readout_ref(night_dir, truth, amplifier)
+        lines = _arc_lines(ref, highspec_effective, lab3_layout, tmp_path)
+        assert lines.calibrations == [names[f"bias image/{amplifier}"]], amplifier
+        assert any(step.startswith("traces arc_full") for step in lines.steps)
+    # a frame of a readout the library does not hold gets no master at all
+    lines = _arc_lines(_readout_ref(night_dir, truth, "other"), highspec_effective, lab3_layout, tmp_path)
+    assert lines.calibrations == []
+
+
+def test_arc_lines_reads_the_given_library(sim_night_lab3, highspec_effective, lab3_layout, tmp_path):
+    """``library_root`` replaces ``out_dir/calib``; an output folder without a library is
+    not created by the lookup."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "shared")
+    ref = _readout_ref(night_dir, truth, "em")
+    out_dir = tmp_path / "out"
+    lines = _arc_lines(ref, highspec_effective, lab3_layout, out_dir, library_root=tmp_path / "shared")
+    assert lines.calibrations == [names["bias image/em"]]
+    assert _arc_lines(ref, highspec_effective, lab3_layout, out_dir).calibrations == []
+    assert not out_dir.exists()
+
+
+def test_arc_lines_warns_of_an_unlisted_amplifier(sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog):
+    """An arc whose amplifier the camera's ``readouts`` table does not list takes the
+    camera's default noise; ``identify`` and ``solve`` say so, as the runner does."""
+    night_dir, truth = sim_night_lab3
+    detector = highspec_effective.detector
+    listed = detector.model_copy(update={"readouts": {"conventional": detector.noise()}})
+    effective = highspec_effective.model_copy(update={"detector": listed})
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        _arc_lines(_readout_ref(night_dir, truth, "conventional"), effective, lab3_layout, tmp_path)
+    assert not [r for r in caplog.records if "amplifier" in r.getMessage()]
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        _arc_lines(_readout_ref(night_dir, truth, "emm"), effective, lab3_layout, tmp_path)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("main: emm" in message for message in warnings), warnings
 
 
 def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
@@ -359,11 +399,9 @@ def test_arc_lines_passes_the_calibrated_mask_to_find_lines(
 def test_run_solve_seeded_by_previous_reference(identified, arc, survey_effective, tmp_path):
     previous = identified.ref
     out_dir = tmp_path / "again"
-    # the same masters as the anchor run, so the two solves see the same lines
-    (out_dir / "calib").mkdir(parents=True)
-    for name in master_names(identified.out_dir):
-        shutil.copy(identified.out_dir / "calib" / name, out_dir / "calib" / name)
-    again = run_solve(arc.path, survey_effective, "survey45", out_dir, previous)
+    # the anchor run's library (--library), so the two solves see the same masters and lines
+    library = identified.out_dir / "calib"
+    again = run_solve(arc.path, survey_effective, "survey45", out_dir, previous, library=library)
     path = out_dir / "calib" / reference_name(again)
     assert path.is_file()
     assert set(again.solutions) == set(previous.solutions)
@@ -374,6 +412,7 @@ def test_run_solve_seeded_by_previous_reference(identified, arc, survey_effectiv
         assert other.params[1] == pytest.approx(solution.params[1], rel=1e-6)
     back, prov = read_reference(path, lambda instrument, configuration: arc.geom)
     assert back.hash == again.hash
+    assert sorted(prov.calibrations) == master_names(identified.out_dir)
     assert prov.reference_id == previous.identifier and prov.reference_hash == previous.hash
     # a reference of another configuration or preset cannot seed this arc
     with pytest.raises(ValueError, match="preset"):
@@ -422,6 +461,9 @@ def test_cli_identify_parses_anchor_pairs(tmp_path, sim_night_lab3, capsys):
     assert str(out_dir / "anchor_panels.png") in out
     assert (out_dir / "anchor_panels.png").is_file()
     assert (out_dir / "anchor_candidates.csv").is_file()
+    # --library names the calibration library the masters are read from
+    assert main([*argv, "--library", str(tmp_path / "no_library")]) == 0
+    assert not (tmp_path / "no_library").exists()
     # the three anchor sources exclude one another
     with pytest.raises(SystemExit):
         main([*argv, "--anchors", "515.8605:267.22", "--stored-anchors"])

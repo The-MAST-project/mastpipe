@@ -157,7 +157,7 @@ def solve_command(args: argparse.Namespace) -> int:
     if previous is None:
         print(f"no reference for {'/'.join(keys)} in {root}; {RUN_IDENTIFY_FIRST}")
         return 2
-    ref = run_solve(args.full_arc, effective, layout, args.out, previous)
+    ref = run_solve(args.full_arc, effective, layout, args.out, previous, library=root)
     path = Path(args.out) / CALIB_FOLDER / products.reference_name(ref)
     if root.resolve() != path.parent.resolve():
         _, prov = products.read_reference(path, registry_geometry(camera))

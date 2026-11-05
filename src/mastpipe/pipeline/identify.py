@@ -4,9 +4,10 @@ solution, and the seeded re-solve of a full arc behind ``solve``.
 A reference solution is made once per configuration and layout preset, from a full arc
 that lights every fiber. The chain from the frame to its measured lines is shared
 (:func:`_arc_lines`): the arc is loaded and calibrated with the bias and background
-masters found in ``out_dir/calib`` (nothing but the variance is applied when there are
-none), the traces come from a flat master there when one exists and from the arc itself
-otherwise (percentile collapse), the layout is matched, the spectra are extracted and
+masters the calibration library (``out_dir/calib`` or ``--library``) holds for its camera,
+binning and readout (nothing but the variance is applied when there are none), the traces
+come from a flat master of its configuration there when one exists and from the arc
+itself otherwise (percentile collapse), the layout is matched, the spectra are extracted and
 continuum-fitted and the lines are found. Then:
 
 - :func:`run_identify` **without anchors** draws the anchor panels
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +43,7 @@ from mastpipe.config.models import EffectiveConfig
 from mastpipe.core.model import (
     CalibrationSet,
     Frame,
+    FrameMeta,
     FrameRef,
     MasterCalib,
     ReferenceSolution,
@@ -58,7 +61,7 @@ from mastpipe.io import products
 from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.io.qa import plot_anchor_panels
-from mastpipe.pipeline.callib import CalibLibrary
+from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.atlas import (
     catalogue_arrays,
@@ -108,35 +111,51 @@ class ArcLines:
 
 
 MASTER_KINDS = ("bias", "background", "flat")
-"""Master kinds :func:`_arc_lines` looks for in ``out_dir/calib``."""
+"""Master kinds :func:`_arc_lines` looks for in the calibration library."""
 NO_TIME = "notime"
 """The stamp :func:`~mastpipe.io.products.product_name` writes for a frame without a mid-time."""
 
+log = logging.getLogger("mastpipe")
 
-def _latest_master(calib_dir: Path, effective: EffectiveConfig, kind: str) -> Path | None:
-    """The latest ``{instrument}_{configuration}_{camera}_{stamp}_{sum}_{kind}.fits`` of
-    ``calib_dir``.
 
-    Only the masters of ``effective``'s instrument, configuration and camera qualify; the
-    latest is the one with the largest ``YYYYmmddTHHMMSS`` stamp (compared as a stamp, not
-    as a file name: the short checksum after it plays no part), and a ``notime`` master is
-    taken only when no dated one exists. ``None`` without a candidate.
+def _library_masters(root: Path, effective: EffectiveConfig, meta: FrameMeta) -> dict[str, tuple[MasterCalib, str]]:
+    """The masters of ``MASTER_KINDS`` the calibration library at ``root`` holds for a frame
+    of ``meta``, with their file names.
+
+    Each is :meth:`~mastpipe.pipeline.callib.CalibLibrary.find` on ``effective``'s camera and
+    the frame's binning, readout key, detector temperature and mid-time (the nearest wins),
+    as the runner chooses them; the flat must also belong to ``effective``'s configuration.
+    Empty when ``root`` is not a folder (the lookup does not create one).
     """
-    prefix = f"{effective.instrument}_{effective.configuration}_{effective.camera}_"
-    suffix = f"_{kind}.fits"
-    dated: list[tuple[str, Path]] = []
-    undated: list[Path] = []
-    for path in calib_dir.glob(f"{glob.escape(prefix)}*{glob.escape(suffix)}"):
-        if not path.is_file():
-            continue
-        stamp = path.name[len(prefix) : -len(suffix)].split("_")[0]
-        if stamp == NO_TIME:
-            undated.append(path)
-        elif stamp.isascii() and len(stamp) == 15 and stamp[8] == "T" and stamp.replace("T", "").isdigit():
-            dated.append((stamp, path))
-    if dated:
-        return max(dated, key=lambda item: (item[0], item[1].name))[1]
-    return sorted(undated)[-1] if undated else None
+    if not root.is_dir():
+        return {}
+    library = CalibLibrary(root)
+    found: dict[str, tuple[MasterCalib, str]] = {}
+    for kind in MASTER_KINDS:
+        match = library.find(
+            kind,
+            effective.camera,
+            meta.binning,
+            meta.readout_key,
+            configuration=effective.configuration if kind == "flat" else None,
+            temperature=meta.detector_temperature,
+            near_time=meta.mid_time,
+        )
+        if match is not None:
+            found[kind] = (match[0], match[1].name)
+    return found
+
+
+def _warn_unlisted_amplifier(effective: EffectiveConfig, meta: FrameMeta) -> None:
+    """Warn when the frame's amplifier is not in the camera's non-empty ``readouts`` table:
+    it then takes the camera's default gain and read noise (the runner's warning)."""
+    readouts = effective.detector.readouts
+    if readouts and meta.amplifier is not None and meta.amplifier not in readouts:
+        log.warning(
+            "no gain and read noise listed for amplifier %s: %s; the camera defaults apply",
+            effective.camera,
+            meta.amplifier,
+        )
 
 
 def _master_name(kind: str, master: MasterCalib) -> str:
@@ -163,6 +182,7 @@ def _arc_lines(
     out_dir: Path,
     masters: dict[str, MasterCalib] | None = None,
     traceset: TraceSet | None = None,
+    library_root: Path | None = None,
 ) -> ArcLines:
     """Load, calibrate, trace, extract, continuum-fit and find the lines of a full arc.
 
@@ -170,9 +190,11 @@ def _arc_lines(
     map) or a :class:`~mastpipe.core.model.FrameRef` a runner has already scanned, whose
     metadata (a manifest's overrides included) is then used as given. Masters come from
     ``masters`` (keyed by kind, as a runner holding its library's choice passes them) or,
-    when that is ``None``, from ``out_dir/calib``: the latest
-    ``*_bias.fits``, ``*_background.fits`` and ``*_flat.fits`` of the effective instrument,
-    configuration and camera (:func:`_latest_master`). The bias and background calibrate the
+    when that is ``None``, from the calibration library at ``library_root``
+    (``out_dir/calib`` by default): the bias, background and flat that match the arc's
+    camera, binning and readout key, the flat its configuration too, nearest the arc's
+    mid-time (:func:`_library_masters`); the arc's amplifier is then checked against the
+    camera's ``readouts`` table (:func:`_warn_unlisted_amplifier`). The bias and background calibrate the
     frame, the background only when ``params.calib.subtract_background`` is on (otherwise it
     serves the saturation mask alone, which the steps record and ``calibrations`` does not);
     without them the frame only gains its variance and mask; the gain and read noise are
@@ -183,8 +205,8 @@ def _arc_lines(
     ``params.trace.layout_tolerance`` and keyed by the layout's trace id
     (:func:`~mastpipe.steps.trace.layout_indexed`: detections matching no layout row are
     dropped, so ``traceset`` holds layout fibers only). Returns an :class:`ArcLines`; its
-    ``calibrations`` are the masters that were applied (file names when read from
-    ``out_dir/calib``, :func:`_master_name` when injected).
+    ``calibrations`` are the masters that were applied (file names when read from the
+    library, :func:`_master_name` when injected).
     """
     out_dir = Path(out_dir)
     params = effective.params
@@ -197,12 +219,9 @@ def _arc_lines(
     if masters is not None:
         found = {kind: (master, _master_name(kind, master)) for kind, master in masters.items()}
     else:
-        calib_dir = out_dir / CALIB_FOLDER
-        if calib_dir.is_dir():
-            for kind in MASTER_KINDS:
-                path = _latest_master(calib_dir, effective, kind)
-                if path is not None:
-                    found[kind] = (products.read_master(path)[0], path.name)
+        _warn_unlisted_amplifier(effective, frame.meta)
+        root = out_dir / CALIB_FOLDER if library_root is None else Path(library_root)
+        found = _library_masters(root, effective, frame.meta)
     bias = found.get("bias")
     background = found.get("background")
     flat = found.get("flat")
@@ -413,6 +432,7 @@ def run_identify(
     anchor_trace: int | None = None,
     atlas_dir: Path | None = None,
     write_reference: bool = True,
+    library: Path | None = None,
 ) -> tuple[ReferenceSolution | None, Path]:
     """Bootstrap the reference solution of ``effective``'s configuration from a full arc.
 
@@ -421,7 +441,9 @@ def run_identify(
     preset). ``anchors`` are ``(wavelength nm, pixel)`` pairs measured on trace
     ``anchor_trace``, the layout's trace id of that fiber (``0`` by default); when ``None``
     the instrument's stored pairs for the configuration and preset are used, and
-    ``anchor_trace`` defaults to the trace they were measured on.
+    ``anchor_trace`` defaults to the trace they were measured on. The masters come from
+    the calibration library at ``library`` (``out_dir/calib`` by default; see
+    :func:`_arc_lines`).
 
     Without any anchors the two-panel figure is written to ``out_dir/anchor_panels.png``
     (template from the atlas in ``atlas_dir`` when given, else synthetic) and the
@@ -442,7 +464,7 @@ def run_identify(
         if anchor_trace is None:
             anchor_trace = load_anchor_trace(instrument, configuration, layout)
     trace = 0 if anchor_trace is None else int(anchor_trace)
-    lines = _arc_lines(full_arc, effective, load_layout(instrument, layout), out_dir)
+    lines = _arc_lines(full_arc, effective, load_layout(instrument, layout), out_dir, library_root=library)
     positions = {int(t.index): k for k, t in enumerate(lines.traceset.traces)}
     if trace not in positions:
         raise ValueError(f"anchor trace {trace} is not among the matched traces {sorted(positions)}")
@@ -479,6 +501,7 @@ def run_solve(
     layout: str,
     out_dir: Path,
     previous: ReferenceSolution,
+    library: Path | None = None,
 ) -> ReferenceSolution:
     """Solve every fiber of a full arc seeded by ``previous`` and write the new reference.
 
@@ -488,7 +511,8 @@ def run_solve(
     identifier and hash are recorded as the new product's ``reference_id`` /
     ``reference_hash`` provenance, naming the seed. Returns the new reference, written to
     ``out_dir/calib/<identifier>_wref.fits`` (registered in that folder's calibration
-    library) with ``fiber_agreement.csv``.
+    library) with ``fiber_agreement.csv``. The masters come from the calibration library at
+    ``library`` (``out_dir/calib`` by default; see :func:`_arc_lines`).
     """
     full_arc = Path(full_arc)
     out_dir = Path(out_dir)
@@ -499,7 +523,7 @@ def run_solve(
             f"reference {previous.identifier} is for instrument/configuration/preset "
             f"{actual}, the arc is reduced as {expected}"
         )
-    lines = _arc_lines(full_arc, effective, load_layout(effective.instrument, layout), out_dir)
+    lines = _arc_lines(full_arc, effective, load_layout(effective.instrument, layout), out_dir, library_root=library)
     ref = _solve_and_package(lines, effective, layout, previous, 0)
     prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"], layout=layout)
     prov.reference_id = previous.identifier
@@ -582,6 +606,11 @@ def register_identify(subparsers: argparse._SubParsersAction) -> None:
         help="layout trace id the anchors were measured on (default: the file's, else 0)",
     )
     parser.add_argument(
+        "--library",
+        type=Path,
+        help="calibration library to read the masters from and add the reference to (default: OUT/calib)",
+    )
+    parser.add_argument(
         "--atlas-dir",
         type=Path,
         default=_atlas_dir_default(),
@@ -603,7 +632,9 @@ def _atlas_dir_default() -> Path | None:
 
 
 def identify_command(args: argparse.Namespace) -> int:
-    """Run ``identify`` from parsed arguments; prints the panel or reference path."""
+    """Run ``identify`` from parsed arguments; prints the panel or reference path. A
+    reference is also added to ``--library`` when that is not ``OUT/calib``, as ``solve``
+    does."""
     instrument = load_instrument(args.instrument)
     camera = args.camera
     if camera is None:
@@ -632,7 +663,11 @@ def identify_command(args: argparse.Namespace) -> int:
         anchors=anchors,
         anchor_trace=trace,
         atlas_dir=args.atlas_dir,
+        library=args.library,
     )
+    if ref is not None and args.library is not None and Path(args.library).resolve() != path.parent.resolve():
+        _, prov = products.read_reference(path, registry_geometry(camera))
+        CalibLibrary(args.library).add_reference(ref, prov, camera)
     if ref is None:
         print(f"anchor panels: {path}")
         print(f"candidates: {Path(args.out) / CANDIDATES_FILE}")
