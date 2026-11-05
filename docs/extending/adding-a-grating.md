@@ -12,7 +12,7 @@ the configuration name the header map's `GRATING` keyword (or the file-name
 pattern) resolves to:
 
 ```yaml
-name: halpha
+name: Halpha
 band_nm: [649.0, 664.0]        # the detector's wavelength range, generous
 resolving_power: 20000
 geometry:
@@ -23,12 +23,19 @@ geometry:
   camera_focal_mm: 479.41
   central_wavelength_nm: 656.3
   dispersion_sign: 1           # -1 when wavelength falls with pixel
-line_table: lines/halpha.csv
+line_table: lines/Halpha.csv
 params: {}                     # per-grating overrides of any step parameter
 ```
 
 The geometry constants are the optical design's, as in the reduction notebook;
-they are never fitted. The `name` must equal the file stem.
+they are never fitted. The `name` must equal the file stem and be one of the
+fleet's grating names, spelled exactly as the MAST fleet's shared vocabulary
+(the `MAST_common` repository) spells them and the control software writes
+them in `GRATING`. `mastpipe.vocab.GRATING_NAMES` mirrors that list (`Ca`,
+`Halpha`, `Mg`, `Future`) and a CI job fails when the mirror and `MAST_common`
+diverge; the registry refuses a block with any other name. A new grating is
+therefore named in `MAST_common` first, then added to the mirror, then given
+its block here.
 
 ## 2. The line table
 
@@ -38,7 +45,7 @@ et al. and committed:
 
 ```bash
 MASTPIPE_ATLAS_DIR=<atlas folder> python scripts/make_line_table.py \
-    --instrument highspec --configuration halpha --resolving-power 20000
+    --instrument highspec --configuration Halpha --resolving-power 20000
 ```
 
 The script convolves the atlas to the resolving power and keeps a line when
@@ -51,9 +58,12 @@ table does.
 
 ## 3. Add the header mapping
 
-If the control software names the grating differently from `<name>`, add the
-spelling to the `configuration` field's `map` in `header_map.yaml`, and to its
-`filename_regex` if laboratory files carry the name instead.
+The `GRATING` card carries the canonical name, which the header map passes
+through unchanged (names are case-sensitive). Only when laboratory files carry
+another spelling in their file names (as `mgb518` stands for `Mg`) add it to
+the `configuration` field's `filename_regex` and map it to `<name>` in its
+`map` in `header_map.yaml`. Frames that name no grating at all are reduced
+with `--configuration <name>`.
 
 ## 4. The first reference
 
@@ -77,7 +87,7 @@ full arcs on its own.
 
 ```bash
 pytest tests/unit/test_registry.py       # the block loads and validates
-mastpipe quicklook sim_night/ --out out --instrument highspec --configuration halpha
+mastpipe quicklook sim_night/ --out out --instrument highspec --configuration Halpha
 ```
 
 `tests/unit/test_registry.py::test_extra_grating_file_is_picked_up` is the

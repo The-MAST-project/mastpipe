@@ -6,16 +6,35 @@
 # fields: pipeline name -> {keys: header keywords tried in order, type, lower, map, default,
 #         filename_regex (named group `value`, used when no keyword is present),
 #         missing_values (sentinels that count as "not written"),
-#         reference (start | mid | end: the instant a time keyword records)}
+#         reference (start | mid | end: the instant a time keyword records),
+#         timezone (utc | assume-utc | an IANA zone: how a stamp without an offset is read),
+#         per_unit (a keyword template with {nn}, read once per telescope unit 01..20)}
 # Andor Solis stamps DATE / DATE-OBS with the exposure start; ingest adds half the exposure
-# time to reach the mid-time. TEMP is -999 while the sensor has not been read.
+# time to reach the mid-time. The control software's camera driver stamps FRAME (start of
+# frame exposure, with milliseconds) and DATE (file creation) from the Windows clock with no
+# time zone, and whether that clock keeps UTC is not established: assume-utc reads such a
+# stamp as UTC and records the assumption (MPTZ on every product, one warning per run).
+# Change it to the clock's IANA zone once known. DeepSpec's T_MID (UTC, reference: mid)
+# will be declared in its own map when that instrument lands.
+# TEMP is -999 while the sensor has not been read.
+# INSTRUME names the instrument that wrote a frame ('Highspec'); the unit cameras and
+# DeepSpec file their frames under the same night folder, and ingest skips a frame whose
+# INSTRUME names another instrument. There is no fiber_preset field: in MAST a fiber preset
+# is a stage position, not a fiber layout; the layout comes from --layout, a manifest's
+# fiber_preset column or the instrument's default.
 fields:
+  instrument: {keys: [INSTRUME], lower: true}
   exposure_time: {keys: [EXPOSURE, EXPTIME], type: float}
-  mid_time: {keys: [DATE-OBS, DATE], type: str, reference: start}
+  mid_time: {keys: [DATE-OBS, FRAME, DATE], type: str, reference: start, timezone: assume-utc}
   detector_temperature: {keys: [TEMP, CCD-TEMP], type: float, missing_values: [-999]}
   binning_x: {keys: [HBIN], type: int}
   binning_y: {keys: [VBIN], type: int}
-  readout_mode: {keys: [READMODE, OUTPTAMP], lower: true}
+  # READMODE is the Andor acquisition mode (always Image on the Newton); OUTPTAMP names the
+  # output amplifier, which sets the gain and read noise: electron-multiplying at the site,
+  # conventional in the laboratory. The calibration library matches masters on both
+  # (FrameMeta.readout_key, e.g. image/em).
+  readout_mode: {keys: [READMODE], lower: true}
+  amplifier: {keys: [OUTPTAMP], lower: true, map: {conventional: conventional, "electron multiplying": em}}
   exposure_type:
     keys: [IMAGETYP, OBSTYPE]
     lower: true
@@ -27,18 +46,31 @@ fields:
       arc: arc
       comp: arc
       object: science
-      light: science
+      light: light
       science: science
       background: background
   arc_kind: {keys: [ARCKIND], lower: true}
   lamp_state: {keys: [LAMP], lower: true}
   shutter_state: {keys: [SHUTTER], lower: true}
-  configuration: {keys: [GRATING], lower: true, filename_regex: "(?P<value>mgb518|halpha|caiihk)"}
-  fiber_preset: {keys: [FIBPRE]}
+  # GRATING carries the MAST_common grating name (Mg, Halpha, Ca) as is; laboratory file
+  # names spell the grating mgb518 / halpha / caiihk, which are only aliases mapped here.
+  configuration:
+    keys: [GRATING]
+    filename_regex: "(?P<value>mgb518|halpha|caiihk)"
+    map: {mgb518: Mg, halpha: Halpha, caiihk: Ca}
+  # Each telescope of an exposure has its own target. OBJ01..OBJ20 (one card per unit) is
+  # the seam for when the control software writes them; none is written today. Without
+  # them a single OBJECT names the target of every science fiber.
+  targets: {per_unit: "OBJ{nn}"}
   target: {keys: [OBJECT]}
 
+# IMAGETYP = 'light' is what the control software writes for every shutter-open exposure,
+# arcs and science frames alike (and it writes no LAMP card), so it maps to the provisional
+# type light, which the runner resolves into arc or science from the frame's content.
 # classification: applied in order when the header carries no valid exposure type; the
-# first matching rule wins and the last rule, with no condition, is the fallback.
+# first matching rule wins and the last rule, with no condition, is the fallback. A light
+# frame is refined by the rules with conditions only (a zero-exposure light is a bias) and
+# stays light when none matches.
 classification:
   - {when: {exposure_time: {lt: 0.001}}, type: bias}
   - {when: {lamp_state: {eq: "off"}, shutter_state: {eq: closed}}, type: dark}

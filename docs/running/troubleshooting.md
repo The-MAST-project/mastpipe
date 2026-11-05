@@ -36,7 +36,8 @@ Status `reference` instead of `transferred`
 : No calibration-fiber arc paired with the frame: none in the folder, none of
   the same grating, none fitted against the same reference, none within
   `drift.max_age_hours` (default 12 h), or the arc's drift fit was unusable (too
-  few lines or too large a scatter; see its QC). The spectrum is still
+  few lines, fewer than `drift.min_fibers` usable arc fibers (default 3) or too
+  large a scatter; its QC's `unusable_reason` says which). The spectrum is still
   wavelength-calibrated by the reference alone. Early-night frames reduced
   before the first arc get this status and are re-reduced when the arc lands.
 

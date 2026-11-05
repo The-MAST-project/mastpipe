@@ -10,13 +10,12 @@ from mastpipe.config.models import CalibParams, ExtractParams, SkyParams
 from mastpipe.core.model import Frame, Spectrum, Trace, TraceSet
 from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.sim.simulator import undrift_x
+from mastpipe.sim.simulator import SKY_LINE_PEAK_ADU, undrift_x
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.extract import extract_aperture
 from mastpipe.steps.geometry import grating_geometry
-from mastpipe.steps.sky import subtract_sky, subtract_sky_all
-from mastpipe.steps.wavemodel import GratingModel
-from tests.conftest import truth_traceset
+from mastpipe.steps.sky import resample_sky, subtract_sky, subtract_sky_all
+from tests.conftest import ARC_SIGMA_PX, truth_model, truth_traceset
 
 N_PIX = 200
 LINE_PX = 80.0
@@ -25,6 +24,9 @@ LINE_PEAK = 300.0
 CONTINUUM = 50.0
 APERTURE_HALFWIDTH = 4.0
 """Rows on either side of a simulated trace (3 px FWHM image, 8.5 px pitch)."""
+LINEAR_RESAMPLING_LOSS = 1.0 - np.exp(-1.0 / (8.0 * ARC_SIGMA_PX**2))
+"""Largest fraction of a simulated line's peak that linear interpolation halfway between two
+samples misses (7.4 % for the 3 px FWHM profile)."""
 
 
 # ------------------------------------------------------------------------------- fixtures
@@ -80,11 +82,12 @@ def grid(offset_px: float = 0.0, dispersion: float = 0.01, origin: float = 515.0
 
 @pytest.fixture(scope="module")
 def night(sim_night, highspec_effective) -> SimpleNamespace:
-    """The first simulated science frame extracted, every fiber given its truth wavelengths.
+    """The first simulated science frame extracted, every fiber given its own truth
+    wavelengths (its own grating model and the drift at its row).
 
     ``spectra`` (one per trace, with the layout's roles and telescopes), ``traces``,
-    ``truth``, ``throughput`` (the truth throughput keyed by fiber), ``x_of`` (pixel of a
-    wavelength on this frame's drifted grid) and ``line_px`` (the sky lines' pixels).
+    ``truth``, ``throughput`` (the truth throughput keyed by fiber) and ``line_px`` (fiber
+    -> the sky lines' pixels on that fiber's drifted grid).
     """
     out_dir, truth = sim_night
     detector = highspec_effective.detector
@@ -95,29 +98,30 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     params = CalibParams()
     masters = [build_master(by_type[kind], kind, params) for kind in ("bias", "dark", "background")]
     calib = build_calibration_set(*masters, detector)
-    frame = calibrate_frame(by_type["science"][0], calib, saturation=detector.saturation)
+    # the simulator writes its science frames as IMAGETYP 'light'
+    frame = calibrate_frame(by_type["light"][0], calib, saturation=detector.saturation)
     traces = truth_traceset(truth, frame.shape)
     spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=APERTURE_HALFWIDTH))
 
-    row = truth.frames.set_index("file").loc[frame.meta.source]
-    shift, stretch = float(row["shift_px"]), float(row["stretch"])
+    shifts = truth.trace_shifts(frame.meta.source)
+    stretch = float(truth.frames.set_index("file").loc[frame.meta.source, "stretch"])
     geom = grating_geometry(highspec_effective.geometry, detector.pixel_size_um)
     n_pix = frame.shape[1]
-    model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
     x = np.arange(n_pix, dtype=float)
-    wavelength = np.asarray(model.wavelength(undrift_x(x, shift, stretch, n_pix)), dtype=float)
+    line_px = {}
     for spectrum in spectra:
-        spectrum.wavelength = wavelength.copy()
-    increasing = wavelength[0] < wavelength[-1]
-    xp = wavelength if increasing else wavelength[::-1]
-    fp = x if increasing else x[::-1]
+        model = truth_model(truth, spectrum.fiber, geom, n_pix)
+        drifted = undrift_x(x, shifts[truth.row_of(spectrum.fiber)], stretch, n_pix)
+        wavelength = np.asarray(model.wavelength(drifted), dtype=float)
+        spectrum.wavelength = wavelength
+        order = np.argsort(wavelength)
+        line_px[spectrum.fiber] = np.interp(truth.sky_lines_nm, wavelength[order], x[order])
     return SimpleNamespace(
         truth=truth,
         traces=traces,
         spectra=spectra,
         throughput={i: float(t) for i, t in enumerate(truth.throughput)},
-        x_of=lambda nm: np.interp(nm, xp, fp),
-        line_px=np.interp(truth.sky_lines_nm, xp, fp),
+        line_px=line_px,
     )
 
 
@@ -130,10 +134,8 @@ def test_subtract_sky_resamples_scaled_sky_onto_science_grid():
     x = np.arange(N_PIX, dtype=float)
     science_wl = grid(0.0)
     sky_wl = grid(0.4)
-    science = make_spectrum(
-        1, 1.5 * gaussian_line(x, LINE_PX), "science", "T01", wavelength=science_wl
-    )
-    sky = make_spectrum(2, gaussian_line(x, LINE_PX - 0.4), "sky", "T01", wavelength=sky_wl)
+    science = make_spectrum(1, 1.5 * gaussian_line(x, LINE_PX), "science", "mast01", wavelength=science_wl)
+    sky = make_spectrum(2, gaussian_line(x, LINE_PX - 0.4), "sky", "mast01", wavelength=sky_wl)
     out = subtract_sky(science, sky, 1.5, SkyParams())
     assert out is not science
     skysub = out.versions["skysub"]
@@ -158,23 +160,19 @@ def test_subtract_sky_resamples_scaled_sky_onto_science_grid():
     assert skysub.mask[0] and not skysub.mask[inside].any()
     assert np.isnan(out.sky[0]) and np.isnan(skysub.flux[0])
     # a decreasing sky grid is interpolated the same way
-    sky_flipped = make_spectrum(
-        2, sky.flux[::-1], "sky", "T01", wavelength=sky_wl[::-1], mask=sky.mask[::-1]
-    )
+    sky_flipped = make_spectrum(2, sky.flux[::-1], "sky", "mast01", wavelength=sky_wl[::-1], mask=sky.mask[::-1])
     flipped = subtract_sky(science, sky_flipped, 1.5, SkyParams())
     assert np.allclose(flipped.sky, out.sky, equal_nan=True)
 
 
 def test_sky_mask_marks_any_masked_neighbour():
-    science = make_spectrum(1, np.full(N_PIX, CONTINUUM), "science", "T01", wavelength=grid(0.0))
+    science = make_spectrum(1, np.full(N_PIX, CONTINUUM), "science", "mast01", wavelength=grid(0.0))
     sky_mask = np.zeros(N_PIX, dtype=bool)
     sky_mask[100] = True
     science_mask = np.zeros(N_PIX, dtype=bool)
     science_mask[5] = True
     science.mask = science_mask
-    sky = make_spectrum(
-        2, np.full(N_PIX, CONTINUUM), "sky", "T01", wavelength=grid(0.5), mask=sky_mask
-    )
+    sky = make_spectrum(2, np.full(N_PIX, CONTINUUM), "sky", "mast01", wavelength=grid(0.5), mask=sky_mask)
     out = subtract_sky(science, sky, 1.0, SkyParams())
     skysub = out.versions["skysub"]
     # science pixel 100 falls between sky pixels 99 and 100, pixel 101 between 100 and 101
@@ -190,8 +188,8 @@ def test_sky_error_propagates_exactly():
     # its sky error is sqrt(0.25 s[i-1]^2 + 0.25 s[i]^2), not the mean of the two sigmas
     x = np.arange(N_PIX, dtype=float)
     sigma = 1.0 + 0.5 * np.sin(x / 7.0) + (x % 3)  # varies pixel to pixel
-    science = make_spectrum(1, np.zeros(N_PIX), "science", "T01", wavelength=grid(0.0), error=0.0)
-    sky = make_spectrum(2, np.zeros(N_PIX), "sky", "T01", wavelength=grid(0.5))
+    science = make_spectrum(1, np.zeros(N_PIX), "science", "mast01", wavelength=grid(0.0), error=0.0)
+    sky = make_spectrum(2, np.zeros(N_PIX), "sky", "mast01", wavelength=grid(0.5))
     sky.error = sigma.copy()
     out = subtract_sky(science, sky, 2.0, SkyParams())
     error = out.versions["skysub"].error
@@ -217,8 +215,8 @@ def test_sky_error_propagates_exactly():
 def test_skysub_version_and_raw_kept():
     x = np.arange(N_PIX, dtype=float)
     flux = gaussian_line(x, LINE_PX)
-    science = make_spectrum(1, flux, "science", "T01", wavelength=grid(0.0))
-    sky = make_spectrum(2, gaussian_line(x, LINE_PX, 0.5 * LINE_PEAK), "sky", "T01", grid(0.0))
+    science = make_spectrum(1, flux, "science", "mast01", wavelength=grid(0.0))
+    sky = make_spectrum(2, gaussian_line(x, LINE_PX, 0.5 * LINE_PEAK), "sky", "mast01", grid(0.0))
     raw_flux, raw_error, raw_mask = science.flux.copy(), science.error.copy(), science.mask.copy()
     out = subtract_sky(science, sky, 2.0, SkyParams())
     assert "skysub" in out.versions and out.latest() is out.versions["skysub"]
@@ -230,7 +228,7 @@ def test_skysub_version_and_raw_kept():
     assert np.allclose(out.sky, 2.0 * sky.flux)
     assert np.allclose(out.versions["skysub"].flux, raw_flux - 2.0 * sky.flux)
     assert np.allclose(out.versions["skysub"].error, np.sqrt(raw_error**2 + (2.0 * sky.error) ** 2))
-    assert (out.fiber, out.role, out.telescope) == (1, "science", "T01")
+    assert (out.fiber, out.role, out.telescope) == (1, "science", "mast01")
     assert np.array_equal(out.wavelength, science.wavelength)
     # NaN flux (a low-coverage column) does not warn and stays masked
     science.flux[7] = np.nan
@@ -241,17 +239,20 @@ def test_skysub_version_and_raw_kept():
 
 def test_requires_wavelength():
     x = np.arange(N_PIX, dtype=float)
-    science = make_spectrum(1, gaussian_line(x, LINE_PX), "science", "T01", wavelength=grid())
-    sky = make_spectrum(2, gaussian_line(x, LINE_PX), "sky", "T01", wavelength=grid())
+    science = make_spectrum(1, gaussian_line(x, LINE_PX), "science", "mast01", wavelength=grid())
+    sky = make_spectrum(2, gaussian_line(x, LINE_PX), "sky", "mast01", wavelength=grid())
     with pytest.raises(ValueError, match="wavelength"):
-        subtract_sky(make_spectrum(1, science.flux, "science", "T01"), sky, 1.0, SkyParams())
+        subtract_sky(make_spectrum(1, science.flux, "science", "mast01"), sky, 1.0, SkyParams())
     with pytest.raises(ValueError, match="wavelength"):
-        subtract_sky(science, make_spectrum(2, sky.flux, "sky", "T01"), 1.0, SkyParams())
+        subtract_sky(science, make_spectrum(2, sky.flux, "sky", "mast01"), 1.0, SkyParams())
     with pytest.raises(ValueError, match="monotonic"):
         wobbly = grid()
         wobbly[50], wobbly[51] = wobbly[51], wobbly[50]
         subtract_sky(
-            science, make_spectrum(2, sky.flux, "sky", "T01", wavelength=wobbly), 1.0, SkyParams()
+            science,
+            make_spectrum(2, sky.flux, "sky", "mast01", wavelength=wobbly),
+            1.0,
+            SkyParams(),
         )
 
 
@@ -264,21 +265,21 @@ def toy_layout() -> tuple[TraceSet, list[Spectrum]]:
     traces = TraceSet(
         traces=[
             make_trace(0, "arc", None),
-            make_trace(1, "science", "T01"),
-            make_trace(2, "sky", "T01"),
-            make_trace(3, "science", "T02"),
-            make_trace(4, "sky", "T02"),
-            make_trace(5, "science", "T03"),
+            make_trace(1, "science", "mast01"),
+            make_trace(2, "sky", "mast01"),
+            make_trace(3, "science", "mast02"),
+            make_trace(4, "sky", "mast02"),
+            make_trace(5, "science", "mast03"),
         ],
         shape=(100, N_PIX),
     )
     spectra = [
         make_spectrum(0, np.zeros(N_PIX), "arc", None, wavelength=grid()),
-        make_spectrum(1, gaussian_line(x, LINE_PX), "science", "T01", wavelength=grid()),
-        make_spectrum(2, gaussian_line(x, LINE_PX), "sky", "T01", wavelength=grid()),
-        make_spectrum(3, gaussian_line(x, LINE_PX), "science", "T02", wavelength=grid()),
-        make_spectrum(4, gaussian_line(x, LINE_PX), "sky", "T02", wavelength=grid()),
-        make_spectrum(5, gaussian_line(x, LINE_PX), "science", "T03", wavelength=grid()),
+        make_spectrum(1, gaussian_line(x, LINE_PX), "science", "mast01", wavelength=grid()),
+        make_spectrum(2, gaussian_line(x, LINE_PX), "sky", "mast01", wavelength=grid()),
+        make_spectrum(3, gaussian_line(x, LINE_PX), "science", "mast02", wavelength=grid()),
+        make_spectrum(4, gaussian_line(x, LINE_PX), "sky", "mast02", wavelength=grid()),
+        make_spectrum(5, gaussian_line(x, LINE_PX), "science", "mast03", wavelength=grid()),
     ]
     return traces, spectra
 
@@ -292,7 +293,7 @@ def test_subtract_sky_all_pairs_by_telescope_and_scales():
     assert "skysub" in out[1].versions and "skysub" in out[3].versions
     assert np.allclose(out[1].sky, 1.5 * spectra[2].flux)
     assert np.allclose(out[3].sky, spectra[4].flux)
-    assert skipped == [{"fiber": 5, "telescope": "T03", "reason": "no sky fiber"}]
+    assert skipped == [{"fiber": 5, "telescope": "mast03", "reason": "no sky fiber"}]
     assert out[5] is spectra[5]
     # no throughput for one side, or scaling switched off: ratio 1
     out, _ = subtract_sky_all(spectra, traces, {1: 1.2}, SkyParams())
@@ -303,14 +304,14 @@ def test_subtract_sky_all_pairs_by_telescope_and_scales():
 
 def test_missing_sky_fiber_leaves_raw_only():
     traces, spectra = toy_layout()
-    # the sky trace of T01 is absent from the spectra (extraction skipped it)
+    # the sky trace of mast01 is absent from the spectra (extraction skipped it)
     without = [s for s in spectra if s.fiber != 2]
     out, skipped = subtract_sky_all(without, traces, {}, SkyParams())
     assert [s.fiber for s in out] == [0, 1, 3, 4, 5]
     assert out[1] is without[1] and out[1].versions == {} and out[1].sky is None
     assert skipped == [
-        {"fiber": 1, "telescope": "T01", "reason": "no sky fiber"},
-        {"fiber": 5, "telescope": "T03", "reason": "no sky fiber"},
+        {"fiber": 1, "telescope": "mast01", "reason": "no sky fiber"},
+        {"fiber": 5, "telescope": "mast03", "reason": "no sky fiber"},
     ]
     assert "skysub" in out[2].versions
     # a science fiber without a telescope has no sky fiber either
@@ -325,7 +326,7 @@ def test_masked_sky_fiber_leaves_raw_only():
     spectra[2].mask[:] = True
     out, skipped = subtract_sky_all(spectra, traces, {}, SkyParams())
     assert out[1] is spectra[1] and out[1].versions == {}
-    assert {"fiber": 1, "telescope": "T01", "reason": "sky fiber fully masked"} in skipped
+    assert {"fiber": 1, "telescope": "mast01", "reason": "sky fiber fully masked"} in skipped
     assert "skysub" in out[3].versions
     # a sky fiber without wavelength, and a science fiber without one
     traces, spectra = toy_layout()
@@ -334,9 +335,9 @@ def test_masked_sky_fiber_leaves_raw_only():
     out, skipped = subtract_sky_all(spectra, traces, {}, SkyParams())
     assert out[1] is spectra[1] and out[3] is spectra[3]
     assert skipped == [
-        {"fiber": 1, "telescope": "T01", "reason": "no wavelength"},
-        {"fiber": 3, "telescope": "T02", "reason": "no wavelength"},
-        {"fiber": 5, "telescope": "T03", "reason": "no sky fiber"},
+        {"fiber": 1, "telescope": "mast01", "reason": "no wavelength"},
+        {"fiber": 3, "telescope": "mast02", "reason": "no wavelength"},
+        {"fiber": 5, "telescope": "mast03", "reason": "no sky fiber"},
     ]
 
 
@@ -347,17 +348,15 @@ def test_bad_throughput_leaves_raw_only():
     assert out[1] is spectra[1] and out[3] is spectra[3]
     assert out[1].versions == {} and out[3].versions == {}
     assert skipped == [
-        {"fiber": 1, "telescope": "T01", "reason": "bad throughput"},
-        {"fiber": 3, "telescope": "T02", "reason": "bad throughput"},
-        {"fiber": 5, "telescope": "T03", "reason": "no sky fiber"},
+        {"fiber": 1, "telescope": "mast01", "reason": "bad throughput"},
+        {"fiber": 3, "telescope": "mast02", "reason": "bad throughput"},
+        {"fiber": 5, "telescope": "mast03", "reason": "no sky fiber"},
     ]
     out, skipped = subtract_sky_all(spectra, traces, {1: 1.0, 2: -0.5}, SkyParams())
-    assert skipped[0] == {"fiber": 1, "telescope": "T01", "reason": "bad throughput"}
-    assert "skysub" in out[3].versions  # T02 has no throughput at all: ratio 1
+    assert skipped[0] == {"fiber": 1, "telescope": "mast01", "reason": "bad throughput"}
+    assert "skysub" in out[3].versions  # mast02 has no throughput at all: ratio 1
     # with scaling off the throughputs are not consulted
-    out, skipped = subtract_sky_all(
-        spectra, traces, throughput, SkyParams(scale_by_throughput=False)
-    )
+    out, skipped = subtract_sky_all(spectra, traces, throughput, SkyParams(scale_by_throughput=False))
     assert [s["reason"] for s in skipped] == ["no sky fiber"]
     assert "skysub" in out[1].versions and "skysub" in out[3].versions
     assert np.all(np.isfinite(out[1].sky))
@@ -371,15 +370,26 @@ def test_subtract_sky_removes_simulated_sky_lines(night):
     taken as the "science" and the sky fiber of the next telescope as its sky: both saw the
     same sky through different throughputs and with independent noise. Scaled by the truth
     throughput ratio, the subtraction leaves no line: the residual at each of the
-    ``sky_lines_nm`` is below 3 sigma of the propagated error, while the unsubtracted
-    "science" shows the lines at more than 10 sigma and an unscaled subtraction leaves a
-    residual above 3 sigma for at least one pair."""
+    ``sky_lines_nm`` is below 3 sigma of the propagated error plus the linear-resampling
+    loss, while the unsubtracted "science" shows the lines at more than 10 sigma and an
+    unscaled subtraction leaves a residual above that bound for at least one pair.
+
+    The loss: every fiber has its own dispersion, so the two grids differ by a fraction of
+    a pixel and the sky is linearly interpolated onto the science grid. Interpolating a
+    Gaussian line of sigma ``s`` px halfway between two samples gives
+    ``exp(-1 / (8 s^2))`` of its peak; with the simulator's 3 px FWHM (``s = 1.27``) that
+    misses up to ``LINEAR_RESAMPLING_LOSS`` = 7.4 % of the line's peak column flux
+    (``SKY_LINE_PEAK_ADU`` times the profile's column factor and the throughput), about
+    70 ADU against an error of about 50 ADU. The truth before the per-fiber dispersion
+    gave every fiber the same grid, so nothing was interpolated and 3 sigma held alone."""
     skies = [s for s in night.spectra if s.role == "sky"]
     assert len(skies) >= 2
-    at_lines = np.rint(night.line_px).astype(int)
-    assert np.all((at_lines > 2) & (at_lines < len(skies[0].pixel) - 2))
+    column_peak = SKY_LINE_PEAK_ADU * ARC_SIGMA_PX * np.sqrt(2.0 * np.pi)
     unscaled_fails = 0
     for science, sky in zip(skies, skies[1:], strict=False):
+        loss = LINEAR_RESAMPLING_LOSS * column_peak * night.throughput[science.fiber]
+        at_lines = np.rint(night.line_px[science.fiber]).astype(int)
+        assert np.all((at_lines > 2) & (at_lines < len(science.pixel) - 2))
         ratio = night.throughput[science.fiber] / night.throughput[sky.fiber]
         assert not (science.mask[at_lines].any() or sky.mask[at_lines].any())
         continuum = np.nanmedian(science.flux[~science.mask])
@@ -387,11 +397,11 @@ def test_subtract_sky_removes_simulated_sky_lines(night):
         out = subtract_sky(science, sky, ratio, SkyParams())
         skysub = out.versions["skysub"]
         assert not skysub.mask[at_lines].any()
-        assert np.all(np.abs(skysub.flux[at_lines]) < 3.0 * skysub.error[at_lines])
+        assert np.all(np.abs(skysub.flux[at_lines]) < 3.0 * skysub.error[at_lines] + loss)
         # the subtracted sky carries the lines
         assert np.all(out.sky[at_lines] > 10.0 * science.error[at_lines])
         plain = subtract_sky(science, sky, 1.0, SkyParams()).versions["skysub"]
-        if np.any(np.abs(plain.flux[at_lines]) > 3.0 * plain.error[at_lines]):
+        if np.any(np.abs(plain.flux[at_lines]) > 3.0 * plain.error[at_lines] + loss):
             unscaled_fails += 1
     assert unscaled_fails > 0
 
@@ -408,10 +418,12 @@ def test_subtract_sky_all_on_simulated_frame(night):
         sky_spectrum = next(s for s in night.spectra if s.fiber == sky.index)
         ratio = night.throughput[before.fiber] / night.throughput[sky.index]
         assert np.array_equal(after.flux, before.flux)
-        assert np.allclose(after.sky, ratio * sky_spectrum.flux, equal_nan=True)
+        # the sky fiber's own grid, resampled onto the science fiber's
+        expected = resample_sky(sky_spectrum, before.wavelength, ratio)[0]
+        assert np.allclose(after.sky, expected, equal_nan=True)
         skysub = after.versions["skysub"]
         good = ~skysub.mask
         assert np.allclose(skysub.flux[good], before.flux[good] - after.sky[good])
         # the science fiber had no sky: the subtraction digs the sky lines in
-        at_lines = np.rint(night.line_px).astype(int)
+        at_lines = np.rint(night.line_px[before.fiber]).astype(int)
         assert np.all(skysub.flux[at_lines] < -10.0 * skysub.error[at_lines])

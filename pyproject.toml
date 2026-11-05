@@ -28,13 +28,16 @@ dependencies = [
     "matplotlib>=3.8",
     "pydantic>=2.5",
     "pyyaml>=6.0",
+    # IANA time-zone database for zoneinfo where the system has none (Windows): header maps
+    # name the zone of a naive time stamp (mastpipe.core.times)
+    "tzdata",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-cov",
-    "ruff>=0.6",
+    "ruff==0.16.0",
     "nbstripout",
 ]
 docs = [
@@ -69,14 +72,58 @@ mastpipe = [
 version = { attr = "mastpipe.__version__.__version__" }
 
 [tool.ruff]
-line-length = 100
+# The MAST fleet standard (MAST_common's ruff.toml), with Python 3.11 kept: mastpipe is a
+# library and still supports it. ruff is pinned in the `dev` extra (ruff==0.16.0) because
+# formatter output can differ between ruff versions.
+line-length = 125
 target-version = "py311"
+# The design documents are a historical record: their code blocks are quoted as planned,
+# not formatted or linted.
+extend-exclude = ["docs/design"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "NPY"]
+# The fleet's rule set plus NPY, stated as `select` rather than `extend-select` so the
+# effective rules change with a decision, not with the pinned ruff version.
+select = [
+    "F",   # Pyflakes (runtime errors)
+    "E",   # pycodestyle (formatting)
+    "W",   # pycodestyle warnings
+    "I",   # isort (import sorting)
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C90", # mccabe complexity
+    "SIM", # flake8-simplify
+    "TID", # tidy imports
+    "NPY", # NumPy-specific rules (mastpipe's addition to the fleet set)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Physics-named variables and arguments (`B`, `x_c`, ...) follow the notation of the
+# equations they implement; renaming them to lower case would obscure that.
+"src/mastpipe/steps/*" = ["N806", "N803"]
+# The same notation in the simulator (`B`, `B_i`, and `line_logI` after the line table's
+# `logI` column), in the arc identification (`R`, the resolving power) and in the tests
+# that build dispersion solutions.
+"src/mastpipe/sim/*" = ["N806", "N803", "N815"]
+"src/mastpipe/pipeline/identify.py" = ["N806"]
+"tests/*" = ["N806"]
+
+[tool.ruff.lint.mccabe]
+# A ratchet, not a preference. The default is 10; this is the complexity of the worst
+# function in the tree (`steps/lines.py: find_lines`), so anything more tangled than what
+# is already here fails. Ten functions exceed 10 (find with `ruff check --select C901
+# --config lint.mccabe.max-complexity=10 .`); each one split lowers this number in the
+# same change.
+max-complexity = 23
 
 [tool.ruff.lint.isort]
 known-first-party = ["mastpipe"]
+
+[tool.ruff.format]
+# Ruff's Black-compatible formatter.
+quote-style = "double"
+docstring-code-format = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

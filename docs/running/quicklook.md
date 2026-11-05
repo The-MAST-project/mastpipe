@@ -1,7 +1,7 @@
 # Quick-look: reducing a night
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec
+mastpipe quicklook night/ --out out --instrument highspec --configuration Mg
 ```
 
 One command reduces everything in the folder it can, records what it could
@@ -44,12 +44,21 @@ Per camera and grating found in the folder:
   against the frame's reference, and within `drift.max_age_hours` (default 12)
   qualify. With none, the frame gets status `reference`.
 
+`--configuration Mg | Halpha | Ca`
+: The grating of frames whose header does not name it (no `GRATING` card and
+  no grating alias in the file name). The control software writes no such card
+  today, so a night from the site needs this option; without it those frames
+  are not reduced and the run fails with the list of the instrument's
+  configurations. A frame that names its grating keeps it; one that does not
+  takes this one, and its products, masters and library entries are named by it.
+
 `--manifest file.csv`
-: Metadata overrides by file name; see [The night folder](night-folder.md).
+: Metadata overrides by relative path, glob pattern or file name; see
+  [The night folder](night-folder.md).
 
 `--layout lab3 | survey45`
-: The fiber preset when the frames do not name it; selects the preset's
-  parameters too.
+: The fiber preset (else a manifest's `fiber_preset`, else the instrument's
+  default); selects the preset's parameters too.
 
 `--reference ID`
 : Pin one reference solution for every frame instead of the one valid at each
@@ -61,7 +70,7 @@ Per camera and grating found in the folder:
   With `raise` the first error stops the run with its traceback.
 
 `--force`
-: Reduce products that already exist.
+: Reduce products that already exist, and rebuild masters the library holds.
 
 `--set group.key=value`
 : Override any step parameter for this run, e.g. `--set drift.max_age_hours=24`
@@ -71,9 +80,13 @@ Per camera and grating found in the folder:
 ## Idempotence and re-reduction
 
 A science product on disk is skipped when its **key** matches the run's: the
-input frame's checksum, the configuration hash, the reference identifier, the
-sorted checksums of the drift arcs it would use, and the layout preset. A
-product whose key changed is reduced again. The case this is built for: the
+input frame's checksum, the configuration hash (overrides and `--time-policy`
+included), the reference solution's hash, the sorted checksums of the drift
+arcs it would use, the layout preset and the hash of its CSV file, a hash of
+the masters used and the frame's time zone. A product whose key changed is
+reduced again. Masters the calibration library already holds, stacked from
+the same frames with the same `calib` parameters and detector, are reused
+rather than rebuilt; `--force` rebuilds them. The case this is built for: the
 first science frames of a night are reduced before any calibration-fiber arc
 exists and get status `reference`; when the night's first arc lands and the
 quick-look runs again, those frames are reduced once more and become
@@ -93,7 +106,7 @@ The same command on the same folder and output gives the same products. To
 redo a night with a different policy:
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec --time-policy interpolate --force
+mastpipe quicklook night/ --out out --instrument highspec --configuration Mg --time-policy interpolate --force
 ```
 
 Products from earlier runs are overwritten only when `--force` is given or

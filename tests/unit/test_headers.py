@@ -1,9 +1,12 @@
 """Tests for header-map resolution and exposure classification."""
 
+import numpy as np
 import pytest
+from astropy.io import fits
 
 from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.headers import HeaderMap
+from mastpipe.io.ingest import scan_folder
 
 SYNTHETIC_MAP = {
     "fields": {
@@ -17,8 +20,8 @@ SYNTHETIC_MAP = {
         "readout_mode": {"keys": ["READMODE"], "lower": True},
         "configuration": {
             "keys": ["GRATING"],
-            "lower": True,
             "filename_regex": "(?P<value>mgb518|halpha)",
+            "map": {"mgb518": "Mg", "halpha": "Halpha"},
         },
         "target": {"keys": ["OBJECT"]},
     },
@@ -36,14 +39,14 @@ def test_resolve_priority_and_transforms():
         "EXPOSURE": "12.5",
         "IMAGETYP": "OBJECT",
         "READMODE": "Fast",
-        "GRATING": "MGB518",
+        "GRATING": "Mg",
     }
     fields, unresolved = hmap.resolve(header, "frame_0001.fits")
     assert fields["exposure_time"] == pytest.approx(12.5)  # first key in the list wins
     assert isinstance(fields["exposure_time"], float)
     assert fields["exposure_type"] == "science"  # lower-cased, then mapped
     assert fields["readout_mode"] == "fast"  # lower-cased, left as is when unmapped
-    assert fields["configuration"] == "mgb518"
+    assert fields["configuration"] == "Mg"  # case kept
     assert fields["binning_x"] == 1  # default used when no key is present
     assert fields["target"] is None
     assert unresolved == ["target"]
@@ -66,14 +69,21 @@ def test_unconvertible_value_is_unresolved():
 def test_filename_regex_fallback():
     hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
     fields, unresolved = hmap.resolve({}, "night01_halpha_0007.fits")
-    assert fields["configuration"] == "halpha"
+    assert fields["configuration"] == "Halpha"  # the file-name alias, mapped
     assert "configuration" not in unresolved
     fields, unresolved = hmap.resolve({}, "night01_0007.fits")
     assert fields["configuration"] is None
     assert "configuration" in unresolved
     # a present keyword beats the file name
-    fields, _ = hmap.resolve({"GRATING": "mgb518"}, "night01_halpha_0007.fits")
-    assert fields["configuration"] == "mgb518"
+    fields, _ = hmap.resolve({"GRATING": "Mg"}, "night01_halpha_0007.fits")
+    assert fields["configuration"] == "Mg"
+
+
+def test_configuration_keeps_case_and_maps_lab_aliases():
+    hm = HeaderMap.from_dict(load_header_map("highspec"))
+    assert hm.resolve({"GRATING": "Mg"}, "x.fits")[0]["configuration"] == "Mg"
+    assert hm.resolve({}, "FOCUS_00_mgb518.fits")[0]["configuration"] == "Mg"
+    assert hm.resolve({}, "x_halpha.fits")[0]["configuration"] == "Halpha"
 
 
 def test_classify_header_wins_then_rules():
@@ -135,7 +145,7 @@ def test_no_matching_rule_is_unclassified():
             "fields": {"exposure_time": {"keys": ["EXPOSURE"]}},
             "classification": [{"when": {"exposure_time": {"gt": 1}}, "type": "bias"}],
         },
-        {"fields": {"configuration": {"filename_regex": "(mgb518)"}}},
+        {"fields": {"configuration": {"filename_regex": "(Mg)"}}},
     ],
 )
 def test_invalid_map_is_rejected(bad):
@@ -173,9 +183,9 @@ def test_missing_values_make_a_field_unresolved():
 
 
 def test_time_reference_option_is_validated():
-    spec = HeaderMap.from_dict(
-        {"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", "reference": "end"}}}
-    ).fields["mid_time"]
+    spec = HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", "reference": "end"}}}).fields[
+        "mid_time"
+    ]
     assert spec.reference == "end"
     plain = HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"]}}})
     assert plain.fields["mid_time"].reference == "start"
@@ -185,6 +195,22 @@ def test_time_reference_option_is_validated():
     assert highspec.fields["mid_time"].reference == "start"
 
 
+def test_timezone_option_is_validated():
+    def spec(**options):
+        raw = {"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", **options}}}
+        return HeaderMap.from_dict(raw).fields["mid_time"]
+
+    assert spec().timezone == "utc"
+    for zone in ("utc", "assume-utc", "Asia/Jerusalem", "UTC"):
+        assert spec(timezone=zone).timezone == zone
+    for bad in ("Mars/Olympus", "", "../etc", 3):
+        with pytest.raises(ValueError, match="timezone"):
+            spec(timezone=bad)
+    highspec = HeaderMap.from_dict(load_header_map("highspec"))
+    assert highspec.fields["mid_time"].timezone == "assume-utc"
+    assert highspec.fields["mid_time"].keys == ("DATE-OBS", "FRAME", "DATE")
+
+
 def test_lt_on_a_non_numeric_value_does_not_match():
     hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
     base = {name: None for name in hmap.fields}
@@ -192,3 +218,118 @@ def test_lt_on_a_non_numeric_value_does_not_match():
     assert hmap.classify({**base, "exposure_time": "short"}) == ("unknown", "unclassified")
     assert hmap.classify({**base, "exposure_time": 0.0}) == ("bias", "rule:0")
     assert hmap.classify({**base, "exposure_time": True}) == ("unknown", "unclassified")
+
+
+# ------------------------------------------------------------- the provisional light type
+
+
+@pytest.fixture
+def highspec_map() -> HeaderMap:
+    return HeaderMap.from_dict(load_header_map("highspec"))
+
+
+def test_light_is_provisional_and_rules_refine_it(highspec_map):
+    base = {name: None for name in highspec_map.fields}
+    light = {**base, "exposure_type": "light"}
+    assert highspec_map.classify({**light, "exposure_time": 30.0}) == ("light", "header")
+    assert highspec_map.classify({**light, "exposure_time": 0.0}) == ("bias", "rule:0")
+    # a rule with conditions refines it; the unconditional fallback never does
+    lamp = {**light, "exposure_time": 30.0, "lamp_state": "thar"}
+    assert highspec_map.classify(lamp) == ("arc", "rule:2")
+    # without a valid header type the rules and the fallback apply as before
+    assert highspec_map.classify({**base, "exposure_time": 30.0}) == ("science", "rule:5")
+
+
+def test_light_with_zero_exposure_is_bias(tmp_path, highspec_map):
+    cards = {"IMAGETYP": "Light", "DATE-OBS": "2026-10-01T18:00:00", "INSTRUME": "Highspec"}
+    for name, exposure in (("zero.fits", 0.0), ("long.fits", 30.0)):
+        hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+        hdu.header.update({**cards, "EXPOSURE": exposure})
+        hdu.writeto(tmp_path / name)
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert (refs["zero.fits"].exposure_type, refs["zero.fits"].classification_rule) == (
+        "bias",
+        "rule:0",
+    )
+    assert (refs["long.fits"].exposure_type, refs["long.fits"].classification_rule) == (
+        "light",
+        "header",
+    )
+
+
+def test_flat_header_type_is_never_refined(highspec_map):
+    base = {name: None for name in highspec_map.fields}
+    for kind in ("flat", "bias", "dark", "arc", "science"):
+        fields = {**base, "exposure_type": kind, "exposure_time": 0.0, "lamp_state": "thar"}
+        assert highspec_map.classify(fields) == (kind, "header")
+
+
+def test_a_map_without_conditional_rules_leaves_light_as_is():
+    raw = {
+        "fields": {
+            "exposure_type": {"keys": ["IMAGETYP"]},
+            "exposure_time": {"keys": ["EXPOSURE"]},
+        },
+        "classification": [{"type": "science"}],
+    }
+    hmap = HeaderMap.from_dict(raw)
+    assert hmap.classify({"exposure_type": "light", "exposure_time": 0.0}) == ("light", "header")
+    assert hmap.classify({"exposure_type": None, "exposure_time": 0.0}) == ("science", "rule:0")
+
+
+# ------------------------------------------------------------------------- per_unit fields
+
+PER_UNIT_MAP = {
+    "fields": {
+        "targets": {"per_unit": "OBJ{nn}", "missing_values": ["none"]},
+        "target": {"keys": ["OBJECT"]},
+    }
+}
+
+
+def test_per_unit_field_collects_present_units_in_unit_order():
+    hmap = HeaderMap.from_dict(PER_UNIT_MAP)
+    header = {"OBJ03": "HD 3", "OBJ01": "HD 1", "OBJ02": "none", "OBJ04": "", "OBJ21": "x"}
+    fields, unresolved = hmap.resolve(header, "frame.fits")
+    assert fields["targets"] == (("mast01", "HD 1"), ("mast03", "HD 3"))
+    assert unresolved == ["target"]
+    fields, unresolved = hmap.resolve({"OBJECT": "star"}, "frame.fits")
+    assert fields["targets"] is None and fields["target"] == "star"
+    assert unresolved == ["targets"]
+
+
+def test_per_unit_spec_is_validated():
+    with pytest.raises(ValueError, match="nn"):
+        HeaderMap.from_dict({"fields": {"targets": {"per_unit": "OBJ"}}})
+    for other in ({"keys": ["OBJECT"]}, {"filename_regex": "(?P<value>x)"}, {"default": "x"}):
+        with pytest.raises(ValueError, match="per_unit"):
+            HeaderMap.from_dict({"fields": {"targets": {"per_unit": "OBJ{nn}", **other}}})
+
+
+def test_highspec_map_reads_targets_per_unit(highspec_map):
+    assert highspec_map.fields["targets"].per_unit == "OBJ{nn}"
+    assert highspec_map.fields["target"].keys == ("OBJECT",)
+
+
+def test_amplifier_is_read_and_keyed(tmp_path, highspec_map):
+    cards = {
+        "IMAGETYP": "Light",
+        "EXPOSURE": 30.0,
+        "DATE-OBS": "2026-10-01T18:00:00",
+        "INSTRUME": "Highspec",
+        "READMODE": "Image",
+    }
+    for name, amplifier in (("em.fits", "Electron Multiplying"), ("conv.fits", "Conventional")):
+        hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+        hdu.header.update({**cards, "OUTPTAMP": amplifier})
+        hdu.writeto(tmp_path / name)
+    hdu = fits.PrimaryHDU(np.zeros((4, 4), dtype=np.uint16))
+    hdu.header.update(cards)
+    hdu.writeto(tmp_path / "bare.fits")
+    refs = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert refs["em.fits"].amplifier == "em"
+    assert refs["em.fits"].readout_mode == "image"  # OUTPTAMP is no longer a readout-mode key
+    assert refs["em.fits"].readout_key == "image/em"
+    assert refs["conv.fits"].readout_key == "image/conventional"
+    assert refs["bare.fits"].amplifier is None
+    assert refs["bare.fits"].readout_key == "image/unknown"

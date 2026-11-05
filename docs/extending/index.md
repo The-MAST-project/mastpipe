@@ -20,6 +20,10 @@ conventions
 The [API reference](../api/index.md) is generated from the docstrings, module
 by module.
 
+The design specifications, implementation plans and execution ledgers behind the
+code are kept as Markdown in the repository's `docs/design/` folder; they are read
+on GitHub or in a clone and are not pages of this site.
+
 ## Development setup
 
 ```bash

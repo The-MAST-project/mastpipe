@@ -41,7 +41,7 @@ def test_model_from_config_is_nominal(geom: GratingGeometry, nominal: GratingMod
     assert nominal.kind == "grating"
     assert nominal.n_pix == N_PIX
     assert nominal.x_c == pytest.approx(x_c)
-    assert nominal.B == pytest.approx(B)
+    assert pytest.approx(B) == nominal.B
     assert nominal.alpha == pytest.approx(geom.alpha_rad)
     assert nominal.poly is None
     np.testing.assert_allclose(nominal.params, [x_c, B, geom.alpha_rad])
@@ -55,9 +55,7 @@ def test_grating_model_roundtrip_pixel_wavelength(geom: GratingGeometry, nominal
     np.testing.assert_allclose(nominal.pixel(lam), x, atol=1e-6)
     # with a distortion term (cubic and quadratic, no constant or linear) the inverse must
     # still land on the same pixel
-    distorted = GratingModel(
-        nominal.x_c, nominal.B, nominal.alpha, np.array([0.4, -0.3, 0.0, 0.0]), N_PIX, geom
-    )
+    distorted = GratingModel(nominal.x_c, nominal.B, nominal.alpha, np.array([0.4, -0.3, 0.0, 0.0]), N_PIX, geom)
     lam_d = distorted.wavelength(x)
     assert np.max(np.abs(lam_d - lam)) > 1e-4  # the distortion is not a no-op
     np.testing.assert_allclose(distorted.pixel(lam_d), x, atol=1e-6)
@@ -92,12 +90,12 @@ def test_grating_model_matches_simulator_truth(sim_night, highspec_effective):
     _, truth = sim_night
     geom = grating_geometry(highspec_effective.geometry, highspec_effective.detector.pixel_size_um)
     n_pix = truth.science_flux.shape[-1]
-    model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
-    np.testing.assert_allclose(model.pixel(truth.lines_nm), truth.line_pixels[0], atol=1e-6)
     on = truth.lines_on_chip
-    np.testing.assert_allclose(
-        model.wavelength(truth.line_pixels[0][on]), truth.lines_nm[on], atol=1e-9
-    )
+    for fiber in (0, 17, 44):  # every trace has its own (x_c, B)
+        model = GratingModel(truth.x_c_per_trace[fiber], truth.B_per_trace[fiber], geom.alpha_rad, None, n_pix, geom)
+        pixels = truth.line_pixels[fiber]
+        np.testing.assert_allclose(model.pixel(truth.lines_nm), pixels, atol=1e-6)
+        np.testing.assert_allclose(model.wavelength(pixels[on]), truth.lines_nm[on], atol=1e-9)
 
 
 def test_with_params_and_dict_roundtrip(geom: GratingGeometry, nominal: GratingModel):
@@ -127,9 +125,7 @@ def test_with_params_and_dict_roundtrip(geom: GratingGeometry, nominal: GratingM
 def test_model_from_solution(geom: GratingGeometry, nominal: GratingModel):
     poly = np.array([0.25, 0.0, 0.0, 0.0])
     model = nominal.with_params(np.concatenate([nominal.params, poly]))
-    lines = pd.DataFrame(
-        {"x": [100.0, 900.0], "wavelength": [514.0, 521.0], "species": ["Th I", "Ar II"]}
-    )
+    lines = pd.DataFrame({"x": [100.0, 900.0], "wavelength": [514.0, 521.0], "species": ["Th I", "Ar II"]})
     lines["dx_px"] = 0.0
     solution = WavelengthSolution(
         fiber=0,
@@ -202,7 +198,7 @@ def test_fit_model_recovers_params_from_lines(geom: GratingGeometry, nominal: Gr
     assert isinstance(fitted, GratingModel)
     assert resid.shape == (25,)
     assert fitted.x_c == pytest.approx(truth.x_c, abs=0.05)
-    assert fitted.B == pytest.approx(truth.B, rel=1e-4)
+    assert pytest.approx(truth.B, rel=1e-4) == fitted.B
     assert fitted.alpha == truth.alpha  # alpha held
     assert fitted.poly is None
     assert np.sqrt(np.mean(resid**2)) < 0.03
@@ -260,20 +256,18 @@ def test_anchor_model_two_pairs(geom: GratingGeometry, nominal: GratingModel):
     model = anchor_model(pairs, geom, N_PIX)
     assert isinstance(model, GratingModel)
     assert model.x_c == pytest.approx(truth.x_c, abs=1e-6)
-    assert model.B == pytest.approx(truth.B, rel=1e-9)
+    assert pytest.approx(truth.B, rel=1e-9) == model.B
     assert model.alpha == geom.alpha_rad
     assert model.poly is None
     assert model.n_pix == N_PIX
     # one pair fixes x_c at the nominal B
     single = anchor_model(pairs[:1], geom, N_PIX)
-    assert single.B == pytest.approx(nominal.B)
+    assert pytest.approx(nominal.B) == single.B
     assert single.pixel(waves[0]) == pytest.approx(pairs[0][1], abs=1e-9)
     # three pairs: least squares through all of them
     three = pairs + [(520.0, truth.pixel(520.0))]
     model3 = anchor_model(three, geom, N_PIX)
     assert model3.x_c == pytest.approx(truth.x_c, abs=1e-6)
-    assert grating_x(520.0, model3.x_c, model3.B, model3.alpha, geom) == pytest.approx(
-        three[2][1], abs=1e-6
-    )
+    assert grating_x(520.0, model3.x_c, model3.B, model3.alpha, geom) == pytest.approx(three[2][1], abs=1e-6)
     with pytest.raises(ValueError):
         anchor_model([], geom, N_PIX)

@@ -102,9 +102,7 @@ def _result(shift: float, stretch: float, n_lines: int, rms: float, params: Drif
     }
 
 
-def fit_fiber_drift(
-    x_obs: np.ndarray, reference: WavelengthSolution, params: DriftParams
-) -> dict[str, Any]:
+def fit_fiber_drift(x_obs: np.ndarray, reference: WavelengthSolution, params: DriftParams) -> dict[str, Any]:
     """The shift and stretch of one fiber's measured lines against its reference solution.
 
     ``x_obs`` are the measured line columns of the fiber on a calibration-fiber arc and the
@@ -190,9 +188,11 @@ def fit_drift(
     each fiber comes from ``traceset`` (the reference solution's when the trace is absent).
     Over the usable fibers a polynomial of degree ``min(params.degree, n_usable - 1)`` in
     ``y_center`` is fitted to the shifts and another to the stretches; ``scatter_px`` is
-    the rms of the usable shifts about that model and the model is ``usable`` when at least
-    one fiber is and ``scatter_px <= params.max_scatter_px``. Without any usable fiber both
-    polynomials are zero.
+    the rms of the usable shifts about that model, ``n_usable`` the number of usable fibers,
+    and the model is ``usable`` when ``n_usable >= params.min_fibers`` and ``scatter_px <=
+    params.max_scatter_px``: with two fibers a line runs through both shifts, so the scatter
+    gate needs three to judge anything (:func:`drift_unusable_reason` says which gate
+    failed). Without any usable fiber both polynomials are zero.
     """
     y_centers = _y_centers(traceset)
     rows: list[dict[str, Any]] = []
@@ -235,9 +235,7 @@ def fit_drift(
         scatter = float(np.sqrt(np.mean(about_model**2)))
     else:
         scatter = float("nan")
-    n_pix = next(
-        (solution.n_pix for solution in reference.solutions.values()), int(traceset.shape[1])
-    )
+    n_pix = next((solution.n_pix for solution in reference.solutions.values()), int(traceset.shape[1]))
     return DriftModel(
         arc_checksums=(arc_meta.checksum,),
         arc_mid_time=arc_meta.mid_time or "",
@@ -245,9 +243,25 @@ def fit_drift(
         shift_coeffs=np.asarray(shift_coeffs, dtype=float),
         stretch_coeffs=np.asarray(stretch_coeffs, dtype=float),
         scatter_px=scatter,
-        usable=bool(n_usable >= 1 and scatter <= params.max_scatter_px),
+        usable=bool(n_usable >= params.min_fibers and scatter <= params.max_scatter_px),
         n_pix=int(n_pix),
+        n_usable=int(n_usable),
     )
+
+
+def drift_unusable_reason(model: DriftModel, params: DriftParams) -> str | None:
+    """Why ``model`` is not usable under ``params``, ``None`` when it is: too few usable arc
+    fibers for ``params.min_fibers``, a scatter beyond ``params.max_scatter_px`` (or none,
+    without fibers), or, for a blend of several arcs, an unusable model among them."""
+    if model.usable:
+        return None
+    n_usable = int(model.n_usable or 0)
+    if n_usable < params.min_fibers:
+        return f"{n_usable} usable arc fibers, min_fibers is {params.min_fibers}"
+    scatter = float(model.scatter_px)
+    if not np.isfinite(scatter) or scatter > params.max_scatter_px:
+        return f"scatter {scatter:.3f} px exceeds max_scatter_px {params.max_scatter_px:g}"
+    return "blended from an arc whose model is not usable"
 
 
 # ------------------------------------------------------------------------------- transfer

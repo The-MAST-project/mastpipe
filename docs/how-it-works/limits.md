@@ -26,7 +26,8 @@ laboratory frames. Known limits, and where each is headed:
 - Whether a smooth drift model across five calibration fibers reaches the
   few-km/s goal is an empirical question for commissioning; the fiber-to-fiber
   agreement figure is the acceptance test.
-- The HighSpec detector's gain and read noise in the instrument file are
+- The HighSpec detector's gain and read noise in the instrument file, the
+  defaults and the per-amplifier (`conventional`, `em`) values alike, are
   placeholders to be measured.
 
 ## Why these limits are safe

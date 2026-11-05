@@ -18,15 +18,18 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "science", "background", "unknown")
+from mastpipe.core.times import to_utc
+
+EXPOSURE_TYPES = ("bias", "dark", "flat", "arc", "light", "science", "background", "unknown")
 ARC_KINDS = ("full", "calfiber", "unknown")
+ALL_TELESCOPES = "*"
+"""The key of a ``FrameMeta.targets`` entry that applies to every telescope."""
 ROLES = ("arc", "science", "sky", "unknown")
 WAVELENGTH_STATUSES = ("none", "nominal", "reference", "transferred", "solved")
 FLUX_STATUSES = ("uncalibrated", "calibrated")
@@ -61,9 +64,26 @@ def _check_columns(name: str, table: pd.DataFrame, columns: tuple[str, ...]) -> 
         raise ValueError(f"{name} is missing columns {missing}; expected {list(columns)}")
 
 
+def readout_key(readout_mode: str | None, amplifier: str | None) -> str:
+    """``"<readout_mode>/<amplifier>"`` (``"image/em"``), each part ``"unknown"`` when not
+    known: the key on which the calibration library matches masters, since the output
+    amplifier, not only the readout mode, sets the gain and read noise."""
+    return f"{readout_mode or 'unknown'}/{amplifier or 'unknown'}"
+
+
 @dataclass(frozen=True)
 class FrameMeta:
-    """Pipeline vocabulary for one raw frame, filled by ingest from the header map."""
+    """Pipeline vocabulary for one raw frame, filled by ingest from the header map.
+
+    ``mid_time`` is UTC; ``timezone`` says how the header's stamp got there: ``"utc"``
+    (the stamp carried an offset, or the map declares its clock UTC), ``"assumed-utc"``
+    (a stamp without an offset taken as UTC by assumption) or the IANA zone it was read
+    in; ``None`` when the frame has no time.
+
+    ``targets`` holds ``(telescope, target)`` pairs: one per telescope unit when the
+    header or manifest names targets per unit, or a single ``("*", target)`` pair that
+    applies to every science fiber (a single ``OBJECT``); :meth:`target_for` reads it.
+    """
 
     instrument: str
     camera: str
@@ -71,12 +91,14 @@ class FrameMeta:
     configuration: str | None = None
     exposure_time: float | None = None
     mid_time: str | None = None
+    timezone: str | None = None
     binning: tuple[int, int] = (1, 1)
     readout_mode: str | None = None
+    amplifier: str | None = None
     detector_temperature: float | None = None
     lamp_state: str | None = None
     fiber_preset: str | None = None
-    target: str | None = None
+    targets: tuple[tuple[str, str], ...] = ()
     arc_kind: str | None = None
     checksum: str = ""
     source: str = ""
@@ -88,6 +110,21 @@ class FrameMeta:
         _check_choice("exposure_type", self.exposure_type, EXPOSURE_TYPES)
         if self.arc_kind is not None:
             _check_choice("arc_kind", self.arc_kind, ARC_KINDS)
+        for pair in self.targets:
+            if not isinstance(pair, tuple) or len(pair) != 2 or not all(isinstance(part, str) for part in pair):
+                raise ValueError(f"targets must be (telescope, target) string pairs, got {pair!r}")
+
+    @property
+    def readout_key(self) -> str:
+        """The readout a master must share to calibrate this frame (:func:`readout_key`)."""
+        return readout_key(self.readout_mode, self.amplifier)
+
+    def target_for(self, telescope: str | None) -> str | None:
+        """The target of ``telescope``: its own entry, else the ``"*"`` entry, else ``None``."""
+        found = dict(self.targets)
+        if telescope is not None and telescope in found:
+            return found[telescope]
+        return found.get(ALL_TELESCOPES)
 
 
 @dataclass(frozen=True)
@@ -135,7 +172,16 @@ class MasterCalib:
 
 @dataclass(eq=False)
 class CalibrationSet:
-    """The calibration inputs for one detector: masters, scaling times and noise model."""
+    """The calibration inputs for one detector: masters, scaling times and noise model.
+
+    ``t_dark`` is the dark master's exposure time when ``dark_rate`` comes from one (``None``
+    otherwise). ``bias_variance`` and ``background_variance`` are the per-pixel variances
+    of the bias and background masters (ADU²) and ``dark_rate_variance`` the dark master's
+    own variance over ``t_dark²`` (ADU² s⁻², without the bias part: the bias enters the
+    calibrated frame through one array, so its terms are combined there); ``None`` where
+    unknown (no master, or a master read from a product that stored no
+    variance), which counts as zero in the calibrated frame's error budget.
+    """
 
     bias: np.ndarray | None
     dark_rate: np.ndarray | float
@@ -144,6 +190,10 @@ class CalibrationSet:
     gain: float
     read_noise: float
     shape: tuple[int, int]
+    t_dark: float | None = None
+    bias_variance: np.ndarray | None = None
+    background_variance: np.ndarray | None = None
+    dark_rate_variance: np.ndarray | None = None
 
 
 @dataclass(eq=False)
@@ -313,13 +363,17 @@ class ReferenceSolution:
 
 def make_identifier(instrument: str, configuration: str, fiber_preset: str, created: str) -> str:
     """Reference identifier ``{instrument}_{configuration}_{fiber_preset}_{YYYYmmddTHHMMSS}``."""
-    stamp = datetime.fromisoformat(created).strftime("%Y%m%dT%H%M%S")
+    stamp = to_utc(created).strftime("%Y%m%dT%H%M%S")
     return f"{instrument}_{configuration}_{fiber_preset}_{stamp}"
 
 
 @dataclass(eq=False)
 class DriftModel:
-    """Shift and stretch of the calibration fibers against a reference, smoothed across y."""
+    """Shift and stretch of the calibration fibers against a reference, smoothed across y.
+
+    ``n_usable`` is the number of arc fibers the across-``y`` model was fitted to; given as
+    ``None`` it is counted from ``per_fiber["usable"]``, so it is an ``int`` once built.
+    """
 
     arc_checksums: tuple[str, ...]
     arc_mid_time: str
@@ -329,9 +383,12 @@ class DriftModel:
     scatter_px: float
     usable: bool
     n_pix: int
+    n_usable: int | None = None
 
     def __post_init__(self) -> None:
         _check_columns("per_fiber", self.per_fiber, PER_FIBER_COLUMNS)
+        if self.n_usable is None:
+            self.n_usable = int(self.per_fiber["usable"].astype(bool).sum())
 
     def shift_at(self, y: float | np.ndarray) -> float | np.ndarray:
         """Pixel shift at trace centre ``y``."""
@@ -344,7 +401,11 @@ class DriftModel:
 
 @dataclass(eq=False)
 class CombinedSpectrum:
-    """Spectra of one target combined on a common grid, version by version."""
+    """Spectra of one target combined on a common grid, version by version.
+
+    ``version_missing`` maps a version some contributors lack to those contributors'
+    fibers (sorted); such a version is combined from the contributors that carry it.
+    """
 
     target: str
     wavelength: np.ndarray
@@ -353,6 +414,7 @@ class CombinedSpectrum:
     excluded: pd.DataFrame
     grouping: str
     barycentric: dict[str, float]
+    version_missing: dict[str, list[int]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         n = len(self.wavelength)

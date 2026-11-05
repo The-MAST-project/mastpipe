@@ -14,7 +14,8 @@ Layout rules shared by every product:
   / ``MPXPKnn`` / ``MPXPVnn`` for the free-form provenance dicts of
   :class:`~mastpipe.core.model.MasterCalib` and
   :class:`~mastpipe.core.model.ExposureSpectra`). Values are JSON; a JSON list of a
-  validity value or of the ``binning`` / ``unresolved`` fields reads back as a tuple.
+  validity value or of the ``binning`` / ``unresolved`` fields reads back as a tuple, and
+  ``targets`` as a tuple of ``(telescope, target)`` pairs.
 - No raw instrument keyword ever reaches a product header: frame metadata travels only as
   the ``MPMKnn`` / ``MPMVnn`` pairs. An unset scalar is the string ``"none"``.
 - Per-fiber tables hold one row per fiber with vector columns on the fiber's pixel grid.
@@ -24,8 +25,9 @@ Layout rules shared by every product:
   / ``MPGRDSKY`` / ``MPGRDCON`` for the wavelength, sky and continuum grids.
 - Tables from ``DataFrame``s (``DRIFT``, ``CONTRIB``, ``EXCLUDED``) keep the frame's
   columns, upper-cased on disk; ``None`` strings become empty strings.
-- Files are written with ``overwrite=True``; arrays read back are copies in native byte
-  order.
+- Files are written atomically (a temporary next to the target, moved into place with
+  :func:`os.replace`; :func:`mastpipe.io.atomic.atomic_write`), replacing an earlier file
+  of the same name; arrays read back are copies in native byte order.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.core.model import (
+    ALL_TELESCOPES,
     COMBINED_VERSIONS,
     LINE_COLUMNS,
     VERSIONS,
@@ -59,6 +62,8 @@ from mastpipe.core.model import (
     TraceSet,
     WavelengthSolution,
 )
+from mastpipe.core.times import to_utc
+from mastpipe.io.atomic import atomic_write
 from mastpipe.pipeline.provenance import NONE, Provenance
 from mastpipe.steps.geometry import GratingGeometry
 from mastpipe.steps.wavecal import solutions_hash
@@ -90,18 +95,19 @@ SAFE_TARGET = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def product_name(meta: FrameMeta, kind: str, ext: str = ".fits") -> str:
-    """``{instrument}_{configuration|noconf}_{camera}_{YYYYmmddTHHMMSS|notime}_{kind}{ext}``.
+    """``{instrument}_{configuration|noconf}_{camera}_{YYYYmmddTHHMMSS|notime}_{sum}_{kind}{ext}``.
 
     The stamp is the frame's UTC mid-time; a time-zone-aware ``mid_time`` is converted.
+    ``sum`` is the first six characters of the frame's checksum (``nosum`` without one),
+    so two frames with the same mid-time to the second, or two without a mid-time, never
+    share a product name.
     """
     stamp = "notime"
     if meta.mid_time is not None:
-        time = pd.Timestamp(meta.mid_time)
-        if time.tzinfo is not None:
-            time = time.tz_convert("UTC")
-        stamp = time.strftime("%Y%m%dT%H%M%S")
+        stamp = to_utc(meta.mid_time).strftime("%Y%m%dT%H%M%S")
     configuration = meta.configuration or "noconf"
-    return f"{meta.instrument}_{configuration}_{meta.camera}_{stamp}_{kind}{ext}"
+    short_sum = meta.checksum[:6] or "nosum"
+    return f"{meta.instrument}_{configuration}_{meta.camera}_{stamp}_{short_sum}_{kind}{ext}"
 
 
 def reference_name(ref: ReferenceSolution) -> str:
@@ -167,10 +173,7 @@ def _read_mapping(header: fits.Header, scheme: tuple[str, str, str]) -> dict[str
     if count_key not in header:
         return None
     count = int(header[count_key])
-    return {
-        str(header[f"{key_prefix}{n:02d}"]): json.loads(header[f"{value_prefix}{n:02d}"])
-        for n in range(1, count + 1)
-    }
+    return {str(header[f"{key_prefix}{n:02d}"]): json.loads(header[f"{value_prefix}{n:02d}"]) for n in range(1, count + 1)}
 
 
 def _tuplify(value: Any) -> Any:
@@ -186,6 +189,11 @@ def _read_meta(header: fits.Header) -> FrameMeta:
     for name in META_TUPLE_FIELDS:
         if name in fields:
             fields[name] = tuple(fields[name])
+    if "targets" in fields:
+        fields["targets"] = tuple(tuple(pair) for pair in fields["targets"])
+    if "target" in fields:  # a product written before targets per fiber
+        single = fields.pop("target")
+        fields.setdefault("targets", () if single is None else ((ALL_TELESCOPES, single),))
     return FrameMeta(**fields)
 
 
@@ -265,9 +273,11 @@ def _frame_from_table(hdu: fits.BinTableHDU) -> pd.DataFrame:
 
 
 def _write(path: Path | str, hdus: list[Any]) -> Path:
+    """Write ``hdus`` to ``path`` atomically (see :func:`~mastpipe.io.atomic.atomic_write`);
+    ``writeto`` closes its file before the temporary is moved into place."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fits.HDUList(hdus).writeto(path, overwrite=True)
+    with atomic_write(path) as tmp:
+        fits.HDUList(hdus).writeto(tmp, overwrite=True)
     return path
 
 
@@ -298,9 +308,7 @@ def read_master(path: Path | str) -> tuple[MasterCalib, Provenance]:
     """The inverse of :func:`write_master`; validity lists come back as tuples."""
     with fits.open(path) as hdul:
         header = hdul[0].header
-        validity = {
-            k: _tuplify(v) for k, v in (_read_mapping(header, VALIDITY_SCHEME) or {}).items()
-        }
+        validity = {k: _tuplify(v) for k, v in (_read_mapping(header, VALIDITY_SCHEME) or {}).items()}
         master = MasterCalib(
             kind=str(header["MPKIND"]),
             data=_native(hdul[0].data),
@@ -353,12 +361,8 @@ def write_traceset(path: Path | str, traceset: TraceSet, prov: Provenance) -> Pa
             _column("SNR", "D", [t.snr for t in traces]),
             _string_column("ROLE", [t.role for t in traces]),
             _string_column("TELESCOPE", [t.telescope for t in traces]),
-            _column(
-                "LAYOUT", "J", [-1 if t.layout_index is None else t.layout_index for t in traces]
-            ),
-            _column(
-                "APERTURE", "D", [np.nan if t.aperture is None else t.aperture for t in traces]
-            ),
+            _column("LAYOUT", "J", [-1 if t.layout_index is None else t.layout_index for t in traces]),
+            _column("APERTURE", "D", [np.nan if t.aperture is None else t.aperture for t in traces]),
         ],
     )
     index = np.concatenate([np.full(len(t.x_samples), t.index) for t in traces] or [[]])
@@ -504,15 +508,26 @@ def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinT
     header = hdu.header
     _set(header, "MPDTIME", drift.arc_mid_time, "drift arc mid-time, UTC")
     _set(header, "MPDSCAT", float(drift.scatter_px), "drift scatter, px")
-    _set(header, "MPDUSE", bool(drift.usable), "drift model usable")
+    _set(header, "MPDUSE", bool(drift.usable), _drift_use_comment(drift))
+    _set(header, "MPDNUSE", int(drift.n_usable or 0), "usable arc fibers in the drift model")
     _set(header, "MPDNPIX", int(drift.n_pix), "pixels along dispersion")
     _add_coefficients(header, DRIFT_SHIFT_SCHEME, drift.shift_coeffs)
     _add_coefficients(header, DRIFT_STRETCH_SCHEME, drift.stretch_coeffs)
     return hdu
 
 
+def _drift_use_comment(drift: DriftModel) -> str:
+    """The ``MPDUSE`` comment: what an unusable model was judged on (the thresholds are the
+    run's configuration, recorded in the drift QC JSON)."""
+    if drift.usable:
+        return "drift model usable"
+    return f"{drift.n_usable} usable arc fibers, scatter {drift.scatter_px:.3g} px"
+
+
 def _read_drift(hdu: fits.BinTableHDU, arc_checksums: tuple[str, ...]) -> DriftModel:
-    """The inverse of :func:`_drift_hdu`; the checksums come from the provenance cards."""
+    """The inverse of :func:`_drift_hdu`; the checksums come from the provenance cards. A
+    product without ``MPDNUSE`` (written before the card existed) counts its usable fibers
+    from the table."""
     header = hdu.header
     per_fiber = _frame_from_table(hdu).drop(columns=["weight"])
     return DriftModel(
@@ -524,6 +539,7 @@ def _read_drift(hdu: fits.BinTableHDU, arc_checksums: tuple[str, ...]) -> DriftM
         scatter_px=float(header["MPDSCAT"]),
         usable=bool(header["MPDUSE"]),
         n_pix=int(header["MPDNPIX"]),
+        n_usable=int(header["MPDNUSE"]) if "MPDNUSE" in header else None,
     )
 
 
@@ -561,7 +577,9 @@ def write_spectra(
 
     ``drift``, when given, is written as the ``DRIFT`` table: ``DriftModel.per_fiber`` plus
     a ``WEIGHT`` column (``weights`` by fiber, 1.0 when absent) with the cards ``MPDTIME``
-    (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE``, ``MPDNPIX`` and the shift / stretch
+    (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE`` (its comment saying, for an unusable
+    model, the usable arc fibers and the scatter it was judged on), ``MPDNUSE``
+    (``n_usable``), ``MPDNPIX`` and the shift / stretch
     coefficients as ``MPDNSH`` / ``MPDSHnn`` and ``MPDNST`` / ``MPDSTnn``; the arc checksums
     are the provenance's ``MPDARCnn`` cards.
 
@@ -587,17 +605,13 @@ def write_spectra(
             _vector_format(n_pix, "K" if integral else "D"),
             _stack(spectra, lambda s: s.pixel, 0, np.int64 if integral else float)[0],
         ),
-        _column(
-            "FLUX", _vector_format(n_pix, "D"), _stack(spectra, lambda s: s.flux, np.nan, float)[0]
-        ),
+        _column("FLUX", _vector_format(n_pix, "D"), _stack(spectra, lambda s: s.flux, np.nan, float)[0]),
         _column(
             "ERROR",
             _vector_format(n_pix, "D"),
             _stack(spectra, lambda s: s.error, np.nan, float)[0],
         ),
-        _column(
-            "MASK", _vector_format(n_pix, "L"), _stack(spectra, lambda s: s.mask, True, bool)[0]
-        ),
+        _column("MASK", _vector_format(n_pix, "L"), _stack(spectra, lambda s: s.mask, True, bool)[0]),
     ]
     presence: list[tuple[str, bool, str]] = []
     for name, card in GRID_CARDS.items():
@@ -607,9 +621,7 @@ def write_spectra(
         presence.append((card, bool(present.any()), f"{name} column populated"))
     for version in VERSIONS:
         tag = version.upper()
-        flux, present = _stack(
-            spectra, lambda s, v=version: _version_part(s, v, "flux"), np.nan, float
-        )
+        flux, present = _stack(spectra, lambda s, v=version: _version_part(s, v, "flux"), np.nan, float)
         error, _ = _stack(spectra, lambda s, v=version: _version_part(s, v, "error"), np.nan, float)
         mask, _ = _stack(spectra, lambda s, v=version: _version_part(s, v, "mask"), True, bool)
         columns.append(_column(f"HAS_{tag}", "L", present))
@@ -680,13 +692,10 @@ def read_spectra(
         spectra = []
         for i in range(n):
             versions = {
-                version: SpectrumVersion(f[i], e[i], m[i])
-                for version, (f, e, m, present) in kept.items()
-                if present[i]
+                version: SpectrumVersion(f[i], e[i], m[i]) for version, (f, e, m, present) in kept.items() if present[i]
             }
             optional = {
-                name: (values[0][i] if values is not None and values[1][i] else None)
-                for name, values in grids.items()
+                name: (values[0][i] if values is not None and values[1][i] else None) for name, values in grids.items()
             }
             spectra.append(
                 Spectrum(
@@ -740,9 +749,7 @@ def write_reference(path: Path | str, ref: ReferenceSolution, prov: Provenance) 
     for i, solution in enumerate(solutions):
         p = np.asarray(solution.params, dtype=float)
         if p.ndim != 1 or p.size > MAX_PARAMS:
-            raise ValueError(
-                f"fiber {solution.fiber}: {p.size} parameters exceed the {MAX_PARAMS} PARAMS slots"
-            )
+            raise ValueError(f"fiber {solution.fiber}: {p.size} parameters exceed the {MAX_PARAMS} PARAMS slots")
         n_params[i] = p.size
         params[i, : p.size] = p
     solutions_hdu = _table(
@@ -871,9 +878,7 @@ def read_reference(
         if stored_hash and solutions_hash(solutions) != stored_hash:
             raise ValueError(f"reference {identifier}: solutions do not match the stored hash")
         count_key, prefix, digits = SOURCE_SCHEME
-        checksums = tuple(
-            str(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, int(header[count_key]) + 1)
-        )
+        checksums = tuple(str(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, int(header[count_key]) + 1))
         ref = ReferenceSolution(
             instrument=instrument,
             configuration=configuration,
@@ -891,15 +896,14 @@ def read_reference(
 # ---------------------------------------------------------------------------- combined
 
 
-def write_combined(
-    path: Path | str, cs: CombinedSpectrum, meta: FrameMeta, prov: Provenance
-) -> Path:
+def write_combined(path: Path | str, cs: CombinedSpectrum, meta: FrameMeta, prov: Provenance) -> Path:
     """Table ``COMBINED``, one row per wavelength: ``WAVELENGTH`` and ``FLUX_<V>, ERROR_<V>,
     MASK_<V>`` for every version present in ``cs.versions`` (``RAW`` included), plus the
     tables ``CONTRIB`` and ``EXCLUDED`` from the contributor and excluded frames.
 
-    Primary cards: ``MPTARGET``, ``MPGROUP``, the barycentric terms as ``MPNBC`` /
-    ``MPBCKnn`` / ``MPBCVnn``, the frame metadata and the provenance cards.
+    Primary cards: ``MPTARGET``, ``MPGROUP``, ``MPVMISS`` (``version_missing`` as a JSON
+    object: per version, the contributing fibers without it), the barycentric terms as
+    ``MPNBC`` / ``MPBCKnn`` / ``MPBCVnn``, the frame metadata and the provenance cards.
     """
     columns = [_column("WAVELENGTH", "D", np.asarray(cs.wavelength, dtype=float))]
     for version in COMBINED_VERSIONS:
@@ -914,6 +918,8 @@ def write_combined(
     header = primary.header
     _set(header, "MPTARGET", cs.target, "target")
     _set(header, "MPGROUP", cs.grouping, "grouping of the combined spectra")
+    missing = {str(k): sorted(int(f) for f in v) for k, v in cs.version_missing.items()}
+    _set(header, "MPVMISS", _json(missing), "fibers lacking a version, by version (JSON)")
     _add_mapping(header, BARYCENTRIC_SCHEME, cs.barycentric)
     _add_meta(header, meta)
     _add_provenance(header, prov)
@@ -929,7 +935,8 @@ def write_combined(
 
 
 def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Provenance]:
-    """The inverse of :func:`write_combined`: ``(combined, meta, provenance)``."""
+    """The inverse of :func:`write_combined`: ``(combined, meta, provenance)``; a product
+    without ``MPVMISS`` (written before the card existed) has nothing missing."""
     with fits.open(path) as hdul:
         header = hdul[0].header
         table = hdul["COMBINED"]
@@ -951,6 +958,7 @@ def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Proven
             excluded=_frame_from_table(hdul["EXCLUDED"]),
             grouping=str(header["MPGROUP"]),
             barycentric=_read_mapping(header, BARYCENTRIC_SCHEME) or {},
+            version_missing={str(k): [int(f) for f in v] for k, v in json.loads(header.get("MPVMISS", "{}")).items()},
         )
         return cs, _read_meta(header), Provenance.from_header(header)
 
@@ -968,12 +976,12 @@ def _jsonable(value: Any) -> Any:
 
 def write_qc(path: Path | str, report: QCReport) -> Path:
     """``{"stage": ..., "values": {...}}`` as JSON (``indent=1``, sorted keys, numpy scalars
-    and arrays converted)."""
+    and arrays converted), written atomically."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"stage": report.stage, "values": report.values}
     text = json.dumps(payload, indent=1, sort_keys=True, default=_jsonable)
-    path.write_text(text + "\n", encoding="utf-8")
+    with atomic_write(path) as tmp:
+        tmp.write_text(text + "\n", encoding="utf-8")
     return path
 
 

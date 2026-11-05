@@ -15,20 +15,11 @@ outcome: ``"transferred"`` with at least one arc, ``"reference"`` without.
 
 from __future__ import annotations
 
-import pandas as pd
-
 from mastpipe.config.models import DriftParams
 from mastpipe.core.model import DriftModel, FrameMeta, ReferenceSolution
+from mastpipe.core.times import to_utc
 
 SECONDS_PER_HOUR = 3600.0
-
-
-def _timestamp(value: str) -> pd.Timestamp:
-    """``value`` as a UTC timestamp; a naive time is taken to be UTC."""
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is None:
-        return stamp.tz_localize("UTC")
-    return stamp.tz_convert("UTC")
 
 
 def pair_arcs(
@@ -46,15 +37,15 @@ def pair_arcs(
     """
     if exposure.mid_time is None:
         return []
-    t_exposure = _timestamp(exposure.mid_time)
-    valid_from = _timestamp(reference.valid_from)
+    t_exposure = to_utc(exposure.mid_time)
+    valid_from = to_utc(reference.valid_from)
     candidates: list[tuple[float, DriftModel]] = []
     for meta, model in arcs:
         if meta.configuration != exposure.configuration or not model.usable:
             continue
         if meta.mid_time is None:
             continue
-        t_arc = _timestamp(meta.mid_time)
+        t_arc = to_utc(meta.mid_time)
         if t_arc < valid_from:
             continue
         dt_hours = (t_arc - t_exposure).total_seconds() / SECONDS_PER_HOUR

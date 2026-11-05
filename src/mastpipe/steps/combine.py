@@ -5,15 +5,16 @@ Every contributor is resampled onto the grid of :func:`common_grid` (the union o
 contributors' coverage at the finest dispersion among them, log-uniform by default) and the
 contributors are averaged pixel by pixel with inverse-variance weights, with one pass of
 sigma clipping about the weighted mean where at least three contributors are unmasked.
-Every version present in all contributors is combined separately and stored under the same
-key, the raw extraction under ``"raw"`` (see
-:data:`mastpipe.core.model.COMBINED_VERSIONS`), so the combined product carries the same
-stages as its inputs. Spectra that do not take part are never dropped silently: the
-``excluded`` table lists each one with its reason, whether it was excluded by configuration
-(``include`` / ``exclude`` telescope lists), rejected on quality (``reject``), or had no
-wavelength grid. ``Spectrum`` carries no source file name, so the ``source`` column of
-both tables is empty in this plan; the runner knows the exposure the combination came
-from. Everything here is pure: dataclasses and a parameter model in, a dataclass out.
+Every version present in any contributor is combined separately, from the contributors that
+carry it, and stored under the same key, the raw extraction under ``"raw"`` (see
+:data:`mastpipe.core.model.COMBINED_VERSIONS`), so the combined product carries every stage
+of its inputs; ``version_missing`` lists, per version, the fibers that lack it. Spectra
+that do not take part are never dropped silently: the ``excluded`` table lists each one
+with its reason, whether it was excluded by configuration (``include`` / ``exclude``
+telescope lists), rejected on quality (``reject``), or had no wavelength grid. ``Spectrum``
+carries no source file name, so the ``source`` column of both tables is empty in this plan;
+the runner knows the exposure the combination came from. Everything here is pure:
+dataclasses and a parameter model in, a dataclass out.
 """
 
 from __future__ import annotations
@@ -86,9 +87,7 @@ def common_grid(spectra: list[Spectrum], log: bool = True) -> np.ndarray:
     spectrum has a wavelength grid with at least two unmasked pixels.
     """
     coverages = [
-        _coverage(spectrum)
-        for spectrum in spectra
-        if spectrum.wavelength is not None and len(spectrum.wavelength) >= 2
+        _coverage(spectrum) for spectrum in spectra if spectrum.wavelength is not None and len(spectrum.wavelength) >= 2
     ]
     coverages = [coverage for coverage in coverages if coverage is not None]
     if not coverages:
@@ -146,9 +145,7 @@ def _reject(
         if np.isfinite(group_median) and group_median > 0:
             ratio = median / group_median
             if not (ratio >= params.reject_flux_ratio):
-                rejected.append(
-                    (spectrum, f"flux ratio {ratio:.3g} below min {params.reject_flux_ratio}")
-                )
+                rejected.append((spectrum, f"flux ratio {ratio:.3g} below min {params.reject_flux_ratio}"))
                 continue
         if params.reject_drift_px is not None and qc is not None:
             drift = (qc.get(spectrum.fiber) or {}).get("drift_px")
@@ -193,11 +190,7 @@ def _stack(
     contributors' version ``key`` (``None`` for the raw extraction) on ``wavelength``."""
     rows = []
     for spectrum in contributors:
-        version = (
-            SpectrumVersion(spectrum.flux, spectrum.error, spectrum.mask)
-            if key is None
-            else spectrum.versions[key]
-        )
+        version = SpectrumVersion(spectrum.flux, spectrum.error, spectrum.mask) if key is None else spectrum.versions[key]
         rows.append(_resampled(spectrum, version, wavelength))
     flux = np.array([row[0] for row in rows], dtype=float)
     error = np.array([row[1] for row in rows], dtype=float)
@@ -284,7 +277,9 @@ def combine_spectra(
     unmasked contributors (never emptying a pixel; a non-positive ``clip_sigma`` disables
     the clipping). The raw extractions are combined under ``"raw"`` and every
     version of :data:`mastpipe.core.model.VERSIONS` (up to ``version`` when given) that
-    all contributors carry is combined separately under its own key. ``contributors`` holds
+    any contributor carries is combined separately under its own key, from the
+    contributors that carry it; ``version_missing`` maps each version some contributors
+    lack to their fibers (sorted), so a version is never dropped silently. ``contributors`` holds
     ``fiber, telescope, source, weight`` with the weight the contributor's mean share of
     the raw combination's weights (``1 / n`` when no pixel was combined); ``source`` is
     empty, since a :class:`Spectrum` carries no file name. ``grouping`` is
@@ -313,20 +308,22 @@ def combine_spectra(
     if kept:
         wavelength = common_grid(kept, log=params.log_grid)
         allowed = VERSIONS if version is None else VERSIONS[: VERSIONS.index(version) + 1]
-        keys = [key for key in allowed if all(key in s.versions for s in kept)]
+        keys = [key for key in allowed if any(key in s.versions for s in kept)]
     else:
         wavelength = np.zeros(0, dtype=float)
 
     versions: dict[str, SpectrumVersion] = {}
+    version_missing: dict[str, list[int]] = {}
     shares = np.zeros((len(kept), len(wavelength)))
     if kept:
         for key in (None, *keys):
-            combined, share = _weighted_mean(
-                *_stack(kept, key, wavelength), clip_sigma=params.clip_sigma
-            )
+            carriers = kept if key is None else [s for s in kept if key in s.versions]
+            combined, share = _weighted_mean(*_stack(carriers, key, wavelength), clip_sigma=params.clip_sigma)
             versions["raw" if key is None else key] = combined
             if key is None:
                 shares = share
+            elif len(carriers) < len(kept):
+                version_missing[key] = sorted(int(s.fiber) for s in kept if key not in s.versions)
     else:
         empty = np.zeros(0, dtype=float)
         versions["raw"] = SpectrumVersion(empty, empty.copy(), np.zeros(0, dtype=bool))
@@ -336,9 +333,7 @@ def combine_spectra(
         weights = shares[:, combined_pixels].mean(axis=1)
     else:
         weights = np.full(len(kept), 1.0 / len(kept) if kept else 0.0)
-    contributors = _rows(
-        list(zip(kept, (float(w) for w in weights), strict=True)), "weight", CONTRIBUTOR_COLUMNS
-    )
+    contributors = _rows(list(zip(kept, (float(w) for w in weights), strict=True)), "weight", CONTRIBUTOR_COLUMNS)
     return CombinedSpectrum(
         target=target,
         wavelength=wavelength,
@@ -347,4 +342,5 @@ def combine_spectra(
         excluded=_rows(excluded, "reason", EXCLUDED_COLUMNS),
         grouping=GROUPING,
         barycentric=dict(barycentric or {}),
+        version_missing=version_missing,
     )

@@ -101,9 +101,7 @@ def _statistic_factor(statistic: str, percentile: float) -> float:
     raise ValueError(f"collapse must be one of {COLLAPSE_STATISTICS}, got {statistic!r}")
 
 
-def _collapse(
-    block: np.ndarray, statistic: str = "median", percentile: float = 90.0
-) -> tuple[np.ndarray, float]:
+def _collapse(block: np.ndarray, statistic: str = "median", percentile: float = 90.0) -> tuple[np.ndarray, float]:
     """``block`` collapsed along x by ``statistic`` (the median, the mean or the
     ``percentile`` of each row) and the noise of that statistic.
 
@@ -127,10 +125,7 @@ def _collapse(
     row_sigma = MAD_TO_SIGMA * deviation
     row_sigma = row_sigma[np.isfinite(row_sigma)]
     n_columns = block.shape[1]
-    if row_sigma.size == 0 or n_columns == 0:
-        noise = 0.0
-    else:
-        noise = float(factor * np.median(row_sigma) / np.sqrt(n_columns))
+    noise = 0.0 if row_sigma.size == 0 or n_columns == 0 else float(factor * np.median(row_sigma) / np.sqrt(n_columns))
     return np.nan_to_num(profile, nan=0.0), noise
 
 
@@ -142,9 +137,7 @@ def _odd(window: int) -> int:
 # --------------------------------------------------------------------------- trace finding
 
 
-def _centroid(
-    profile: np.ndarray, noise: float, y_predicted: float, halfwidth: int, threshold_sigma: float
-) -> float | None:
+def _centroid(profile: np.ndarray, noise: float, y_predicted: float, halfwidth: int, threshold_sigma: float) -> float | None:
     """Flux-weighted centroid of the pixels above ``threshold_sigma · noise`` within
     ``±halfwidth`` rows of ``y_predicted``; ``None`` when fewer than two pixels qualify
     or the brightest one sits on the window's edge (the trace is not in the window)."""
@@ -300,9 +293,7 @@ def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
 # -------------------------------------------------------------------------- comb matching
 
 
-def comb_shift(
-    a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1, width: float | None = None
-) -> float:
+def comb_shift(a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1, width: float | None = None) -> float:
     """The shift ``s`` in ``[-max_shift, max_shift]`` for which ``a + s`` best overlaps ``b``.
 
     Every pairwise difference ``b_j - a_i`` within range is laid down as a Gaussian of
@@ -354,10 +345,10 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
     reaches the alias. Each layout row then takes the detected trace closest to
     ``y_nominal + layout_shift`` within ``tolerance``, one-to-one, the smallest distances
     first. Matched traces receive ``role``, ``telescope``, ``layout_index`` (the row's
-    position in ``layout``) and ``aperture`` (``None`` when the layout leaves it unset);
-    unmatched ones keep ``None`` in all four. ``missing`` lists the layout indices without
-    a detection, ``extra`` the trace indices without a layout row. The input traces are
-    not modified.
+    ``trace`` id, the fiber's identity whatever the row order) and ``aperture`` (``None``
+    when the layout leaves it unset); unmatched ones keep ``None`` in all four. ``missing``
+    lists the ``trace`` ids of the rows without a detection, in row order, ``extra`` the
+    trace indices without a layout row. The input traces are not modified.
     """
     detected = np.array([trace.y_center for trace in traceset.traces], dtype=float)
     nominal = layout["y_nominal"].to_numpy(dtype=float)
@@ -370,6 +361,7 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
         if max_shift > 0:
             shift = -comb_shift(detected, nominal, max_shift, width=float(tolerance))
     predicted = nominal + shift
+    ids = layout["trace"].to_numpy(dtype=int)
 
     pairs = sorted(
         (abs(y - predicted[i]), i, j)
@@ -398,11 +390,11 @@ def match_layout(traceset: TraceSet, layout: pd.DataFrame, tolerance: float) -> 
                 trace,
                 role=_layout_value(row["role"], str),
                 telescope=_layout_value(row["telescope"], str),
-                layout_index=int(i),
+                layout_index=int(ids[i]),
                 aperture=_layout_value(row["aperture"], float),
             )
         )
-    missing = tuple(i for i in range(nominal.shape[0]) if i not in rows_taken)
+    missing = tuple(int(ids[i]) for i in range(nominal.shape[0]) if i not in rows_taken)
     extra = tuple(j for j in range(detected.shape[0]) if j not in layout_of)
     return TraceSet(
         traces=traces,
@@ -516,14 +508,11 @@ def classify_arc(
     noises: dict[int, float] = {}
     for trace in traceset:
         spectrum, n_rows = _aperture_sum(data, trace, halfwidth, frame.mask)
-        levels[trace.index] = float(
-            np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest"))
-        )
+        levels[trace.index] = float(np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest")))
         noises[trace.index] = pixel_sigma * np.sqrt(n_rows) / np.sqrt(nx)
     brightest = max(levels.values(), default=0.0)
     flags = {
-        index: bool(level > max(lit_sigma * noises[index], lit_fraction * brightest))
-        for index, level in levels.items()
+        index: bool(level > max(lit_sigma * noises[index], lit_fraction * brightest)) for index, level in levels.items()
     }
 
     matched = [trace for trace in traceset if trace.role is not None]
@@ -531,29 +520,20 @@ def classify_arc(
     targets = [trace for trace in matched if trace.role in ("science", "sky")]
     if matched and all(flags[trace.index] for trace in matched):
         kind = "full"
-    elif (
-        arcs
-        and all(flags[trace.index] for trace in arcs)
-        and not any(flags[trace.index] for trace in targets)
-    ):
+    elif arcs and all(flags[trace.index] for trace in arcs) and not any(flags[trace.index] for trace in targets):
         kind = "calfiber"
     else:
         kind = "unknown"
     return kind, flags
 
 
-def relative_throughput(
-    flat: Frame | None, traceset: TraceSet, halfwidth: float
-) -> dict[int, float]:
+def relative_throughput(flat: Frame | None, traceset: TraceSet, halfwidth: float) -> dict[int, float]:
     """Integrated flat flux of every trace (aperture sum over all columns) divided by the
     median over traces, keyed by trace index; ``{}`` without a flat or without traces.
     ``ValueError`` when the median flux is not positive."""
     if flat is None or len(traceset) == 0:
         return {}
-    totals = {
-        trace.index: float(_aperture_sum(flat.data, trace, halfwidth, flat.mask)[0].sum())
-        for trace in traceset
-    }
+    totals = {trace.index: float(_aperture_sum(flat.data, trace, halfwidth, flat.mask)[0].sum()) for trace in traceset}
     scale = float(np.median(list(totals.values())))
     if not scale > 0:
         raise ValueError("the flat carries no flux on the traces; cannot normalise throughput")

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from mastpipe.config.loader import (
     build_effective,
+    calib_hash,
     config_hash,
     deep_merge,
     load_yaml,
@@ -48,9 +49,7 @@ def make_detector(**overrides) -> DetectorConfig:
     return DetectorConfig(**fields)
 
 
-def make_instrument(
-    block_params=None, instrument_params=None, layout_params=None
-) -> InstrumentConfig:
+def make_instrument(block_params=None, instrument_params=None, layout_params=None) -> InstrumentConfig:
     if block_params is None:
         block_params = {"trace": {"trace_halfwidth": 4}}
     return InstrumentConfig(
@@ -136,9 +135,7 @@ def test_build_effective_layers_layout_params_between_block_and_overrides():
     assert survey.params.trace.trace_halfwidth == 4 and survey.params.extract.halfwidth == 4.0
     assert survey.layers == ["instrument:toy", "configuration:g518", "layout:survey45"]
     # an override still wins over the preset block
-    forced = build_effective(
-        inst, "g518", "main", overrides=[{"trace": {"trace_halfwidth": 5}}], layout="survey45"
-    )
+    forced = build_effective(inst, "g518", "main", overrides=[{"trace": {"trace_halfwidth": 5}}], layout="survey45")
     assert forced.params.trace.trace_halfwidth == 5 and forced.params.extract.halfwidth == 4.0
     assert config_hash(survey) != config_hash(plain) and config_hash(lab) == config_hash(plain)
     with pytest.raises(KeyError, match="layout"):
@@ -150,10 +147,10 @@ def test_build_effective_layers_layout_params_between_block_and_overrides():
     from mastpipe.instruments.registry import load_instrument
 
     highspec = load_instrument("highspec")
-    eff = build_effective(highspec, "mgb518", "main", layout="survey45")
+    eff = build_effective(highspec, "Mg", "main", layout="survey45")
     assert eff.params.trace.trace_halfwidth == 4
     assert eff.params.lines.halfwidth == 4 and eff.params.extract.halfwidth == 4.0
-    default = build_effective(highspec, "mgb518", "main", layout="lab3")
+    default = build_effective(highspec, "Mg", "main", layout="lab3")
     assert default.params.trace.trace_halfwidth == 8 and default.params.extract.halfwidth == 9.0
 
 
@@ -188,6 +185,39 @@ def test_config_hash_stable_and_sensitive():
     # an override that restates the effective value does not change the hash
     same = config_hash(build_effective(inst, "g518", "main", overrides=[{"trace": {"x_bin": 25}}]))
     assert same == a
+
+
+def test_calib_hash_follows_stacking_parameters_and_detector_only():
+    inst = make_instrument()
+    plain = build_effective(inst, "g518", "main")
+    a = calib_hash(plain)
+    assert len(a) == 12 and int(a, 16) >= 0
+    assert calib_hash(build_effective(make_instrument(), "g518", "main")) == a
+    # the stacking parameters and the detector change it
+    mean = build_effective(inst, "g518", "main", overrides=[{"calib": {"stack_method": "mean"}}])
+    assert calib_hash(mean) != a
+    clip = build_effective(inst, "g518", "main", overrides=[{"calib": {"clip_sigma": 9.5}}])
+    assert calib_hash(clip) != a
+    other = make_instrument()
+    other = other.model_copy(update={"cameras": {"main": make_detector(gain=2.0)}})
+    assert calib_hash(build_effective(other, "g518", "main")) != a
+    # other steps change the configuration hash but not the masters'
+    drift = build_effective(inst, "g518", "main", overrides=[{"drift": {"time_policy": "nearest"}}])
+    assert config_hash(drift) != config_hash(plain) and calib_hash(drift) == a
+    trace = build_effective(inst, "g518", "main", overrides=[{"trace": {"x_bin": 10}}])
+    assert calib_hash(trace) == a
+
+
+def test_classify_params_layer_like_any_step():
+    inst = make_instrument()
+    plain = build_effective(inst, "g518", "main")
+    assert plain.params.classify.arc_peak_fraction == 0.5
+    tuned = build_effective(inst, "g518", "main", overrides=[{"classify": {"signal_sigma": 8.0}}])
+    assert tuned.params.classify.signal_sigma == 8.0
+    assert tuned.params.classify.continuum_window == 101
+    assert config_hash(tuned) != config_hash(plain)
+    with pytest.raises(ValidationError):
+        build_effective(inst, "g518", "main", overrides=[{"classify": {"banana": 1}}])
 
 
 def test_unknown_key_rejected():

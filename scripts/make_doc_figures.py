@@ -31,9 +31,9 @@ STATIC = Path(__file__).resolve().parent.parent / "docs" / "_static"
 def main() -> int:
     STATIC.mkdir(parents=True, exist_ok=True)
     instrument = load_instrument("highspec")
-    effective = build_effective(instrument, "mgb518", "main", layout="survey45")
+    effective = build_effective(instrument, "Mg", "main", layout="survey45")
     layout = load_layout("highspec", "survey45")
-    lines = load_line_table("highspec", "mgb518")
+    lines = load_line_table("highspec", "Mg")
     with tempfile.TemporaryDirectory() as tmp:
         night = Path(tmp) / "night"
         truth = simulate_night(effective, layout, lines, night, seed=0, n_science=2)
@@ -43,9 +43,7 @@ def main() -> int:
 
         # 1. the anchor panels, as identify draws them without anchors
         out = Path(tmp) / "out"
-        _, png = run_identify(
-            full_arc, effective, "survey45", out, anchors=None, write_reference=False
-        )
+        _, png = run_identify(full_arc, effective, "survey45", out, anchors=None, write_reference=False)
         (STATIC / "anchor_panels.png").write_bytes(Path(png).read_bytes())
 
         # 2. a simulated science frame: 45 traces, dispersion along x
@@ -55,9 +53,7 @@ def main() -> int:
         ax.imshow(data, origin="lower", cmap="gray", vmin=lo, vmax=hi, aspect="auto")
         ax.set_xlabel("column (dispersion)")
         ax.set_ylabel("row (fibers)")
-        ax.set_title(
-            "Simulated HighSpec science frame, survey layout: 20 science, 20 sky, 5 dark arc traces"
-        )
+        ax.set_title("Simulated HighSpec science frame, survey layout: 20 science, 20 sky, 5 dark arc traces")
         fig.tight_layout()
         fig.savefig(STATIC / "simulated_frame.png")
         plt.close(fig)

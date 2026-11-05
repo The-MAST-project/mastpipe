@@ -9,8 +9,9 @@ import pandas as pd
 import pytest
 
 from mastpipe.config.models import LineParams
-from mastpipe.core.model import Trace, TraceSet
+from mastpipe.core.model import CalibrationSet, Frame, Trace, TraceSet
 from mastpipe.sim.simulator import FWHM_PX
+from mastpipe.steps.calib import calibrate_frame
 from mastpipe.steps.lines import LINE_COLUMNS, find_lines, lines_summary
 from tests.conftest import ARC_SIGMA_PX, ARC_STRIP_HALFWIDTH
 
@@ -64,9 +65,7 @@ def synthetic_arc(
     yy, xx = np.mgrid[0:ny, 0:nx]
     y_trace = trace.y(xx)
     for x0, peak in lines:
-        image += peak * np.exp(
-            -0.5 * (((xx - x0) / sigma_x) ** 2 + ((yy - y_trace) / sigma_y) ** 2)
-        )
+        image += peak * np.exp(-0.5 * (((xx - x0) / sigma_x) ** 2 + ((yy - y_trace) / sigma_y) ** 2))
     return image
 
 
@@ -107,8 +106,7 @@ def test_find_lines_recovers_simulated_arc_positions(night, arc_lines):
     offsets = np.abs(expected[:, None] - usable[None, :]).min(axis=1)
     found = offsets <= MATCH_TOLERANCE_PX
     assert found.mean() >= MIN_RECOVERED_FRACTION, (
-        f"{found.sum()} of {found.size} bright lines recovered, "
-        f"median |dx| = {np.median(offsets[found]):.3f} px"
+        f"{found.sum()} of {found.size} bright lines recovered, median |dx| = {np.median(offsets[found]):.3f} px"
     )
     # the fitted widths follow the simulator's line image
     assert table.loc[table["use_x"], "fwhm_x_fit"].median() == pytest.approx(FWHM_PX, abs=0.3)
@@ -208,6 +206,45 @@ def test_saturated_line_not_usable():
     tables, _ = find_lines(image, None, traceset, params.model_copy(update={"saturation": None}))
     assert not tables[0]["saturated"].any()
     assert tables[0]["use_x"].all()
+
+
+def test_saturated_lines_are_flagged_through_the_mask(sim_full_arc, highspec_effective):
+    """A raw pixel at the detector's saturation inside one line: ``calibrate_frame`` masks it
+    and ``find_lines`` with that mask marks the line ``saturated`` (so not ``use_x``), even
+    though ``LineParams.saturation`` is unset; without the mask nothing is flagged."""
+    detector = highspec_effective.detector
+    arc, traces, params = sim_full_arc.arc, sim_full_arc.traces, sim_full_arc.params
+    assert params.saturation is None
+    (table,), _ = find_lines(arc.data, arc.variance, TraceSet([traces.traces[0]], arc.shape), params)
+    clean = table.loc[table["use_x"] & table["isolated"]]
+    x0 = int(clean["x_peak"].iloc[len(clean) // 2])
+    trace = traces.traces[0]
+    raw = np.array(arc.data, dtype=np.float32)
+    raw[int(np.round(trace.y(x0))), x0] = 65535.0
+    calib = CalibrationSet(
+        bias=None,
+        dark_rate=0.0,
+        background=None,
+        t_background=None,
+        gain=detector.gain,
+        read_noise=detector.read_noise,
+        shape=arc.shape,
+    )
+    frame = calibrate_frame(Frame(data=raw, meta=arc.meta), calib, False, saturation=detector.saturation)
+    assert frame.mask is not None and int(frame.mask.sum()) == 1
+
+    one = TraceSet([trace], arc.shape)
+    (with_mask,), _ = find_lines(frame.data, frame.variance, one, params, mask=frame.mask)
+    (without,), _ = find_lines(frame.data, frame.variance, one, params)
+    distance = (with_mask["x_center"] - x0).abs()
+    nearest = with_mask.loc[distance.idxmin()]
+    assert nearest["saturated"] and not nearest["use_x"]
+    # only lines whose window can reach the pixel are touched
+    assert not with_mask.loc[distance > 2 * params.x_halfwidth + 1, "saturated"].any()
+    assert not without["saturated"].any()
+    # a mask of the wrong shape is an error
+    with pytest.raises(ValueError, match="mask"):
+        find_lines(frame.data, None, one, params, mask=frame.mask[:-1])
 
 
 def test_edge_lines_flagged():

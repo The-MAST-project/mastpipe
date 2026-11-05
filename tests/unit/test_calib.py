@@ -1,10 +1,12 @@
 """Tests for the calibration step: stacking, masters, the calibration set and frame
 calibration, checked against hand-computed values."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
-from mastpipe.config.models import CalibParams, DetectorConfig
+from mastpipe.config.models import CalibParams, DetectorConfig, ReadoutNoise
 from mastpipe.core.model import CalibrationSet, Frame, FrameMeta, MasterCalib
 from mastpipe.steps.calib import (
     build_calibration_set,
@@ -116,6 +118,7 @@ def test_build_master_validity_and_provenance():
         "camera": "main",
         "binning": (1, 1),
         "readout_mode": "Image",
+        "amplifier": None,
         "detector_temperature": pytest.approx(-52.0),
         "mid_time": "2026-10-01T18:10:00",
         "exposure_time": 0.0,
@@ -136,13 +139,9 @@ def test_build_master_validity_and_provenance():
     with pytest.raises(ValueError):
         build_master(mixed, "background", CalibParams())
     nearly = [frame(1.0, "dark", 300.0), frame(1.0, "dark", 300.0 * (1 + 1e-7))]
-    assert build_master(nearly, "dark", CalibParams()).validity["exposure_time"] == (
-        pytest.approx(300.0)
-    )
+    assert build_master(nearly, "dark", CalibParams()).validity["exposure_time"] == (pytest.approx(300.0))
     biases = [frame(1.0, "bias", 0.0), frame(1.0, "bias", 0.1)]
-    assert build_master(biases, "bias", CalibParams()).validity["exposure_time"] == (
-        pytest.approx(0.05)
-    )
+    assert build_master(biases, "bias", CalibParams()).validity["exposure_time"] == (pytest.approx(0.05))
     bare = Frame(
         data=np.zeros(SHAPE, dtype=np.float32),
         meta=FrameMeta(instrument="toy", camera="main", exposure_type="bias"),
@@ -198,6 +197,27 @@ def test_calibration_set_dark_rate_and_background():
     assert with_bkg.t_background == pytest.approx(6.0)
     with pytest.raises(ValueError):
         build_calibration_set(None, None, None, DET)
+
+
+def test_calibration_set_uses_the_amplifier_noise():
+    bias = build_master([frame(500.0, "bias", 0.0)], "bias", CalibParams())
+    detector = DET.model_copy(update={"readouts": {"em": ReadoutNoise(gain=20.0, read_noise=0.5)}})
+    em = build_calibration_set(bias, None, None, detector, amplifier="em")
+    assert (em.gain, em.read_noise) == (20.0, 0.5)
+    # an amplifier without its own entry, or none, takes the detector's defaults
+    for amplifier in ("conventional", None):
+        calib = build_calibration_set(bias, None, None, detector, amplifier=amplifier)
+        assert (calib.gain, calib.read_noise) == (2.0, 4.0)
+    assert DET.readouts == {}
+    assert build_calibration_set(bias, None, None, DET).gain == 2.0
+
+
+def test_master_records_the_amplifier_and_refuses_a_mix():
+    frames = [frame(500.0, "bias", 0.0, amplifier="em"), frame(501.0, "bias", 0.0, amplifier="em")]
+    assert build_master(frames, "bias", CalibParams()).validity["amplifier"] == "em"
+    mixed = [frame(500.0, "bias", 0.0, amplifier="em"), frame(501.0, "bias", 0.0)]
+    with pytest.raises(ValueError, match="amplifier"):
+        build_master(mixed, "bias", CalibParams())
 
 
 # -------------------------------------------------------------------- calibrate_frame
@@ -287,3 +307,77 @@ def test_variance_and_saturation_mask():
     # without a saturation level only non-finite and input-masked pixels are flagged
     out_nosat = calibrate_frame(sci, calib, subtract_background=True)
     assert out_nosat.mask.sum() == 2 and out_nosat.mask[3, 5] and out_nosat.mask[3, 0]
+
+
+def test_master_variance_enters_the_error_budget():
+    """Exact propagation: the bias array enters both subtractions, so its coefficient is
+    ``1 - s``; ``(1 - s)² Vb + s² Vg`` with a background, ``(1 - s)² Vb + s² Vd`` with a
+    dark (``s = t / t_dark``), ``Vb`` alone without a dark."""
+    vb = np.array([[1.0, 2.0, 0.5, 4.0, 1.5, 3.0]] * 4, dtype=np.float32)
+    vg = np.array([[2.0, 1.0, 3.0, 0.5, 2.5, 1.0]] * 4, dtype=np.float32)
+    vd = np.array([[6.0, 3.0, 9.0, 1.5, 7.5, 3.0]] * 4, dtype=np.float32)
+    t_dark = 300.0
+    base = CalibrationSet(
+        bias=np.full(SHAPE, 500.0, dtype=np.float32),
+        dark_rate=0.1,
+        background=np.full(SHAPE, 560.0, dtype=np.float32),
+        t_background=6.0,
+        gain=2.0,
+        read_noise=4.0,
+        shape=SHAPE,
+        t_dark=t_dark,
+    )
+    full = replace(base, bias_variance=vb, background_variance=vg, dark_rate_variance=vd / t_dark**2)
+
+    def added(t: float, subtract_background: bool, calib=full) -> np.ndarray:
+        sci = frame(1000.0, "science", t)
+        bare = replace(calib, bias_variance=None, background_variance=None)
+        bare = replace(bare, dark_rate_variance=None)
+        plain = calibrate_frame(sci, bare, subtract_background=subtract_background)
+        out = calibrate_frame(sci, calib, subtract_background=subtract_background)
+        assert np.array_equal(out.data, plain.data)
+        return out.variance.astype(np.float64) - plain.variance
+
+    # background path, s = 12 / 6 = 2: Vb + 4 Vg
+    np.testing.assert_allclose(added(12.0, True), vb + 4.0 * vg, rtol=0, atol=1e-4)
+    # s = 1: the bias cancels, only the background master's variance is left
+    np.testing.assert_allclose(added(6.0, True), vg, rtol=0, atol=1e-4)
+    # s = 0.5: Vb / 4 + Vg / 4
+    np.testing.assert_allclose(added(3.0, True), 0.25 * vb + 0.25 * vg, rtol=0, atol=1e-4)
+    # dark path, s = 150 / 300 = 0.5: Vb / 4 + Vd / 4
+    np.testing.assert_allclose(added(150.0, False), 0.25 * vb + 0.25 * vd, rtol=0, atol=1e-4)
+    # s = 1 on the dark path as well
+    np.testing.assert_allclose(added(300.0, False), vd, rtol=0, atol=1e-4)
+    # no dark (no t_dark): the bias variance alone
+    no_dark = replace(full, dark_rate=0.0, t_dark=None, dark_rate_variance=None)
+    np.testing.assert_allclose(added(150.0, False, no_dark), vb, rtol=0, atol=1e-4)
+
+
+def test_calibration_set_carries_the_master_variances():
+    biases = [frame(v, "bias", 0.0) for v in (499.0, 500.0, 502.0)]
+    darks = [frame(v, "dark", 300.0) for v in (528.0, 530.0, 533.0)]
+    backgrounds = [frame(v, "background", 6.0) for v in (557.0, 560.0, 561.0)]
+    bias = build_master(biases, "bias", CalibParams())
+    dark = build_master(darks, "dark", CalibParams())
+    bkg = build_master(backgrounds, "background", CalibParams())
+    assert bias.variance is not None and (bias.variance > 0).all()
+
+    calib = build_calibration_set(bias, dark, bkg, DET)
+    assert np.array_equal(calib.bias_variance, bias.variance)
+    assert np.array_equal(calib.background_variance, bkg.variance)
+    assert calib.t_dark == pytest.approx(300.0)
+    np.testing.assert_allclose(calib.dark_rate_variance, dark.variance / 300.0**2, rtol=1e-6)
+    # the dark path end to end: (1 - s)² Vb + s² Vd with s = t / t_dark = 0.5
+    sci = frame(1000.0, "science", 150.0)
+    plain = calibrate_frame(sci, replace(calib, bias_variance=None, dark_rate_variance=None), False)
+    out = calibrate_frame(sci, calib, subtract_background=False)
+    expected = 0.25 * bias.variance + 0.25 * dark.variance
+    np.testing.assert_allclose(out.variance - plain.variance, expected, rtol=0, atol=1e-3)
+
+    # a master without a variance (a library product that did not store one) counts as zero
+    bare = replace(bias, variance=None)
+    calib = build_calibration_set(bare, dark, None, DET)
+    assert calib.bias_variance is None and calib.background_variance is None
+    np.testing.assert_allclose(calib.dark_rate_variance, dark.variance / 300.0**2, rtol=1e-6)
+    no_dark_rate = build_calibration_set(bias, None, None, DET)
+    assert no_dark_rate.dark_rate_variance is None and no_dark_rate.t_dark is None

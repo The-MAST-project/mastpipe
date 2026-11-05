@@ -27,8 +27,9 @@ from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.sim.simulator import FWHM_PX, GAUSSIAN_FWHM, SimTruth, simulate_night
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.extract import continuum_subtract_all, extract_aperture
-from mastpipe.steps.geometry import grating_geometry
+from mastpipe.steps.geometry import GratingGeometry, grating_geometry
 from mastpipe.steps.lines import find_lines
+from mastpipe.steps.wavemodel import GratingModel
 
 ARC_STRIP_HALFWIDTH = 4
 """Rows on either side of a simulated trace (3 px FWHM image, 8.5 px pitch): the strip holds
@@ -39,7 +40,7 @@ ARC_SIGMA_PX = FWHM_PX / GAUSSIAN_FWHM
 
 @pytest.fixture(scope="session")
 def highspec_effective() -> EffectiveConfig:
-    return build_effective(load_instrument("highspec"), "mgb518", "main")
+    return build_effective(load_instrument("highspec"), "Mg", "main")
 
 
 @pytest.fixture(scope="session")
@@ -53,8 +54,8 @@ def lab3_layout() -> pd.DataFrame:
 
 
 @pytest.fixture(scope="session")
-def mgb518_lines() -> pd.DataFrame:
-    return load_line_table("highspec", "mgb518")
+def mg_lines() -> pd.DataFrame:
+    return load_line_table("highspec", "Mg")
 
 
 @pytest.fixture(scope="session")
@@ -62,12 +63,10 @@ def sim_night(
     tmp_path_factory: pytest.TempPathFactory,
     highspec_effective: EffectiveConfig,
     survey_layout: pd.DataFrame,
-    mgb518_lines: pd.DataFrame,
+    mg_lines: pd.DataFrame,
 ) -> tuple[Path, SimTruth]:
     out_dir = tmp_path_factory.mktemp("sim_night")
-    truth = simulate_night(
-        highspec_effective, survey_layout, mgb518_lines, out_dir, seed=0, n_science=4
-    )
+    truth = simulate_night(highspec_effective, survey_layout, mg_lines, out_dir, seed=0, n_science=4)
     return out_dir, truth
 
 
@@ -76,13 +75,13 @@ def sim_night_lab3(
     tmp_path_factory: pytest.TempPathFactory,
     highspec_effective: EffectiveConfig,
     lab3_layout: pd.DataFrame,
-    mgb518_lines: pd.DataFrame,
+    mg_lines: pd.DataFrame,
 ) -> tuple[Path, SimTruth]:
     out_dir = tmp_path_factory.mktemp("sim_night_lab3")
     truth = simulate_night(
         highspec_effective,
         lab3_layout,
-        mgb518_lines,
+        mg_lines,
         out_dir,
         seed=0,
         n_science=4,
@@ -92,6 +91,14 @@ def sim_night_lab3(
 
 
 # ------------------------------------------------------------ the calibrated full arc
+
+
+def truth_model(truth: SimTruth, fiber: int, geom: GratingGeometry, n_pix: int) -> GratingModel:
+    """The grating model the simulator drew fiber ``fiber`` (a layout trace id) from: every
+    trace has its own ``(x_c, B)``."""
+    row = truth.row_of(fiber)
+    x_c, B = truth.x_c_per_trace[row], truth.B_per_trace[row]
+    return GratingModel(float(x_c), float(B), geom.alpha_rad, None, n_pix, geom)
 
 
 def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:
@@ -112,9 +119,7 @@ def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:
             role=row["role"],
             telescope=None if isinstance(row["telescope"], float) else row["telescope"],
         )
-        for i, (coeffs, (_, row)) in enumerate(
-            zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
-        )
+        for i, (coeffs, (_, row)) in enumerate(zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True))
     ]
     return TraceSet(traces=traces, shape=shape)
 
@@ -151,16 +156,12 @@ def sim_full_arc(sim_night, highspec_effective) -> SimpleNamespace:
 @pytest.fixture(scope="session")
 def sim_arc_lines(sim_full_arc) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
     """Line tables and strips of every trace of the simulated full arc."""
-    return find_lines(
-        sim_full_arc.arc.data, sim_full_arc.arc.variance, sim_full_arc.traces, sim_full_arc.params
-    )
+    return find_lines(sim_full_arc.arc.data, sim_full_arc.arc.variance, sim_full_arc.traces, sim_full_arc.params)
 
 
 @pytest.fixture(scope="session")
 def sim_arc_fluxes(sim_full_arc) -> list[np.ndarray]:
     """Continuum-subtracted extracted fluxes of every trace of the simulated full arc."""
-    spectra = extract_aperture(
-        sim_full_arc.arc, sim_full_arc.traces, ExtractParams(halfwidth=ARC_STRIP_HALFWIDTH)
-    )
+    spectra = extract_aperture(sim_full_arc.arc, sim_full_arc.traces, ExtractParams(halfwidth=ARC_STRIP_HALFWIDTH))
     spectra = continuum_subtract_all(spectra, ExtractParams())
     return [spectrum.flux - spectrum.continuum for spectrum in spectra]

@@ -43,8 +43,9 @@ pip install "git+<repository>"
 mastpipe --version
 ```
 
-(`pip install .` from a downloaded copy does the same.) The optional `pypeit`
-extra installs PypeIt for the adapter module; the package runs without it.
+(`pip install .` from a downloaded copy does the same.) An optional PypeIt
+adapter is planned; the `pypeit` extra pre-installs its dependency. No adapter
+module exists yet, and the package runs without PypeIt.
 
 ### Developer install
 
@@ -160,9 +161,9 @@ mastpipe <command> --help
 
 The reduction commands (`identify`, `solve`, `quicklook`) take `--instrument`
 (e.g. `highspec`), `--configuration` where the frames' headers do not say which
-grating was used (e.g. `mgb518`), `--camera` when the instrument has several,
-`--layout` to name the fiber preset (`lab3`, `survey45`; default: the frames'
-preset, else the instrument's), `--out` for the output folder, `--library` for
+grating was used (e.g. `Mg`), `--camera` when the instrument has several,
+`--layout` to name the fiber preset (`lab3`, `survey45`; default: a manifest's
+`fiber_preset`, else the instrument's), `--out` for the output folder, `--library` for
 a calibration library elsewhere than `OUT/calib`, and repeatable
 `--set group.key=value` overrides of any step parameter
 (`trace.trace_halfwidth=4`, `drift.time_policy=interpolate`, …). `show` takes
@@ -192,7 +193,7 @@ strong lines numbered in both) for the user to read a few wavelength–pixel
 pairs off:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg
 #   anchor panels: out/anchor_panels.png
 #   candidates: out/anchor_candidates.csv
 ```
@@ -204,42 +205,50 @@ stored with the instrument for the configuration and layout
 reference; `--trace` names the layout trace id the pairs were measured on:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --anchors 515.8605:267.22,525.836:1423.22 --trace 0
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --stored-anchors
-#   reference highspec_mgb518_lab3_20260909T113659: 3 fibers solved
-#   written: out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+#   reference highspec_Mg_lab3_20260909T113659: 3 fibers solved
+#   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
-Masters already in `out/calib` (`*_bias.fits`, `*_background.fits`,
-`*_flat.fits`) are applied; traces come from the flat master when there is
-one and from the arc itself otherwise. `fiber_agreement.csv` beside the
+The masters of the calibration library (`--library`, default `out/calib`) that
+match the arc's camera, binning, readout and temperature (the flat its
+configuration too) are applied, the nearest in time; traces come from the flat
+master when there is one and from the arc itself otherwise. `fiber_agreement.csv` beside the
 reference lists, per catalogue line, how far the independent per-fiber
 solutions disagree.
 
 ### `solve` — re-solve a full arc from the previous reference
 
 ```bash
-mastpipe solve night/arc_full.fits --out out --instrument highspec --configuration mgb518
-#   reference highspec_mgb518_lab3_20261112T010203: 3 fibers solved, seeded by highspec_mgb518_lab3_20260909T113659
+mastpipe solve night/arc_full.fits --out out --instrument highspec --configuration Mg
+#   reference highspec_Mg_lab3_20261112T010203: 3 fibers solved, seeded by highspec_Mg_lab3_20260909T113659
 ```
 
 The seed is the latest reference of the configuration and layout in the
-calibration library (`--library`, default `out/calib`); the command exits with
+calibration library (`--library`, default `out/calib`), which also gives the
+masters as for `identify`; the command exits with
 status 2 and "run identify first" when there is none. The new reference does
 not replace the old one: each is valid from its own arc's time.
 
 ### `quicklook` — reduce a night folder
 
 ```bash
-mastpipe quicklook night/ --out out --instrument highspec
+mastpipe quicklook night/highspec --out out --instrument highspec --configuration Mg
 mastpipe quicklook night/ --out out --instrument highspec --manifest night/manifest.csv \
     --time-policy interpolate --on-error raise
 ```
 
-Frames are classified from their headers (`IMAGETYP`, `LAMP`, exposure time)
-and the folder is reduced per camera and configuration: masters are stacked
+Frames are classified from their headers (`IMAGETYP`, `LAMP`, exposure time);
+a frame whose header type is `light` (what the control software writes for arcs
+and science frames alike) is resolved into an arc or a science frame from its
+content, and a manifest's `exposure_type` overrides both. `--configuration` is
+required when no header card or file name names the grating (the control
+software writes none today); without it those frames are not reduced and the
+run fails with the list of the instrument's configurations. The folder is reduced per camera and
+configuration: masters are stacked
 into the library (a kind the night lacks is taken from it), traces are found on
 the flat master (or a full arc), full arcs are re-solved from the library's
 reference, calibration-fiber arcs are fitted for drift, and science frames are
@@ -247,9 +256,9 @@ calibrated with cosmic rays flagged, extracted, given wavelengths by the time
 policy, sky-subtracted with the telescope's sky fiber, passed through the flux
 and telluric stages, written with provenance and QC, and combined per target.
 A product already on disk with the same idempotence key (input checksum,
-configuration hash, reference identifier, drift-arc checksums, layout preset)
-is skipped; one whose key changed is reduced again; `--force` reduces
-everything. `--reference ID` pins one reference solution instead of the one
+configuration hash, reference solution's hash, drift-arc checksums, layout
+preset and its file's hash, the masters' checksums, the time zone) is
+skipped; one whose key changed is reduced again; `--force` reduces everything. `--reference ID` pins one reference solution instead of the one
 valid at each frame's time. Frames the headers cannot classify are skipped
 with their rule, failures are recorded and the run goes on (`--on-error
 continue`, the default). The exit status is 2 when anything failed, when the
@@ -261,30 +270,45 @@ start) and ingest derives each frame's mid-time from it and the exposure time;
 a frame without an exposure time keeps the header time as given and notes
 `mid_time` among its unresolved fields. A header value listed under a field's
 `missing_values` (the Andor `TEMP = -999` of an unread sensor) counts as
-absent.
+absent. A stamp without an offset is read according to the field's `timezone`
+(`utc`, an IANA zone, or `assume-utc`, HighSpec's setting until the control
+computer's clock is known; the assumption is then recorded as `MPTZ` on every
+product).
 
-A **manifest** (`--manifest`) is a CSV keyed by file name (`source`, optional
-`extension`) whose non-empty cells override any metadata field: `exposure_type`
+The night folder is scanned with its subfolders (the control software files
+each acquisition in a folder of its own); every `*.fits`, `*.fit` or
+`*.fits.fz` file (any case) is read, names starting with `.` are ignored, and a
+frame is known by its path relative to the night folder. A frame whose
+`INSTRUME` names another instrument is skipped with that reason.
+
+A **manifest** (`--manifest`) is a CSV keyed by `source` (optional `extension`)
+whose non-empty cells override any metadata field. A `source` is a relative
+path (`highspec/acquisition-0001/exposure-001.fits`), a glob pattern on it
+(`highspec/acquisition-0001/*.fits`; `*` stays within a folder, `**` crosses
+folders) or a bare file name that only one frame has (two or more is an error);
+a row matching no frame is reported among the skipped. The fields are: `exposure_type`
 (`bias`, `dark`, `flat`, `arc`, `science`, `background`, `unknown`),
 `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`, `target`,
-`exposure_time`, `mid_time` (taken as the mid-exposure time), `binning`,
+`exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless it
+carries an offset), `binning`,
 `readout_mode`, `detector_temperature`, `lamp_state`, `camera`, `instrument`,
 `classification_rule`. It is how frames without instrument keywords, such as
-the laboratory data, enter the pipeline:
+the laboratory data, enter the pipeline, and how a night names its fiber layout
+when `--layout` does not (the headers carry none):
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind
-image_bias.fits,bias,mgb518,lab3,
-background.fits,background,mgb518,lab3,
-flat_518.fits,flat,mgb518,lab3,
-FOCUS_05_13.30004_mm.fits,arc,mgb518,lab3,full
+image_bias.fits,bias,Mg,lab3,
+background.fits,background,Mg,lab3,
+flat_518.fits,flat,Mg,lab3,
+FOCUS_05_13.30004_mm.fits,arc,Mg,lab3,full
 ```
 
 ### `show` — print what a product holds
 
 ```bash
-mastpipe show out/spec/highspec_mgb518_main_20261001T221500_spec.fits
-mastpipe show out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
+mastpipe show out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
 Prints the product kind, the frame and its statuses, a per-fiber summary
@@ -309,9 +333,11 @@ out/
 `out/calib` is also the **calibration library**: `index.json` lists every
 master (camera, binning, readout mode, configuration, temperature, time) and
 reference (identifier, `valid_from`) so later runs find them. Files are named
-`{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits` after
-the frame's UTC mid-time, with `kind` one of `bias`, `dark`, `background`,
-`flat`, `traces`, `spec` or `comb_<target>`; references are
+`{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits`
+after the frame's UTC mid-time and the first six hex digits of its file's
+SHA-256 (a master's first input frame's; `nosum` on a trace set built from a
+library flat), so equal mid-times never collide, with `kind` one of `bias`,
+`dark`, `background`, `flat`, `traces`, `spec` or `comb_<target>`; references are
 `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being the
 full arc's mid-time, and that name without the suffix is the reference
 identifier.

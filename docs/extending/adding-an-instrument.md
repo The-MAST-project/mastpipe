@@ -21,6 +21,8 @@ cameras:
     transpose: true            # fibers are vertical stripes in the raw frame
     flip_x: false
     flip_y: false
+    readouts:                  # optional: gain and read noise per output amplifier
+      em: {gain: 1.0, read_noise: 5.0}
 params:                        # step parameters; every field has a default
   trace: {trace_halfwidth: 6, degree: 2}
   extract: {halfwidth: 7.0}
@@ -47,14 +49,15 @@ lists candidate keywords in priority order and optional transforms:
 ```yaml
 fields:
   exposure_time: {keys: [EXPTIME, EXPOSURE], type: float}
-  mid_time: {keys: [DATE-OBS], type: str, reference: start}   # start | mid | end
+  instrument: {keys: [INSTRUME], lower: true}   # frames naming another instrument are skipped
+  mid_time: {keys: [DATE-OBS], type: str, reference: start, timezone: utc}  # start | mid | end
   detector_temperature: {keys: [CCD-TEMP], type: float, missing_values: [-999]}
   exposure_type: {keys: [IMAGETYP], lower: true, map: {light: science, bias: bias}}
   lamp_state: {keys: [LAMP], lower: true}
   configuration: {keys: [BAND], lower: true, filename_regex: "_(?P<value>[ugri])_"}
   camera: {keys: [CAMERA], lower: true}
-  fiber_preset: {keys: [FIBPRE]}
-  target: {keys: [OBJECT]}
+  targets: {per_unit: "OBJ{nn}"}  # one keyword per telescope unit, 01..20
+  target: {keys: [OBJECT]}        # the fallback: one target for every fiber
 classification:                # applied in order when the header has no valid type
   - {when: {exposure_time: {lt: 0.001}}, type: bias}
   - {when: {lamp_state: {eq: thar}}, type: arc}
@@ -64,7 +67,12 @@ classification:                # applied in order when the header has no valid t
 
 Nothing downstream of ingest sees a raw keyword, so a change of control
 software is a change of this file. Unresolved fields are recorded, never
-guessed. The manifest can override any field frame by frame.
+guessed. A `per_unit` field reads a keyword template once per telescope unit
+(`{nn}` is the two-digit unit number) and gives the units whose keyword is
+present; it replaces `keys`, `filename_regex` and `default`. A time field's
+`timezone` (`utc`, an IANA zone name, or `assume-utc`) says how a stamp without
+an offset is read (see [The night folder](../running/night-folder.md)). The
+manifest can override any field frame by frame.
 
 ## Layouts
 

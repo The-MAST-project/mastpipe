@@ -1,15 +1,37 @@
 """Unit tests of the quick-look runner's pure helpers: the drift models a frame may be
-paired with (those fitted against its own reference) and the blend of two drift models
-under the ``interpolate`` policy."""
+paired with (those fitted against its own reference), the blend of two drift models
+under the ``interpolate`` policy, the group's binning and the per-frame isolation of the
+calibration frames."""
+
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
 
 from mastpipe.config.models import DriftParams
-from mastpipe.core.model import PER_FIBER_COLUMNS, DriftModel, FrameMeta, ReferenceSolution
+from mastpipe.core.model import (
+    PER_FIBER_COLUMNS,
+    DriftModel,
+    FrameMeta,
+    FrameRef,
+    ReferenceSolution,
+)
+from mastpipe.instruments.registry import load_instrument
 from mastpipe.pipeline.arcs import pair_arcs
-from mastpipe.pipeline.runner import _arc_weights, _arcs_for, _blend_drifts
+from mastpipe.pipeline.runner import (
+    RunOptions,
+    _arc_weights,
+    _arcs_for,
+    _blend_drifts,
+    _group_binning,
+    _group_readout,
+    _usable_frames,
+    run_quicklook,
+)
+from mastpipe.vocab import GRATING_NAMES
 
 N_PIX = 1598
 
@@ -19,7 +41,7 @@ def make_meta(mid_time: str, checksum: str, exposure_type: str = "arc") -> Frame
         instrument="highspec",
         camera="main",
         exposure_type=exposure_type,
-        configuration="mgb518",
+        configuration="Mg",
         mid_time=mid_time,
         checksum=checksum,
         source=f"{checksum}.fits",
@@ -29,7 +51,7 @@ def make_meta(mid_time: str, checksum: str, exposure_type: str = "arc") -> Frame
 def make_reference(identifier: str, valid_from: str) -> ReferenceSolution:
     return ReferenceSolution(
         instrument="highspec",
-        configuration="mgb518",
+        configuration="Mg",
         fiber_preset="survey45",
         solutions={},
         created=valid_from,
@@ -105,13 +127,7 @@ def test_frame_never_receives_drift_fitted_against_another_reference(policy):
     # fifteen minutes away (nearest_before alone is safe: no B arc precedes the frame)
     unfiltered = pair_arcs(frame, [(m, d) for m, d, _ in arcs], ref_a, params)
     taken = sorted(c for model, _ in unfiltered for c in model.arc_checksums)
-    assert taken == (
-        ["a1"]
-        if policy == "nearest_before"
-        else ["a1", "b1"]
-        if policy == "interpolate"
-        else ["b1"]
-    )
+    assert taken == (["a1"] if policy == "nearest_before" else ["a1", "b1"] if policy == "interpolate" else ["b1"])
     # a frame after B's time uses B and only B's arcs
     later = make_meta("2026-10-01T21:20:00", "sci2", exposure_type="science")
     theirs = _arcs_for(arcs, ref_b)
@@ -133,17 +149,11 @@ def test_blend_drifts_weights_two_models():
     fibers_a = {0: (0.2, 1e-5, 20, 0.02, True), 20: (0.4, 1e-5, 18, 0.03, True)}
     fibers_b = {0: (1.2, 3e-5, 15, 0.04, True), 44: (1.6, 3e-5, 16, 0.01, False)}
     first = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers_a, scatter_px=0.02)
-    second = make_drift(
-        "bbb", "2026-10-01T21:00:00", [2e-3, 1.2], [0.0, 3e-5], fibers_b, scatter_px=0.05
-    )
+    second = make_drift("bbb", "2026-10-01T21:00:00", [2e-3, 1.2], [0.0, 3e-5], fibers_b, scatter_px=0.05)
     blended, weights = _blend_drifts([(first, 0.3), (second, 0.7)])
     for y in (10.0, 300.0):
-        assert blended.shift_at(y) == pytest.approx(
-            0.3 * first.shift_at(y) + 0.7 * second.shift_at(y)
-        )
-        assert blended.stretch_at(y) == pytest.approx(
-            0.3 * first.stretch_at(y) + 0.7 * second.stretch_at(y)
-        )
+        assert blended.shift_at(y) == pytest.approx(0.3 * first.shift_at(y) + 0.7 * second.shift_at(y))
+        assert blended.stretch_at(y) == pytest.approx(0.3 * first.stretch_at(y) + 0.7 * second.stretch_at(y))
     # right-aligned coefficients: the constant model contributes to the last slot only
     assert blended.shift_coeffs == pytest.approx([0.7 * 2e-3, 0.3 * 0.2 + 0.7 * 1.2])
     assert blended.stretch_coeffs == pytest.approx([0.0, 0.3 * 1e-5 + 0.7 * 3e-5])
@@ -152,6 +162,8 @@ def test_blend_drifts_weights_two_models():
     assert blended.n_pix == N_PIX
     assert blended.scatter_px == pytest.approx(0.05)
     assert blended.usable is True
+    # the fewest usable arc fibers of the blended models, not a count of the merged table
+    assert (first.n_usable, second.n_usable, blended.n_usable) == (2, 1, 1)
     table = blended.per_fiber.set_index("fiber")
     assert sorted(table.index) == [0, 20, 44]
     assert table.loc[0, "shift_px"] == pytest.approx(0.3 * 0.2 + 0.7 * 1.2)
@@ -168,3 +180,270 @@ def test_blend_drifts_weights_two_models():
     bad = make_drift("ccc", "2026-10-01T22:00:00", [0.5], [0.0], fibers_a, usable=False)
     assert not _blend_drifts([(first, 0.5), (bad, 0.5)])[0].usable
     assert _arc_weights([(first, 0.3), (second, 0.7)], ["aaa", "bbb"]) == pytest.approx([0.3, 0.7])
+
+
+# ------------------------------------------------------------- no silent configuration
+
+
+def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_path):
+    """A frame whose grating is neither in a GRATING card nor in its file name is not
+    reduced with the instrument's only grating: the group fails and names the choices,
+    the instrument's configurations (not every fleet grating name, some of which it
+    cannot reduce)."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    del header["GRATING"]
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
+    message = "configuration unknown; pass --configuration one of ['Mg']"
+    assert summary.failed == [("group main/None", message)]
+    assert sorted(load_instrument("highspec").configurations) == ["Mg"]
+    assert set(GRATING_NAMES) - {"Mg"}  # names the fleet knows but highspec cannot reduce
+    assert summary.products == [] and summary.qc == []
+
+
+# ------------------------------------------------------------------ assumed time zone
+
+
+def test_one_warning_per_run_when_frame_times_carry_no_zone(sim_night, tmp_path):
+    """The simulator writes a naive DATE-OBS, which HighSpec's map takes as UTC: the run log
+    says so once, however many frames there are, and not at all when every stamp has its
+    own offset."""
+    sim_dir, _ = sim_night
+    warning = "frame times carry no time zone; taken as UTC (header map 'assume-utc')"
+    for name, offset in (("naive", ""), ("explicit", "+00:00")):
+        folder = tmp_path / name
+        folder.mkdir()
+        for k, source in enumerate(("sim_bias_00.fits", "sim_bias_01.fits")):
+            with fits.open(sim_dir / source) as hdul:
+                data = hdul[0].data.copy()
+                header = hdul[0].header.copy()
+            del header["GRATING"]  # the group then fails fast, after the scan
+            header["DATE-OBS"] = header["DATE-OBS"] + offset
+            fits.PrimaryHDU(data, header).writeto(folder / f"frame_{k:04d}.fits")
+        out = tmp_path / f"out_{name}"
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        count = log_file.read_text(encoding="utf-8").count(warning)
+        assert count == (1 if name == "naive" else 0), name
+
+
+def test_one_warning_per_run_for_products_of_an_earlier_version(sim_night, tmp_path):
+    """Product names gained a checksum segment, so a product written by an earlier version
+    is never found at its new path: a new file is written beside it. The run log says so
+    once, naming the ``spec`` folder, however many such files there are, and not at all
+    when every product name carries the segment."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data, header = hdul[0].data.copy(), hdul[0].header.copy()
+    del header["GRATING"]  # the group then fails fast, after the check
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
+    warning = "written by an earlier mastpipe version"
+    for name, files in (
+        (
+            "old",
+            [
+                "highspec_Mg_main_20261001T180230_spec.fits",
+                "highspec_Mg_main_notime_spec.fits",
+                "highspec_Mg_main_20261001T180230_comb_target_a.fits",
+            ],
+        ),
+        (
+            "new",
+            [
+                "highspec_Mg_main_20261001T180230_a1b2c3_spec.fits",
+                "highspec_Mg_main_notime_nosum_spec.fits",
+                "highspec_Mg_main_20261001T180230_a1b2c3_comb_target_a.fits",
+            ],
+        ),
+    ):
+        out = tmp_path / f"out_{name}"
+        (out / "spec").mkdir(parents=True)
+        for file in files:
+            (out / "spec" / file).write_bytes(b"")
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if warning in line]
+        assert len(lines) == (1 if name == "old" else 0), name
+        if lines:
+            assert "WARNING" in lines[0] and str(out / "spec") in lines[0] and "3 product" in lines[0]
+
+
+def test_one_warning_per_run_for_an_amplifier_without_its_noise(sim_night, tmp_path):
+    """HighSpec lists gain and read noise for ``conventional`` and ``em``; frames naming
+    another amplifier (here a misspelt one) take the camera's defaults, and the run log
+    says so once, however many frames there are, and not at all for a listed amplifier."""
+    sim_dir, _ = sim_night
+    warning = "no gain and read noise listed for amplifier"
+    for amplifier in ("Conventionl", "Conventional"):
+        folder = tmp_path / amplifier
+        folder.mkdir()
+        for k, source in enumerate(("sim_bias_00.fits", "sim_bias_01.fits")):
+            with fits.open(sim_dir / source) as hdul:
+                data = hdul[0].data.copy()
+                header = hdul[0].header.copy()
+            del header["GRATING"]  # the group then fails fast, after the scan
+            header["OUTPTAMP"] = amplifier
+            fits.PrimaryHDU(data, header).writeto(folder / f"frame_{k:04d}.fits")
+        out = tmp_path / f"out_{amplifier}"
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        text = log_file.read_text(encoding="utf-8")
+        assert text.count(warning) == (1 if amplifier == "Conventionl" else 0), amplifier
+        if amplifier == "Conventionl":
+            assert "conventionl" in text
+
+
+# ---------------------------------------------------- other instruments, unmatched rows
+
+
+def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tmp_path):
+    """A nested night holding a DeepSpec frame next to HighSpec's: the DeepSpec frame and
+    a manifest row naming no frame are listed in ``skipped`` with their reasons."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    del header["GRATING"]  # the group then fails fast, after the scan
+    for name, instrument in (("highspec", "Highspec"), ("deepspec", "Deepspec")):
+        (folder / name / "acquisition-0001").mkdir(parents=True)
+        header["INSTRUME"] = instrument
+        fits.PrimaryHDU(data, header).writeto(folder / name / "acquisition-0001" / "e-001.fits")
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("source,target\nnothing.fits,x\n", encoding="utf-8")
+    options = RunOptions("highspec", manifest=manifest)
+    summary = run_quicklook(folder, tmp_path / "out", options)
+    assert summary.skipped == [
+        "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
+        "manifest row 0: nothing.fits: matches no frame",
+    ]
+    assert [source for source, _ in summary.failed] == ["group main/None"]
+
+
+# ------------------------------------------------------------ calibration frames, binning
+
+
+def binned_ref(name: str, exposure_type: str, binning: tuple[int, int], **fields) -> FrameRef:
+    meta = FrameMeta(
+        instrument="highspec",
+        camera="main",
+        exposure_type=exposure_type,
+        configuration="Mg",
+        binning=binning,
+        exposure_time=1.0,
+        source=name,
+        **fields,
+    )
+    return FrameRef(path=Path(name), extension=0, meta=meta)
+
+
+def test_group_binning_follows_the_science_frames():
+    """Many calibration frames at 1x1 do not outvote the science frames at 2x2 (light
+    frames, which may be science, count with them); without any, all frames vote."""
+    calibrations = [binned_ref(f"bias_{k}.fits", "bias", (1, 1)) for k in range(5)]
+    calibrations += [binned_ref(f"flat_{k}.fits", "flat", (1, 1)) for k in range(3)]
+    science = [
+        binned_ref("sci_0.fits", "science", (2, 2)),
+        binned_ref("sci_1.fits", "science", (1, 1)),
+        binned_ref("light_0.fits", "light", (2, 2)),
+    ]
+    assert _group_binning(calibrations + science) == (2, 2)
+    odd = [binned_ref("bias_odd.fits", "bias", (2, 1))]
+    assert _group_binning(odd + calibrations) == (1, 1)
+
+
+def test_group_readout_follows_the_science_frames():
+    """The group's readout key and amplifier come from the frames that may be science, as
+    its binning does; without any, all frames vote."""
+    conventional = {"readout_mode": "image", "amplifier": "conventional"}
+    em = {"readout_mode": "image", "amplifier": "em"}
+    calibrations = [binned_ref(f"bias_{k}.fits", "bias", (1, 1), **conventional) for k in range(5)]
+    science = [
+        binned_ref("sci_0.fits", "science", (1, 1), **em),
+        binned_ref("light_0.fits", "light", (1, 1), **em),
+        binned_ref("sci_1.fits", "science", (1, 1), **conventional),
+    ]
+    assert _group_readout(calibrations + science) == ("image/em", "em")
+    assert _group_readout(calibrations) == ("image/conventional", "conventional")
+    assert _group_readout([binned_ref("x.fits", "bias", (1, 1))]) == ("unknown/unknown", None)
+
+
+def usable_group(on_error: str = "continue") -> SimpleNamespace:
+    """The parts of a ``_Group`` that :func:`_usable_frames` reads."""
+    detector = SimpleNamespace(shape=(8, 10), crop=None, transpose=False, flip_x=False, flip_y=False)
+    return SimpleNamespace(
+        effective=SimpleNamespace(detector=detector),
+        binning=(1, 1),
+        readout_key="unknown/unknown",
+        options=SimpleNamespace(on_error=on_error),
+        summary=SimpleNamespace(failed=[], skipped=[]),
+    )
+
+
+def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
+    """A frame that cannot be read, has another binning, or another shape than the
+    detector's (after crop and orientation) is recorded in ``failed`` and dropped; the
+    others are kept in order. Under ``on_error='raise'`` the first bad frame raises."""
+    refs = []
+    for name, shape, binning in (
+        ("a.fits", (8, 10), (1, 1)),
+        ("binned.fits", (8, 10), (2, 1)),
+        ("b.fits", (8, 10), (1, 1)),
+        ("stub.fits", (4, 5), (1, 1)),
+        ("c.fits", (8, 10), (1, 1)),
+    ):
+        fits.PrimaryHDU(np.full(shape, 600, dtype=np.uint16)).writeto(tmp_path / name)
+        ref = binned_ref(name, "bias", binning)
+        refs.append(FrameRef(path=tmp_path / name, extension=0, meta=ref.meta))
+    (tmp_path / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    refs.insert(1, FrameRef(tmp_path / "junk.fits", 0, binned_ref("junk.fits", "bias", (1, 1)).meta))
+
+    group = usable_group()
+    frames = _usable_frames(group, refs, calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits", "c.fits"]
+    failed = dict(group.summary.failed)
+    assert list(failed) == ["junk.fits", "binned.fits", "stub.fits"]
+    assert "binning 2x1" in failed["binned.fits"] and "1x1" in failed["binned.fits"]
+    assert "shape (4, 5)" in failed["stub.fits"] and "(8, 10)" in failed["stub.fits"]
+
+    # a stub sorting first does not set the shape: the good frames after it survive
+    group = usable_group()
+    frames = _usable_frames(group, [refs[4], refs[0], refs[3]], calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
+    assert [source for source, _ in group.summary.failed] == ["stub.fits"]
+
+    with pytest.raises(ValueError, match="binning 2x1"):
+        _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
+
+
+def test_usable_frames_skips_a_frame_of_another_readout(tmp_path):
+    """A calibration frame read through another amplifier than the group's is recorded in
+    ``skipped`` with both readout keys and left out of the master: it is not a failure
+    (it may belong to another group's night), and it does not fail the stack or raise
+    under ``on_error='raise'``."""
+    refs = []
+    for name, amplifier in (
+        ("a.fits", "conventional"),
+        ("em.fits", "em"),
+        ("b.fits", "conventional"),
+    ):
+        fits.PrimaryHDU(np.full((8, 10), 600, dtype=np.uint16)).writeto(tmp_path / name)
+        meta = binned_ref(name, "bias", (1, 1), readout_mode="image", amplifier=amplifier).meta
+        refs.append(FrameRef(path=tmp_path / name, extension=0, meta=meta))
+    group = usable_group()
+    group.readout_key = "image/conventional"
+    frames = _usable_frames(group, refs, calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
+    assert group.summary.failed == []
+    assert group.summary.skipped == ["em.fits: readout image/em is not the group's image/conventional"]
+    group = usable_group("raise")
+    group.readout_key = "image/conventional"
+    assert [frame.meta.source for frame in _usable_frames(group, refs, calibrate=False)] == ["a.fits", "b.fits"]
+    assert len(group.summary.skipped) == 1

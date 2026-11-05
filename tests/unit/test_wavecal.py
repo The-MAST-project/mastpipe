@@ -24,6 +24,7 @@ from mastpipe.steps.wavecal import (
     wavelength_map,
 )
 from mastpipe.steps.wavemodel import GratingModel, anchor_model, model_from_solution
+from tests.conftest import truth_model
 
 MIN_SOLVED = 43
 MAX_RMS_PX = 0.05
@@ -38,12 +39,11 @@ CREATED = "2026-10-29T20:15:00"
 
 
 @pytest.fixture(scope="module")
-def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mgb518_lines) -> SimpleNamespace:
+def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> SimpleNamespace:
     """The simulated full arc's inputs to the solve plus the grating truth."""
     truth = sim_full_arc.truth
     geom = sim_full_arc.geom
-    cat_wl, cat_sp = catalogue_arrays(mgb518_lines, usable_only=True)
-    truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, sim_full_arc.n_pix, geom)
+    cat_wl, cat_sp = catalogue_arrays(mg_lines, usable_only=True)
     return SimpleNamespace(
         truth=truth,
         geom=geom,
@@ -53,7 +53,7 @@ def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mgb518_lines) -> SimpleName
         fluxes=sim_arc_fluxes,
         cat_wl=cat_wl,
         cat_sp=cat_sp,
-        truth_model=truth_model,
+        truth_model=lambda fiber: truth_model(truth, fiber, geom, sim_full_arc.n_pix),
         params=WavecalParams(),
     )
 
@@ -67,17 +67,13 @@ def anchor(arc) -> GratingModel:
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     assert bright.sum() >= 2
     first, last = np.flatnonzero(bright)[[0, -1]]
-    pairs = [
-        (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
-    ]
+    pairs = [(float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)]
     return anchor_model(pairs, arc.geom, arc.n_pix)
 
 
 @pytest.fixture(scope="module")
 def solved(arc, anchor) -> dict[int, WavelengthSolution]:
-    return solve_full_arc(
-        arc.tables, arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params
-    )
+    return solve_full_arc(arc.tables, arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params)
 
 
 def x_obs_of(table: pd.DataFrame) -> np.ndarray:
@@ -85,26 +81,24 @@ def x_obs_of(table: pd.DataFrame) -> np.ndarray:
 
 
 def map_error_in_dispersions(solution: WavelengthSolution, arc) -> float:
+    """Largest map error against the fiber's own truth model, in dispersions."""
     lam = wavelength_map(solution, arc.geom)
     x = np.arange(arc.n_pix)
-    return float(
-        np.max(np.abs(lam - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(x))
-    )
+    model = arc.truth_model(solution.fiber)
+    return float(np.max(np.abs(lam - model.wavelength(x)) / model.dispersion(x)))
 
 
 # ------------------------------------------------------------------- identify / shift
 
 
 def test_identify_lines_nearest_within_tolerance_and_unique(arc):
-    model = arc.truth_model
+    model = arc.truth_model(0)
     disp = model.dispersion(arc.n_pix / 2)
     cat_wl = np.array([515.0, 518.0, 518.0 + 2.5 * disp, 522.0])
     cat_sp = np.array(["Th I", "Ar II", "Ar I", "Th II"], dtype=object)
     # a line 0.5 px off 515.0, one exactly on 522.0, one 3 px off (rejected by tol), one at
     # 518.0 whose runner-up 2.5 px away is too close (rejected as ambiguous)
-    x_obs = np.array(
-        [model.pixel(515.0) + 0.5, model.pixel(522.0), model.pixel(515.0) + 3.0, model.pixel(518.0)]
-    )
+    x_obs = np.array([model.pixel(515.0) + 0.5, model.pixel(522.0), model.pixel(515.0) + 3.0, model.pixel(518.0)])
     ident = identify_lines(x_obs, model, cat_wl, cat_sp, tol_px=2.0, unique_tol_px=4.0)
     assert list(ident.columns) == list(LINE_COLUMNS)
     assert ident["wavelength"].tolist() == [515.0, 522.0]
@@ -167,16 +161,15 @@ def test_solve_fiber_from_anchor_on_simulated_full_arc(arc, anchor):
     np.testing.assert_allclose(ident["dx_px"].to_numpy(), resid, atol=1e-5)
     # every identified wavelength is a catalogue line and sits at its truth pixel
     assert set(ident["wavelength"]) <= set(arc.cat_wl)
-    truth_px = arc.truth_model.pixel(ident["wavelength"].to_numpy())
+    truth_px = arc.truth_model(0).pixel(ident["wavelength"].to_numpy())
     assert np.max(np.abs(truth_px - ident["x"].to_numpy())) < 0.2
     # the fitted map agrees with the truth across the detector
     x = np.arange(arc.n_pix)
-    err = np.abs(model.wavelength(x) - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(
-        x
-    )
+    truth0 = arc.truth_model(0)
+    err = np.abs(model.wavelength(x) - truth0.wavelength(x)) / truth0.dispersion(x)
     assert err.max() < MAX_MAP_ERROR_DISP
-    assert model.x_c == pytest.approx(arc.truth.x_c, abs=0.5)
-    assert model.B == pytest.approx(arc.truth.B, rel=2e-3)
+    assert model.x_c == pytest.approx(arc.truth.x_c_per_trace[0], abs=0.5)
+    assert pytest.approx(arc.truth.B_per_trace[0], rel=2e-3) == model.B
 
 
 def test_solve_fiber_gives_up_below_min_lines(arc, anchor):
@@ -231,10 +224,8 @@ def test_solve_full_arc_all_45_from_single_model(arc, solved):
     assert set(subset) <= {3, 5}
 
 
-def test_solve_full_arc_from_previous_reference_is_faster_and_equal(
-    arc, anchor, solved, monkeypatch
-):
-    reference = build_reference("highspec", "mgb518", "survey45", solved, CREATED, ("abc123",))
+def test_solve_full_arc_from_previous_reference_is_faster_and_equal(arc, anchor, solved, monkeypatch):
+    reference = build_reference("highspec", "Mg", "survey45", solved, CREATED, ("abc123",))
     calls: list[int] = []
 
     def counting_fit(*args, **kwargs):
@@ -268,29 +259,23 @@ def test_solve_full_arc_from_previous_reference_is_faster_and_equal(
         assert other.params[0] == pytest.approx(solution.params[0], abs=1e-6)
         assert other.params[1] == pytest.approx(solution.params[1], rel=1e-6)
         assert other.params[2] == solution.params[2]
-        np.testing.assert_allclose(
-            wavelength_map(other, arc.geom), wavelength_map(solution, arc.geom), atol=1e-6
-        )
+        np.testing.assert_allclose(wavelength_map(other, arc.geom), wavelength_map(solution, arc.geom), atol=1e-6)
     # a reference start needs the geometry to rebuild its models
     with pytest.raises(ValueError):
-        solve_full_arc(
-            arc.tables, arc.fluxes, arc.traces, reference, arc.cat_wl, arc.cat_sp, arc.params
-        )
+        solve_full_arc(arc.tables, arc.fluxes, arc.traces, reference, arc.cat_wl, arc.cat_sp, arc.params)
 
 
 def test_missing_fiber_absent_not_crash(arc, anchor, solved):
     tables = list(arc.tables)
     tables[7] = tables[7].iloc[0:0]  # no detected lines at all
     tables[9] = tables[9].assign(use_x=False)  # lines, none usable along the dispersion
-    result = solve_full_arc(
-        tables, arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params
-    )
+    result = solve_full_arc(tables, arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params)
     assert 7 not in result and 9 not in result
     assert len(result) >= MIN_SOLVED - 2
     assert set(result) == set(solved) - {7, 9}
     # a fiber absent from the previous reference seeds from its nearest solved neighbour
     partial = {fiber: solution for fiber, solution in solved.items() if fiber != 7}
-    reference = build_reference("highspec", "mgb518", "survey45", partial, CREATED, ())
+    reference = build_reference("highspec", "Mg", "survey45", partial, CREATED, ())
     result = solve_full_arc(
         arc.tables,
         arc.fluxes,
@@ -305,17 +290,13 @@ def test_missing_fiber_absent_not_crash(arc, anchor, solved):
     assert map_error_in_dispersions(result[7], arc) < MAX_MAP_ERROR_DISP
     # the inputs must line up with the trace set
     with pytest.raises(ValueError):
-        solve_full_arc(
-            tables[:-1], arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params
-        )
+        solve_full_arc(tables[:-1], arc.fluxes, arc.traces, anchor, arc.cat_wl, arc.cat_sp, arc.params)
 
 
 # --------------------------------------------------------------- agreement and reference
 
 
-def make_solution(
-    fiber: int, lines: pd.DataFrame, params=(800.0, 20000.0, 0.75)
-) -> WavelengthSolution:
+def make_solution(fiber: int, lines: pd.DataFrame, params=(800.0, 20000.0, 0.75)) -> WavelengthSolution:
     table = lines.copy()
     table["species"] = "Th I"
     return WavelengthSolution(
@@ -350,9 +331,7 @@ def test_fiber_agreement_small_on_truth(arc, solved):
     b["dx_px"] = [-0.03, 0.02]
     c = pd.DataFrame({"x": [102.0], "wavelength": [514.0]})
     c["dx_px"] = [0.0]
-    table = fiber_agreement(
-        {0: make_solution(0, a), 1: make_solution(1, b), 2: make_solution(2, c)}
-    )
+    table = fiber_agreement({0: make_solution(0, a), 1: make_solution(1, b), 2: make_solution(2, c)})
     assert table["wavelength"].tolist() == [514.0, 516.0]
     assert table["n_fibers"].tolist() == [3, 2]
     assert table["spread_px"].to_numpy() == pytest.approx([0.04, 0.04])
@@ -362,9 +341,9 @@ def test_fiber_agreement_small_on_truth(arc, solved):
 def test_reference_hash_changes_with_params():
     lines = pd.DataFrame({"x": [100.0, 900.0], "wavelength": [514.0, 521.0], "dx_px": [0.0, 0.0]})
     solutions = {0: make_solution(0, lines), 1: make_solution(1, lines)}
-    reference = build_reference("highspec", "mgb518", "survey45", solutions, CREATED, ("c1", "c2"))
+    reference = build_reference("highspec", "Mg", "survey45", solutions, CREATED, ("c1", "c2"))
     assert isinstance(reference, ReferenceSolution)
-    assert reference.identifier == "highspec_mgb518_survey45_20261029T201500"
+    assert reference.identifier == "highspec_Mg_survey45_20261029T201500"
     assert reference.valid_from == reference.created == CREATED
     assert reference.source_checksums == ("c1", "c2")
     assert reference.solutions is solutions

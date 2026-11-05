@@ -12,8 +12,13 @@ and falls back to the dark current alone when there is no background,
 
 The variance of a calibrated pixel, in ADU², is ``max(signal_e, 0) / gain² + RN² / gain²``
 with ``signal_e = gain (raw - bias)`` the bias-subtracted signal in electrons and ``RN``
-the read noise in electrons. The mask marks saturated pixels (in the raw frame or in any
-master) and non-finite values.
+the read noise in electrons, plus the variance of the subtracted masters. The bias array
+enters both subtractions, so its terms are correlated and combine before squaring: with
+``s = t / t_bkg`` the background path is ``raw - (1 - s) bias - s background`` and adds
+``(1 - s)² var_bias + s² var_bkg``; with ``s = t / t_dark`` the dark path is
+``raw - (1 - s) bias - s dark`` and adds ``(1 - s)² var_bias + s² var_dark``
+(``var_bias`` alone without a dark). A master variance that is unknown counts as zero.
+The mask marks saturated pixels (in the raw frame or in any master) and non-finite values.
 
 Everything here is pure: arrays, dataclasses and plain parameters in, dataclasses out.
 """
@@ -21,13 +26,14 @@ Everything here is pure: arrays, dataclasses and plain parameters in, dataclasse
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from mastpipe.config.models import CalibParams, DetectorConfig
 from mastpipe.core.model import CalibrationSet, Frame, FrameMeta, MasterCalib
+from mastpipe.core.times import to_utc, utc_iso
 
 STACK_METHODS = ("median", "mean")
 MEDIAN_EFFICIENCY = 1.253
@@ -104,7 +110,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     """Stack ``frames`` with ``params.stack_method`` / ``params.clip_sigma`` into a master.
 
     The validity record holds the keys that decide where the master applies: ``camera``,
-    ``binning`` and ``readout_mode`` (which every input must share, ``ValueError``
+    ``binning``, ``readout_mode`` and ``amplifier`` (which every input must share, ``ValueError``
     otherwise), the mean ``detector_temperature``, the mean ``mid_time`` (ISO-8601) and
     the ``exposure_time``. For any kind but ``"bias"`` the exposure times must agree to
     :data:`EXPOSURE_TOLERANCE` (relative), ``ValueError`` otherwise — a dark or
@@ -116,7 +122,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     if not frames:
         raise ValueError(f"master {kind}: no frames to stack")
     metas = [frame.meta for frame in frames]
-    for key in ("camera", "binning", "readout_mode"):
+    for key in ("camera", "binning", "readout_mode", "amplifier"):
         values = {getattr(meta, key) for meta in metas}
         if len(values) != 1:
             raise ValueError(f"master {kind}: inputs mix {key} values {sorted(map(str, values))}")
@@ -131,13 +137,12 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     shapes = {frame.data.shape for frame in frames}
     if len(shapes) != 1:
         raise ValueError(f"master {kind}: inputs have different shapes {sorted(shapes)}")
-    data, variance = stack_frames(
-        [frame.data for frame in frames], params.stack_method, params.clip_sigma
-    )
+    data, variance = stack_frames([frame.data for frame in frames], params.stack_method, params.clip_sigma)
     validity: dict[str, Any] = {
         "camera": metas[0].camera,
         "binning": metas[0].binning,
         "readout_mode": metas[0].readout_mode,
+        "amplifier": metas[0].amplifier,
         "detector_temperature": _mean_or_none(meta.detector_temperature for meta in metas),
         "mid_time": _mean_time_or_none(meta.mid_time for meta in metas),
         "exposure_time": _mean_or_none(meta.exposure_time for meta in metas),
@@ -164,12 +169,12 @@ def _mean_or_none(values: Iterable[float | None]) -> float | None:
 
 def _mean_time_or_none(values: Iterable[str | None]) -> str | None:
     """Mean of ISO-8601 times as ISO-8601, ``None`` when no time is given."""
-    times = [datetime.fromisoformat(value) for value in values if value is not None]
+    times = [to_utc(value) for value in values if value is not None]
     if not times:
         return None
     origin = times[0]
-    offset = sum((time - origin for time in times), timedelta(0)) / len(times)
-    return (origin + offset).isoformat()
+    offset = sum((time - origin for time in times), pd.Timedelta(0)) / len(times)
+    return utc_iso(origin + offset)
 
 
 # ---------------------------------------------------------------------- calibration set
@@ -180,41 +185,60 @@ def build_calibration_set(
     dark: MasterCalib | None,
     background: MasterCalib | None,
     detector: DetectorConfig,
+    amplifier: str | None = None,
 ) -> CalibrationSet:
     """The calibration inputs of one detector from its masters.
 
     ``dark_rate = (dark - bias) / t_dark`` (ADU per second, per pixel) when both a dark and
     a bias master exist and the dark's ``exposure_time`` is positive, ``0.0`` otherwise;
     ``t_background`` is the background master's ``exposure_time``. The gain and read noise
-    come from ``detector``. ``ValueError`` when no master is given at all.
+    are those of ``amplifier`` (:meth:`~mastpipe.config.models.DetectorConfig.noise`: its
+    ``detector.readouts`` entry, else the detector's defaults).
+
+    The masters' ``variance`` arrays become ``bias_variance`` and ``background_variance``;
+    with a dark rate, ``t_dark`` is the dark's exposure time and ``dark_rate_variance =
+    var_dark / t_dark²`` (the bias part is added in :func:`calibrate_frame`, where it
+    correlates with the bias subtraction). A
+    master without a variance (one read from a product that stored none) contributes
+    zero; a variance no master provides stays ``None``. ``ValueError`` when no master is
+    given at all.
     """
     masters = [master for master in (bias, dark, background) if master is not None]
     if not masters:
         raise ValueError("a calibration set needs at least one master frame")
     shape = tuple(int(n) for n in masters[0].data.shape)
     dark_rate: np.ndarray | float = 0.0
+    dark_rate_variance: np.ndarray | None = None
+    dark_time: float | None = None
     if dark is not None and bias is not None:
         t_dark = dark.validity.get("exposure_time") or 0.0
         if t_dark > 0:
-            dark_rate = ((dark.data - bias.data) / float(t_dark)).astype(np.float32)
+            dark_time = float(t_dark)
+            dark_rate = ((dark.data - bias.data) / dark_time).astype(np.float32)
+            if dark.variance is not None:
+                variance = np.asarray(dark.variance, dtype=np.float64) / dark_time**2
+                dark_rate_variance = variance.astype(np.float32)
     t_background = None if background is None else background.validity.get("exposure_time")
+    noise = detector.noise(amplifier)
     return CalibrationSet(
         bias=None if bias is None else bias.data,
         dark_rate=dark_rate,
         background=None if background is None else background.data,
         t_background=None if t_background is None else float(t_background),
-        gain=detector.gain,
-        read_noise=detector.read_noise,
+        gain=noise.gain,
+        read_noise=noise.read_noise,
         shape=shape,  # type: ignore[arg-type]
+        t_dark=dark_time,
+        bias_variance=None if bias is None else bias.variance,
+        background_variance=None if background is None else background.variance,
+        dark_rate_variance=dark_rate_variance,
     )
 
 
 # ------------------------------------------------------------------------- calibration
 
 
-def calibration_steps(
-    calib: CalibrationSet, t_frame: float, subtract_background: bool
-) -> list[str]:
+def calibration_steps(calib: CalibrationSet, t_frame: float, subtract_background: bool) -> list[str]:
     """The operations :func:`calibrate_frame` applies, as short strings for provenance."""
     steps: list[str] = []
     if calib.bias is not None:
@@ -222,9 +246,7 @@ def calibration_steps(
     if subtract_background:
         _check_background(calib)
         scale = float(t_frame) / float(calib.t_background)
-        steps.append(
-            f"background x {scale:.6g} (t {t_frame:g} s / t_background {calib.t_background:g} s)"
-        )
+        steps.append(f"background x {scale:.6g} (t {t_frame:g} s / t_background {calib.t_background:g} s)")
     elif np.any(np.asarray(calib.dark_rate) != 0.0):
         steps.append(f"dark_rate x {float(t_frame):g} s")
     return steps
@@ -241,7 +263,11 @@ def calibrate_frame(
     With ``subtract_background`` the output is ``raw - bias - (background - bias) t / t_bkg``
     (``ValueError`` when the set has no background with an exposure time); without it,
     ``raw - bias - dark_rate t``. A missing bias master subtracts nothing for that term.
-    The variance is ``max(gain (raw - bias), 0) / gain² + RN² / gain²`` in ADU²; the mask
+    The variance is ``max(gain (raw - bias), 0) / gain² + RN² / gain²`` in ADU² plus the
+    calibration set's master variances, ``(1 - s)² bias_variance + s² background_variance``
+    with background subtraction (``s = t / t_bkg``) and ``(1 - t / t_dark)² bias_variance +
+    t² dark_rate_variance`` without (``bias_variance`` alone when the set has no
+    ``t_dark``); each absent variance counts as zero; the mask
     marks pixels at or above ``saturation`` in the raw frame, the bias or the background
     master (when a level is given), non-finite output values and whatever ``frame.mask``
     already marks. The dark master is held as a rate, so a pixel saturated in it is not
@@ -256,9 +282,7 @@ def calibrate_frame(
         _check_background(calib)
     raw = np.asarray(frame.data, dtype=np.float32)
     if raw.shape != tuple(calib.shape):
-        raise ValueError(
-            f"{_label(frame.meta)}: shape {raw.shape} differs from calibration {calib.shape}"
-        )
+        raise ValueError(f"{_label(frame.meta)}: shape {raw.shape} differs from calibration {calib.shape}")
     bias = np.zeros_like(raw) if calib.bias is None else np.asarray(calib.bias, dtype=np.float32)
     signal = raw - bias
     if subtract_background:
@@ -268,7 +292,8 @@ def calibrate_frame(
         out = signal - np.asarray(calib.dark_rate, dtype=np.float32) * float(t)
     gain, read_noise = float(calib.gain), float(calib.read_noise)
     signal_e = np.clip(signal, 0.0, None) * gain
-    variance = (signal_e / gain**2 + (read_noise / gain) ** 2).astype(np.float32)
+    variance = signal_e / gain**2 + (read_noise / gain) ** 2
+    variance = (variance + _master_variance(calib, float(t), subtract_background)).astype(np.float32)
     mask = ~np.isfinite(out)
     if saturation is not None:
         mask |= raw >= saturation
@@ -280,11 +305,30 @@ def calibrate_frame(
     return Frame(data=out.astype(np.float32), meta=frame.meta, variance=variance, mask=mask)
 
 
+def _master_variance(calib: CalibrationSet, t: float, subtract_background: bool) -> np.ndarray | float:
+    """The variance the subtracted masters add to a calibrated pixel, ADU². The bias array
+    enters both subtractions, so with ``s = t / t_bkg`` (background) or ``s = t / t_dark``
+    (dark) its coefficient is ``1 - s``: ``(1 - s)² var_bias + s² var_bkg``, or ``(1 - s)²
+    var_bias + t² var_dark_rate`` (``t² var_dark_rate = s² var_dark``); ``var_bias`` alone
+    on the dark path without a dark. An unknown variance counts as zero."""
+
+    def known(value: np.ndarray | None) -> np.ndarray | float:
+        return 0.0 if value is None else np.asarray(value, dtype=np.float64)
+
+    bias = known(calib.bias_variance)
+    if subtract_background:
+        s = t / float(calib.t_background)  # type: ignore[arg-type]
+        return (1.0 - s) ** 2 * bias + s**2 * known(calib.background_variance)
+    if not calib.t_dark:
+        return bias
+    s = t / float(calib.t_dark)
+    return (1.0 - s) ** 2 * bias + t**2 * known(calib.dark_rate_variance)
+
+
 def _check_background(calib: CalibrationSet) -> None:
     if calib.background is None or not calib.t_background:
         raise ValueError(
-            "background subtraction requested but the calibration set has no background "
-            "master with a positive exposure time"
+            "background subtraction requested but the calibration set has no background master with a positive exposure time"
         )
 
 

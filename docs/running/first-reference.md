@@ -18,17 +18,20 @@ notebook for the three-fiber laboratory layout. If your full arc matches that
 setup, one command does it:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 --stored-anchors
-#   reference highspec_mgb518_lab3_20260909T113659: 3 fibers solved
-#   written: out/calib/highspec_mgb518_lab3_20260909T113659_wref.fits
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg --stored-anchors
+#   reference highspec_Mg_lab3_20260909T113659: 3 fibers solved
+#   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
-Masters already in `out/calib` (bias, background, flat) are applied; traces
-come from the flat master when there is one, otherwise from the arc itself.
+The masters of the calibration library (`--library`, default `out/calib`)
+that match the arc's camera, binning, readout and temperature (the flat its
+configuration too) are applied, the nearest in time; traces come from the flat
+master when there is one, otherwise from the arc itself.
 
 `identify` and `solve` use the instrument's default layout (`lab3` for
 HighSpec) unless told otherwise: for a survey full arc pass `--layout survey45`.
-Only `quicklook` reads the preset from the frames' `FIBPRE` keyword. The
+No header card names the layout; `quicklook` also reads a manifest's
+`fiber_preset` column. The
 reference is keyed by grating *and* layout, so a reference made with the wrong
 preset is not found by `quicklook` later. The
 reference is registered in the library and `fiber_agreement.csv` beside it
@@ -41,7 +44,7 @@ For a new grating, or a layout whose stored anchors do not fit, run without
 anchors first:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg
 #   anchor panels: out/anchor_panels.png
 #   candidates: out/anchor_candidates.csv
 ```
@@ -62,7 +65,7 @@ fix the two free parameters of the grating model. Read them off and pass them
 back:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration mgb518 \
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
     --anchors 515.8605:267.22,525.836:1423.22 --trace 0
 ```
 
@@ -89,8 +92,8 @@ from the reference; `quicklook` then gives that fiber no wavelength (its
 ## Later full arcs
 
 ```bash
-mastpipe solve night2/arc_full.fits --out out --instrument highspec --configuration mgb518
-#   reference highspec_mgb518_lab3_20261112T010203: 3 fibers solved, seeded by highspec_mgb518_lab3_20260909T113659
+mastpipe solve night2/arc_full.fits --out out --instrument highspec --configuration Mg
+#   reference highspec_Mg_lab3_20261112T010203: 3 fibers solved, seeded by highspec_Mg_lab3_20260909T113659
 ```
 
 `solve` takes the latest reference of the grating and layout from the library

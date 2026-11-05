@@ -13,8 +13,9 @@ its neighbours, and the flags decide the two verdicts: ``use_x`` needs the line 
 along the dispersion, ``use_y`` only needs it complete and on the trace, so a blend keeps
 a valid spatial width.
 
-Beyond the notebook, a ``saturated`` flag (raw strip peak above ``LineParams.saturation``)
-bars a line from ``use_x``, and a variance image, when given, provides the per-line
+Beyond the notebook, a ``saturated`` flag (raw strip peak above ``LineParams.saturation``,
+or a masked pixel in the line's window when the calibrated frame's mask is given) bars a
+line from ``use_x``, and a variance image, when given, provides the per-line
 ``snr`` in place of the profile's robust noise. Two rules depart from the notebook:
 ``complete`` is judged on the measuring rows (``y_halfwidth`` about the trace) rather than
 the whole strip and is a condition of ``use_y`` only, so a trace closer than ``halfwidth``
@@ -218,22 +219,14 @@ def _deblend_group(
         if trial is None:
             break
         centres_new = [c[1] for c in trial[1]]
-        too_close = any(
-            b - a < min_split for a, b in zip(centres_new, centres_new[1:], strict=False)
-        )
+        too_close = any(b - a < min_split for a, b in zip(centres_new, centres_new[1:], strict=False))
         outside = any(c < x[0] or c > x[-1] for c in centres_new)
         weakest = min(c[0] for c in trial[1])
         # the component the trial added is the one nearest the residual peak; a width at
         # the lower bound or well under the line width is a spike, not a line
         added = min(trial[1], key=lambda c: abs(c[1] - x[i]))
         spike = added[2] < SIGMA_BOUNDS[0] + 1e-6 or added[2] < MIN_SIGMA_FRACTION * sigma_guess
-        if (
-            too_close
-            or outside
-            or spike
-            or weakest < add_sigma * noise
-            or rms(trial) > (1 - gain) * rms(best)
-        ):
+        if too_close or outside or spike or weakest < add_sigma * noise or rms(trial) > (1 - gain) * rms(best):
             break
         best = trial
     return best
@@ -303,13 +296,18 @@ def find_lines(
     variance: np.ndarray | None,
     traceset: TraceSet,
     params: LineParams,
+    mask: np.ndarray | None = None,
 ) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
     """Detect the emission lines on every trace of ``image`` and measure each in both axes.
 
     ``image`` is a calibrated frame ``(ny, nx)`` with the dispersion along x; ``variance``
-    (same shape) is optional. Every trace of ``traceset`` is measured, whatever its role.
-    Returns ``(tables, strips)``: one :data:`LINE_COLUMNS` table and one straightened,
-    continuum-subtracted strip of ``2 halfwidth + 1`` rows per trace, in trace order.
+    and ``mask`` (same shape, ``ValueError`` otherwise) are optional. ``mask`` is the
+    calibrated frame's mask, which :func:`~mastpipe.steps.calib.calibrate_frame` sets on raw
+    pixels at or above the detector's saturation: ``image`` is bias-subtracted, so a raw-ADU
+    threshold cannot be applied to it and the mask carries the raw-level fact. Every trace
+    of ``traceset`` is measured, whatever its role. Returns ``(tables, strips)``: one
+    :data:`LINE_COLUMNS` table and one straightened, continuum-subtracted strip of
+    ``2 halfwidth + 1`` rows per trace, in trace order.
 
     Detection: the strip is collapsed along y, the noise is the robust sigma of that
     profile, and ``find_peaks`` takes everything ``threshold_sigma`` noise units high at
@@ -325,7 +323,8 @@ def find_lines(
     ``complete`` (the measuring window, ``y_halfwidth`` rows about the trace, holds no
     off-detector pixel and is not cut by the detector edge along x), ``on_trace`` (spatial
     centroid within ``max_y_offset`` of the trace; ``None`` disables), ``fit_ok``,
-    ``saturated`` (peak of the raw strip above ``saturation``; ``None`` disables). ``use_x``
+    ``saturated`` (peak of the strip before continuum removal above ``saturation``, ``None``
+    disabling that test, or any pixel of the measuring window marked in ``mask``). ``use_x``
     needs ``isolated or fit_ok``, not ``near_edge``, ``on_trace`` and not ``saturated``;
     ``use_y`` needs not ``near_edge``, ``complete``, a finite ``fwhm_y`` and ``on_trace``,
     and stays valid for a blend.
@@ -338,19 +337,23 @@ def find_lines(
         variance = np.asarray(variance, dtype=float)
         if variance.shape != image.shape:
             raise ValueError(f"variance shape {variance.shape} differs from image {image.shape}")
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != image.shape:
+            raise ValueError(f"mask shape {mask.shape} differs from image {image.shape}")
     halfwidth = int(params.halfwidth)
     x_halfwidth = int(params.x_halfwidth)
     y_halfwidth = halfwidth if params.y_halfwidth is None else int(params.y_halfwidth)
     sigma_guess = float(params.sigma_guess)
-    blend_distance = (
-        5.0 * sigma_guess if params.blend_distance is None else float(params.blend_distance)
-    )
+    blend_distance = 5.0 * sigma_guess if params.blend_distance is None else float(params.blend_distance)
     isolation = 2 * x_halfwidth if params.isolation is None else float(params.isolation)
 
     tables: list[pd.DataFrame] = []
     strips: list[np.ndarray] = []
     for trace in traceset:
         strip_raw, centre = _detilt(image, trace, halfwidth)
+        # rows off the detector come back NaN, which is not a masked pixel
+        strip_mask = None if mask is None else _detilt(mask, trace, halfwidth)[0] > 0
         strip = _remove_row_continuum(strip_raw, params.baseline_window)
         var_prof = None
         if variance is not None:
@@ -367,9 +370,7 @@ def find_lines(
         prof0 = np.where(finite, prof, 0.0)
 
         if np.isfinite(noise) and noise > 0:
-            peaks, _ = find_peaks(
-                prof0, height=params.threshold_sigma * noise, distance=params.min_separation
-            )
+            peaks, _ = find_peaks(prof0, height=params.threshold_sigma * noise, distance=params.min_separation)
             peaks = peaks[finite[peaks]]
         else:
             peaks = np.zeros(0, dtype=int)
@@ -439,9 +440,7 @@ def find_lines(
             x_cen, x_fwhm = _profile_measures(x_prof[xlo:xhi], i - xlo)
             x_cen += xlo
 
-            yfit = _fit_group(
-                np.arange(nrow, dtype=float), y_prof, [y_cen], sigma_guess, max_shift=halfwidth / 2
-            )
+            yfit = _fit_group(np.arange(nrow, dtype=float), y_prof, [y_cen], sigma_guess, max_shift=halfwidth / 2)
             sigma_y = yfit[1][0][2] if yfit else np.nan
 
             if var_prof is not None and var_prof[i] > 0:
@@ -451,6 +450,8 @@ def find_lines(
             raw_window = np.nan_to_num(strip_raw[ylo:yhi, xlo:xhi], nan=-np.inf)
             raw_peak = float(raw_window.max()) if raw_window.size else -np.inf
             saturated = params.saturation is not None and raw_peak > params.saturation
+            if strip_mask is not None:
+                saturated = saturated or bool(strip_mask[ylo:yhi, xlo:xhi].any())
 
             # truncation by the detector edge is a defect; clipping against a neighbour is
             # deliberate, so only the former marks a line incomplete
@@ -509,12 +510,7 @@ def find_lines(
         else:
             tab["on_trace"] = np.ones(len(tab), dtype=bool)
         # x needs the line resolved; y only needs it complete and inboard
-        tab["use_x"] = (
-            (tab["isolated"] | tab["fit_ok"])
-            & ~tab["near_edge"]
-            & tab["on_trace"]
-            & ~tab["saturated"]
-        )
+        tab["use_x"] = (tab["isolated"] | tab["fit_ok"]) & ~tab["near_edge"] & tab["on_trace"] & ~tab["saturated"]
         tab["use_y"] = ~tab["near_edge"] & tab["complete"] & tab["fwhm_y"].notna() & tab["on_trace"]
         tab.insert(0, "id", np.arange(len(tab)))
         tables.append(tab[list(LINE_COLUMNS)].reset_index(drop=True))
@@ -544,9 +540,7 @@ def lines_summary(tables: list[pd.DataFrame]) -> pd.DataFrame:
                 "median FWHM_x fit [px]": median_of(t, "fwhm_x_fit", "use_x"),
                 "median FWHM_y [px]": median_of(t, "fwhm_y", "use_y"),
                 "median |y_offset| [px]": (
-                    round(float(t.loc[t["use_y"], "y_offset"].abs().median()), 3)
-                    if len(t) and t["use_y"].any()
-                    else np.nan
+                    round(float(t.loc[t["use_y"], "y_offset"].abs().median()), 3) if len(t) and t["use_y"].any() else np.nan
                 ),
             }
         )

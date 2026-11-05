@@ -30,7 +30,8 @@ row per fiber.
 
 Every product header carries the pipeline version, the configuration hash,
 the input frames' checksums, the calibrations used, the reference solution's
-identifier and hash, the drift arcs' checksums, the layout preset, the three
+identifier and hash, the drift arcs' checksums, the layout preset and the
+hash of its file, the hash of the masters used, the time zone, the three
 statuses (wavelength, flux, telluric), and the steps applied. No raw
 instrument keyword is copied into a product; the frame's metadata travels in
 the pipeline's own vocabulary. A product can therefore be traced to the full
@@ -39,21 +40,36 @@ same bytes.
 
 ## Idempotence
 
-A science product's **key** is the input checksum, the configuration hash,
-the reference identifier, the sorted drift-arc checksums and the layout
-preset. A quick-look run skips a product whose key matches and redoes one
-whose key changed — which is how early-night frames reduced before the first
-calibration-fiber arc are upgraded from `reference` to `transferred` once the
-arc lands. Full arcs are idempotent through the reference that lists them as
-its source.
+A science product's **key** is the input checksum, the configuration hash
+(every `--set` override and `--time-policy` included), the reference
+solution's hash (`MPWREFH`), the sorted drift-arc checksums, the layout preset
+and the hash of its CSV file (`MPLAYOUT`, `MPLAYH`), a hash of the masters'
+file checksums (`MPMKH`) and the frame's time zone (`MPTZ`). A quick-look run
+skips a product whose key matches and redoes one whose key changed — which is
+how early-night frames reduced before the first calibration-fiber arc are
+upgraded from `reference` to `transferred` once the arc lands, and how an
+edited layout, a reference re-solved under the same identifier or a rebuilt
+master reaches every product. Full arcs are idempotent through the reference
+that lists them as its source.
+
+Masters are idempotent through their inputs: the library records the
+checksums of the frames each master was stacked from and a hash of the
+stacking parameters (`calib`) and the detector definition, and a run whose
+frames and stacking are the same reuses the library's master instead of
+building and overwriting it (a flat only when it was calibrated with the same
+masters). Other stacking parameters build the masters again; `--force`
+rebuilds them regardless.
 
 ## Names
 
 ```text
-{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits      masters, traces, spec, comb_<target>
-{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits        reference solutions
+{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits   masters, traces, spec, comb_<target>
+{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits              reference solutions
 ```
 
 Times are the exposure's UTC mid-time, derived by ingest from the header's
-start time and the exposure time. Raw file names never appear in product
-names.
+start time and the exposure time (`notime` without one). `checksum` is the first
+six hex digits of the input frame's SHA-256 (for a master or trace set, its
+first input frame's), so two exposures with the same mid-time never share a
+name; a trace set built from a library flat has no input frame and carries
+`nosum`. Raw file names never appear in product names.

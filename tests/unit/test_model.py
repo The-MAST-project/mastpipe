@@ -76,6 +76,24 @@ def test_frame_meta_rejects_unknown_arc_kind():
         meta.camera = "other"  # frozen
 
 
+def test_target_for_prefers_exact_then_star():
+    meta = make_meta(targets=(("*", "all"), ("mast02", "two")))
+    assert meta.target_for("mast02") == "two"
+    assert meta.target_for("mast07") == "all"
+    assert meta.target_for(None) == "all"
+    assert make_meta().target_for("mast01") is None
+    only = make_meta(targets=(("mast01", "one"),))
+    assert only.target_for("mast01") == "one" and only.target_for("mast02") is None
+    assert only.target_for(None) is None
+
+
+def test_frame_meta_rejects_malformed_targets():
+    with pytest.raises(ValueError, match="targets"):
+        make_meta(targets=(("mast01",),))
+    with pytest.raises(ValueError, match="targets"):
+        make_meta(targets=(("mast01", 3),))
+
+
 def test_frame_rejects_shape_mismatch():
     data = np.zeros((4, 5), dtype=np.float32)
     with pytest.raises(ValueError, match="variance"):
@@ -99,19 +117,19 @@ def test_trace_evaluates_polynomial():
 def test_traceset_by_role_and_telescope():
     traces = [
         make_trace(0, role="arc", y_center=10.0),
-        make_trace(1, role="science", telescope="T1", y_center=20.0),
-        make_trace(2, role="sky", telescope="T1", y_center=30.0),
-        make_trace(3, role="science", telescope="T2", y_center=40.0),
+        make_trace(1, role="science", telescope="mast01", y_center=20.0),
+        make_trace(2, role="sky", telescope="mast01", y_center=30.0),
+        make_trace(3, role="science", telescope="mast02", y_center=40.0),
     ]
     traceset = TraceSet(traces=traces, shape=(100, 50))
     assert len(traceset) == 4
     assert [trace.index for trace in traceset] == [0, 1, 2, 3]
     assert [trace.index for trace in traceset.by_role("science")] == [1, 3]
     assert traceset.by_role("unknown") == []
-    by_t1 = traceset.by_telescope("T1")
+    by_t1 = traceset.by_telescope("mast01")
     assert set(by_t1) == {"science", "sky"}
     assert by_t1["sky"].index == 2
-    assert traceset.by_telescope("T9") == {}
+    assert traceset.by_telescope("mast09") == {}
     assert traceset.missing == () and traceset.extra == ()
 
 
@@ -162,10 +180,7 @@ def test_exposure_spectra_statuses():
 
 
 def test_reference_identifier_format():
-    assert (
-        make_identifier("highspec", "mgb518", "lab3", "2026-09-09T12:34:56")
-        == "highspec_mgb518_lab3_20260909T123456"
-    )
+    assert make_identifier("highspec", "Mg", "lab3", "2026-09-09T12:34:56") == "highspec_Mg_lab3_20260909T123456"
 
 
 def make_per_fiber(**overrides) -> pd.DataFrame:
@@ -224,29 +239,21 @@ def test_tables_require_named_columns():
         WavelengthSolution(lines=lines.drop(columns="species"), **solution_fields)
 
     wavelength = np.linspace(517.0, 519.0, 6)
-    contributors = pd.DataFrame(
-        {"fiber": [1], "telescope": ["T1"], "source": ["a.fits"], "weight": [1.0]}
-    )
-    excluded = pd.DataFrame(
-        {"fiber": [3], "telescope": ["T2"], "source": ["a.fits"], "reason": ["low snr"]}
-    )
+    contributors = pd.DataFrame({"fiber": [1], "telescope": ["mast01"], "source": ["a.fits"], "weight": [1.0]})
+    excluded = pd.DataFrame({"fiber": [3], "telescope": ["mast02"], "source": ["a.fits"], "reason": ["low snr"]})
     combined_fields = {
         "target": "star",
         "wavelength": wavelength,
         "versions": {"raw": make_version(), "skysub": make_version()},
         "grouping": "exposure",
-        "barycentric": {"T1": 0.1},
+        "barycentric": {"mast01": 0.1},
     }
     combined = CombinedSpectrum(contributors=contributors, excluded=excluded, **combined_fields)
     assert set(combined.versions) == {"raw", "skysub"}
     with pytest.raises(ValueError, match="contributors"):
-        CombinedSpectrum(
-            contributors=contributors.drop(columns="weight"), excluded=excluded, **combined_fields
-        )
+        CombinedSpectrum(contributors=contributors.drop(columns="weight"), excluded=excluded, **combined_fields)
     with pytest.raises(ValueError, match="excluded"):
-        CombinedSpectrum(
-            contributors=contributors, excluded=excluded.drop(columns="reason"), **combined_fields
-        )
+        CombinedSpectrum(contributors=contributors, excluded=excluded.drop(columns="reason"), **combined_fields)
     with pytest.raises(ValueError, match="banana"):
         CombinedSpectrum(
             contributors=contributors,
@@ -259,3 +266,9 @@ def test_tables_require_named_columns():
             excluded=excluded,
             **{**combined_fields, "versions": {"raw": make_version(n=7)}},
         )
+
+
+def test_readout_key_joins_mode_and_amplifier():
+    assert make_meta(readout_mode="image", amplifier="em").readout_key == "image/em"
+    assert make_meta(readout_mode="image").readout_key == "image/unknown"
+    assert make_meta().readout_key == "unknown/unknown"

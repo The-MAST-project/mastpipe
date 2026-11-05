@@ -82,17 +82,14 @@ def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective)
     background = build_master(by_type["background"], "background", params)
     calib = build_calibration_set(bias, dark, background, detector)
 
-    science = by_type["science"][0]
+    # the simulator writes its science frames as IMAGETYP 'light'
+    science = by_type["light"][0]
     hits = truth.extras["cosmic_rays"][science.meta.source]
     planted = {(int(y), int(x)) for y, x in hits}
     assert planted  # the simulator planted something to find
 
-    clean = calibrate_frame(
-        science, calib, subtract_background=True, saturation=detector.saturation
-    )
-    flagged = flag_cosmic_rays(
-        clean.data, clean.variance, clean.mask, params.cosmic_sigma, params.cosmic_size
-    )
+    clean = calibrate_frame(science, calib, subtract_background=True, saturation=detector.saturation)
+    flagged = flag_cosmic_rays(clean.data, clean.variance, clean.mask, params.cosmic_sigma, params.cosmic_size)
     new = flagged & ~clean.mask
     found = sum(new[y, x] for y, x in planted)
     assert found >= 0.9 * len(planted)
@@ -107,11 +104,8 @@ def test_cosmic_rays_flagged_on_simulated_science(sim_night, highspec_effective)
     spotless = science.data.copy()
     for y, x in hits:
         spotless[y, x] -= truth.extras["cosmic_ray_adu"]
-    spotless_frame = calibrate_frame(
-        Frame(data=spotless, meta=science.meta), calib, True, detector.saturation
-    )
+    spotless_frame = calibrate_frame(Frame(data=spotless, meta=science.meta), calib, True, detector.saturation)
     spotless_flags = (
-        flag_cosmic_rays(spotless_frame.data, spotless_frame.variance, spotless_frame.mask)
-        & ~spotless_frame.mask
+        flag_cosmic_rays(spotless_frame.data, spotless_frame.variance, spotless_frame.mask) & ~spotless_frame.mask
     )
     assert spotless_flags.sum() < 1e-3 * n_pixels

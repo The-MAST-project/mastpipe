@@ -28,9 +28,7 @@ TEMPLATE_LABEL_COLOR = "tab:blue"
 MEASURED_COLOR = "tab:red"
 
 
-def strongest_spread(
-    positions, strength, n: int, x0: float, x1: float, min_sep: float
-) -> list[int]:
+def strongest_spread(positions, strength, n: int, x0: float, x1: float, min_sep: float) -> list[int]:
     """Indices of the ``n`` strongest entries within ``[x0, x1]``, no two closer than
     ``min_sep`` of the window's width, sorted by position (numbered left to right).
 
@@ -40,9 +38,7 @@ def strongest_spread(
     positions = np.asarray(positions, dtype=float).ravel()
     strength = np.asarray(strength, dtype=float).ravel()
     if positions.shape != strength.shape:
-        raise ValueError(
-            f"positions and strength differ in length: {positions.size} vs {strength.size}"
-        )
+        raise ValueError(f"positions and strength differ in length: {positions.size} vs {strength.size}")
     kept: list[int] = []
     gap = min_sep * (x1 - x0)
     for k in np.argsort(strength, kind="stable")[::-1]:
@@ -151,9 +147,7 @@ def plot_anchor_panels(
     ax.plot(x_pix, of, color=MEASURED_COLOR, lw=0.8)
     lines = obs_lines.loc[obs_lines["use_x"].to_numpy(dtype=bool)].reset_index(drop=True)
     x_lines = lines["x_center"].to_numpy(dtype=float)
-    pick = strongest_spread(
-        x_lines, lines["height"].to_numpy(dtype=float), n_labels, 0.0, n_pix - 1.0, min_sep
-    )
+    pick = strongest_spread(x_lines, lines["height"].to_numpy(dtype=float), n_labels, 0.0, n_pix - 1.0, min_sep)
     measured = pd.DataFrame({"id": np.arange(1, len(pick) + 1), "x_center": x_lines[pick]})
     _label_peaks(
         ax,

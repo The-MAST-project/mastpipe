@@ -15,18 +15,30 @@ time), or the one named by its identifier. Times are compared as parsed timestam
 naive time is UTC), never as strings. Adding a product whose file name or identifier is
 already indexed replaces that entry and overwrites the file. This is pipeline-layer code:
 it reads and writes files.
+
+Several processes may share one library (a quick-look and an ``identify`` run against the
+same folder). Products and the index are written atomically, and every change to the
+index re-reads it under an exclusive lock on ``index.lock``
+(:func:`mastpipe.io.atomic.locked`), so concurrent writers keep each other's entries.
+Lookups read the index as last loaded or written by this instance, without the lock: an
+entry another process added since is not seen until this instance next writes or is
+re-created, which is acceptable for finding calibrations.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from mastpipe.core.model import MasterCalib, ReferenceSolution
+from mastpipe.core.model import MasterCalib, ReferenceSolution, readout_key
+from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
+from mastpipe.io.atomic import atomic_write, locked
+from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import (
     product_name,
     read_master,
@@ -39,16 +51,10 @@ from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.geometry import GratingGeometry, grating_geometry
 
 INDEX_FILE = "index.json"
+LOCK_FILE = "index.lock"
+"""The advisory lock file next to the index, taken for every read-modify-write of it."""
 REFERENCE_KIND = "reference"
 """The ``kind`` of a reference entry; masters carry their ``MasterCalib.kind``."""
-
-
-def _timestamp(value: str) -> pd.Timestamp:
-    """``value`` as a UTC timestamp; a naive time is taken to be UTC."""
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is None:
-        return stamp.tz_localize("UTC")
-    return stamp.tz_convert("UTC")
 
 
 def registry_geometry(camera: str) -> Any:
@@ -58,13 +64,18 @@ def registry_geometry(camera: str) -> Any:
     def lookup(instrument: str, configuration: str) -> GratingGeometry:
         definition = load_instrument(instrument)
         if camera not in definition.cameras:
-            raise KeyError(
-                f"unknown camera {camera!r} for {instrument}: {sorted(definition.cameras)}"
-            )
+            raise KeyError(f"unknown camera {camera!r} for {instrument}: {sorted(definition.cameras)}")
         block = definition.configurations[configuration]
         return grating_geometry(block.geometry, definition.cameras[camera].pixel_size_um)
 
     return lookup
+
+
+def _entry_readout_key(entry: dict[str, Any]) -> str:
+    """An index entry's ``readout_key``; for an entry indexed before it was recorded, its
+    ``readout_mode`` with an ``unknown`` amplifier."""
+    key = entry.get("readout_key")
+    return str(key) if key is not None else readout_key(entry.get("readout_mode"), None)
 
 
 class CalibLibrary:
@@ -72,7 +83,12 @@ class CalibLibrary:
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self._entries: list[dict[str, Any]] = self._load()
+        # Read under the lock: on Windows ``os.replace`` onto an index another process
+        # has open fails, so a reader must not hold it while a writer saves. Readers wait
+        # at most one write. The lock helper creates ``root`` and the lock file, so an
+        # absent or empty library still opens (with no entries).
+        with locked(self.root / LOCK_FILE):
+            self._entries: list[dict[str, Any]] = self._load()
         self._references: dict[str, ReferenceSolution] = {}
 
     # ------------------------------------------------------------------------ the index
@@ -87,16 +103,22 @@ class CalibLibrary:
         return entries
 
     def _save(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
+        """Write the index atomically; callers hold the lock (see :meth:`_replace`)."""
         text = json.dumps(self._entries, indent=1, sort_keys=True, ensure_ascii=True)
-        with (self.root / INDEX_FILE).open("w", encoding="utf-8", newline="") as handle:
+        with atomic_write(self.root / INDEX_FILE) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
             handle.write(text + "\n")
 
     def _replace(self, key: str, value: Any, entry: dict[str, Any]) -> None:
-        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``."""
-        self._entries = [e for e in self._entries if e.get(key) != value]
-        self._entries.append(entry)
-        self._save()
+        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``.
+
+        Under the lock on ``index.lock`` the index is re-read from disk first, so entries
+        another process added since this instance loaded it are kept; ``TimeoutError``
+        from :func:`~mastpipe.io.atomic.locked` when the lock is not free in time.
+        """
+        with locked(self.root / LOCK_FILE):
+            self._entries = [e for e in self._load() if e.get(key) != value]
+            self._entries.append(entry)
+            self._save()
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
         """Copies of the index entries, those of ``kind`` only when given."""
@@ -104,13 +126,25 @@ class CalibLibrary:
 
     # --------------------------------------------------------------------------- masters
 
-    def add(self, master: MasterCalib, prov: Provenance, meta_for_name: Any) -> Path:
+    def add(
+        self,
+        master: MasterCalib,
+        prov: Provenance,
+        meta_for_name: Any,
+        calib_hash: str | None = None,
+    ) -> Path:
         """Write ``master`` as ``root/<product_name(meta_for_name, kind)>`` and index it.
 
         The entry records the master's validity (``camera``, ``binning``, ``readout_mode``,
-        ``detector_temperature``, ``mid_time``, ``exposure_time``), the instrument and
-        configuration of ``meta_for_name`` and the number of frames. A master of the same
-        file name replaces the earlier entry.
+        ``amplifier``, ``detector_temperature``, ``mid_time``, ``exposure_time``), its
+        ``readout_key`` (:func:`~mastpipe.core.model.readout_key` of the validity's readout
+        mode and amplifier, on which :meth:`find` matches), the instrument and
+        configuration of ``meta_for_name``, the number of frames, the sorted checksums of
+        the frames it was stacked from (``inputs``, from ``prov.inputs``, which the file's
+        header carries too), the checksum of the written file (``file_checksum``) and
+        ``calib_hash`` (:func:`~mastpipe.config.loader.calib_hash` of the configuration it
+        was built under; ``None`` when not given, and such an entry is never reused by
+        :meth:`find_by_inputs`). A master of the same file name replaces the earlier entry.
         """
         name = product_name(meta_for_name, master.kind)
         path = self.root / name
@@ -125,10 +159,15 @@ class CalibLibrary:
             "camera": validity.get("camera") or meta_for_name.camera,
             "binning": [int(b) for b in binning],
             "readout_mode": validity.get("readout_mode"),
+            "amplifier": validity.get("amplifier"),
+            "readout_key": readout_key(validity.get("readout_mode"), validity.get("amplifier")),
             "detector_temperature": validity.get("detector_temperature"),
             "mid_time": validity.get("mid_time"),
             "exposure_time": validity.get("exposure_time"),
             "n_frames": int(master.n_frames),
+            "inputs": sorted(str(checksum) for checksum in prov.inputs),
+            "file_checksum": file_checksum(path),
+            "calib_hash": calib_hash,
         }
         self._replace("path", name, entry)
         return path
@@ -138,7 +177,7 @@ class CalibLibrary:
         kind: str,
         camera: str,
         binning: tuple[int, int],
-        readout_mode: str | None,
+        readout_key: str,
         configuration: str | None = None,
         temperature: float | None = None,
         temperature_tolerance: float = 2.0,
@@ -146,11 +185,16 @@ class CalibLibrary:
     ) -> tuple[MasterCalib, Path] | None:
         """The master of ``kind`` that applies, read back, with its path; ``None`` without one.
 
-        ``camera``, ``binning`` and ``readout_mode`` must match exactly; ``configuration``
+        ``camera``, ``binning`` and ``readout_key`` (``FrameMeta.readout_key``, readout mode
+        and output amplifier) must match exactly; an entry indexed before the amplifier was
+        recorded has no ``readout_key`` and is keyed by its ``readout_mode`` with an
+        ``unknown`` amplifier, so it never stands for a known amplifier; ``configuration``
         must match when given (a flat belongs to its grating); the entry's temperature must
         be within ``temperature_tolerance`` of ``temperature`` when both are known. Among
         several matches the nearest ``mid_time`` to ``near_time`` wins (an entry without a
-        time counts as farthest), the latest ``mid_time`` without ``near_time``.
+        time counts as farthest), the latest ``mid_time`` without ``near_time``. Reads this
+        instance's view of the index without the lock; a master another process added
+        since may be missed (a stale read is acceptable here).
         """
         matches = []
         for entry in self._entries:
@@ -158,7 +202,7 @@ class CalibLibrary:
                 continue
             if tuple(entry.get("binning") or ()) != tuple(int(b) for b in binning):
                 continue
-            if entry.get("readout_mode") != readout_mode:
+            if _entry_readout_key(entry) != readout_key:
                 continue
             if configuration is not None and entry.get("configuration") != configuration:
                 continue
@@ -173,26 +217,47 @@ class CalibLibrary:
         if not matches:
             return None
         if near_time is not None:
-            target = _timestamp(near_time)
+            target = to_utc(near_time)
 
             def distance(entry: dict[str, Any]) -> float:
                 time = entry.get("mid_time")
                 if time is None:
                     return float("inf")
-                return abs((_timestamp(time) - target).total_seconds())
+                return abs((to_utc(time) - target).total_seconds())
 
             chosen = min(matches, key=distance)
         else:
             chosen = max(
                 matches,
-                key=lambda e: (
-                    _timestamp(e["mid_time"])
-                    if e.get("mid_time")
-                    else pd.Timestamp.min.tz_localize("UTC")
-                ),
+                key=lambda e: to_utc(e["mid_time"]) if e.get("mid_time") else pd.Timestamp.min.tz_localize("UTC"),
             )
         path = self.root / str(chosen["path"])
         return read_master(path)[0], path
+
+    def find_by_inputs(
+        self, kind: str, inputs: Sequence[str], camera: str, calib_hash: str
+    ) -> tuple[MasterCalib, Path] | None:
+        """The master of ``kind`` and ``camera`` stacked from exactly the frames whose
+        checksums are ``inputs`` (in any order) under the same ``calib_hash`` (stacking
+        parameters and detector), read back, with its path; ``None`` when the library holds
+        none, when ``inputs`` is empty or when the indexed file is gone. An entry indexed
+        before inputs or the calib hash were recorded never matches (it is built again
+        once). Reads this instance's view of the index without the lock, like
+        :meth:`find`: a master another process added since may be missed (it is then built
+        again, which is only slower).
+        """
+        wanted = sorted(str(checksum) for checksum in inputs)
+        if not wanted:
+            return None
+        for entry in reversed(self._entries):
+            if entry.get("kind") != kind or entry.get("camera") != camera:
+                continue
+            if entry.get("inputs") != wanted or entry.get("calib_hash") != calib_hash:
+                continue
+            path = self.root / str(entry["path"])
+            if path.is_file():
+                return read_master(path)[0], path
+        return None
 
     # ------------------------------------------------------------------------ references
 
@@ -222,9 +287,7 @@ class CalibLibrary:
         self._replace("identifier", ref.identifier, entry)
         return path
 
-    def _reference_entries(
-        self, instrument: str, configuration: str, fiber_preset: str
-    ) -> list[dict[str, Any]]:
+    def _reference_entries(self, instrument: str, configuration: str, fiber_preset: str) -> list[dict[str, Any]]:
         return [
             e
             for e in self._entries
@@ -262,19 +325,21 @@ class CalibLibrary:
         if identifier is not None:
             entries = [e for e in entries if e.get("identifier") == identifier]
         elif at_time is not None:
-            limit = _timestamp(at_time)
-            entries = [e for e in entries if _timestamp(str(e["valid_from"])) <= limit]
+            limit = to_utc(at_time)
+            entries = [e for e in entries if to_utc(str(e["valid_from"])) <= limit]
         if not entries:
             return None
-        chosen = max(
-            entries, key=lambda e: (_timestamp(str(e["valid_from"])), str(e["identifier"]))
-        )
+        chosen = max(entries, key=lambda e: (to_utc(str(e["valid_from"])), str(e["identifier"])))
         return self._read_reference(chosen)
 
     def reference_for_source(
         self, instrument: str, configuration: str, fiber_preset: str, checksum: str
     ) -> dict[str, Any] | None:
-        """The index entry of the reference solved from the frame with ``checksum``, if any."""
+        """The index entry of the reference solved from the frame with ``checksum``, if any.
+
+        Reads this instance's view of the index without the lock; a reference another
+        process added since may be missed (a stale read is acceptable here).
+        """
         for entry in self._reference_entries(instrument, configuration, fiber_preset):
             if checksum in (entry.get("source_checksums") or []):
                 return dict(entry)

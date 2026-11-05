@@ -50,9 +50,7 @@ def calibrated_night(sim, highspec_effective) -> SimpleNamespace:
     calib = build_calibration_set(bias, dark, background, detector)
 
     def clean(frame: Frame, subtract_background: bool = True) -> Frame:
-        return calibrate_frame(
-            frame, calib, subtract_background=subtract_background, saturation=detector.saturation
-        )
+        return calibrate_frame(frame, calib, subtract_background=subtract_background, saturation=detector.saturation)
 
     flats = [clean(frame, subtract_background=False) for frame in by_type["flat"]]
     master = build_master(flats, "flat", params)
@@ -66,7 +64,7 @@ def calibrated_night(sim, highspec_effective) -> SimpleNamespace:
         flat=flat,
         full_arc=clean(arcs["full"]),
         cal_arc=clean(arcs["calfiber"]),
-        science=clean(by_type["science"][0]),
+        science=clean(by_type["light"][0]),  # the simulator's science frames are 'light'
     )
 
 
@@ -157,9 +155,7 @@ def test_find_traces_lab3_like_curvature():
     y0 = np.array([17.4, 189.0, 360.7])
     slope = np.full(3, 0.002)
     curvature = np.array([2e-6, -1.5e-6, 2e-6])
-    coeffs = np.column_stack(
-        [curvature, slope - 2 * curvature * xc, y0 - slope * xc + curvature * xc**2]
-    )
+    coeffs = np.column_stack([curvature, slope - 2 * curvature * xc, y0 - slope * xc + curvature * xc**2])
     column_factor = FWHM_PX / GAUSSIAN_FWHM * np.sqrt(2 * np.pi)
     fluxes = np.full((3, nx), 15000.0 * column_factor)
     image = render_traces(shape, coeffs, fluxes, FWHM_PX)
@@ -272,14 +268,12 @@ def test_match_layout_with_global_shift_and_missing(night, survey_layout):
     assert matched.shape == traces.shape
     assert len(matched) == 44
     for trace in matched:
-        row = survey_layout.iloc[trace.layout_index]
+        row = survey_layout.set_index("trace").loc[trace.layout_index]
         assert trace.role == row["role"]
         assert trace.telescope == row["telescope"]
         assert trace.aperture == 4.0  # the survey layout fixes the aperture halfwidth
         assert abs(trace.y_center - (row["y_nominal"] + matched.layout_shift)) < 1.0
-    assert [trace.layout_index for trace in matched] == [
-        i for i in range(len(survey_layout)) if i != dropped
-    ]
+    assert [trace.layout_index for trace in matched] == [i for i in range(len(survey_layout)) if i != dropped]
     # the input is left untouched
     assert all(trace.role is None for trace in traces)
 
@@ -299,7 +293,7 @@ def test_match_layout_reports_extra_and_copies_aperture(lab3_layout):
     assert [trace.layout_index for trace in matched] == [0, 1, None, 2]
     for trace in matched:
         if trace.layout_index is not None:
-            expected = lab3_layout.iloc[trace.layout_index]["aperture"]
+            expected = lab3_layout.set_index("trace").loc[trace.layout_index, "aperture"]
             assert trace.aperture is None if np.isnan(expected) else trace.aperture == expected
 
 
@@ -396,10 +390,7 @@ def test_classify_arc_toy_frames():
     x_center = 100.0
     traces = [make_trace(i, y, x_center) for i, y in enumerate((10.0, 30.0, 50.0))]
     roles = ("arc", "science", "sky")
-    traces = [
-        replace(trace, role=role, layout_index=i)
-        for i, (trace, role) in enumerate(zip(traces, roles, strict=True))
-    ]
+    traces = [replace(trace, role=role, layout_index=i) for i, (trace, role) in enumerate(zip(traces, roles, strict=True))]
     traceset = TraceSet(traces=traces, shape=shape)
     rng = np.random.default_rng(7)
     noise = rng.normal(0.0, 2.0, size=shape)
@@ -498,3 +489,34 @@ def test_trace_source_fallback_order():
     assert trace_source({"flat": [], "arc_full": [arc_a, arc_b]}) == ("arc_full", arc_a)
     assert trace_source({"arc_calfiber": [arc_a], "science": [flat]}) == ("none", None)
     assert trace_source({}) == ("none", None)
+
+
+def test_match_layout_keys_by_trace_column_not_row(survey_traces, survey_layout):
+    """The layout's ``trace`` column is the fiber id: shuffling the layout's rows changes
+    nothing in the keyed traces."""
+    detected = TraceSet(
+        traces=[make_trace(t.index, t.y_center, 799.0) for t in survey_traces],
+        shape=survey_traces.shape,
+    )
+    shuffled = survey_layout.sample(frac=1, random_state=3).reset_index(drop=True)
+    assert shuffled["trace"].tolist() != survey_layout["trace"].tolist()
+    a = layout_indexed(match_layout(detected, survey_layout, 2.0))
+    b = layout_indexed(match_layout(detected, shuffled, 2.0))
+    assert [t.index for t in a] == [t.index for t in b] == list(range(45))
+    assert [t.telescope for t in a] == [t.telescope for t in b]
+    assert [t.role for t in a] == [t.role for t in b] == survey_layout["role"].tolist()
+    assert [t.y_center for t in a] == [t.y_center for t in b]
+
+
+def test_match_layout_reports_missing_as_trace_ids(lab3_layout):
+    """Layout ids that are not row positions: ``layout_index`` and ``missing`` carry the
+    ids, in the layout's own numbering, whatever the row order."""
+    renumbered = lab3_layout.assign(trace=lab3_layout["trace"] + 10).iloc[::-1]
+    renumbered = renumbered.reset_index(drop=True)  # rows now hold ids 12, 11, 10
+    nominal = lab3_layout["y_nominal"].to_numpy()
+    traces = [make_trace(i, y, 799.0) for i, y in enumerate([nominal[0], nominal[2]])]
+    matched = match_layout(TraceSet(traces=traces, shape=(398, 1598)), renumbered, 3.0)
+    assert [t.layout_index for t in matched] == [10, 12]
+    assert matched.missing == (11,)
+    keyed = layout_indexed(matched)
+    assert [t.index for t in keyed] == [10, 12] and keyed.missing == (11,)

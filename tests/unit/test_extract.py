@@ -60,9 +60,9 @@ def toy_frame(
     data: np.ndarray,
     variance: np.ndarray | None = None,
     mask: np.ndarray | None = None,
-    target: str | None = None,
+    targets: tuple[tuple[str, str], ...] = (),
 ) -> Frame:
-    meta = FrameMeta(instrument="toy", camera="main", exposure_type="science", target=target)
+    meta = FrameMeta(instrument="toy", camera="main", exposure_type="science", targets=targets)
     return Frame(data=data.astype(np.float32), meta=meta, variance=variance, mask=mask)
 
 
@@ -78,7 +78,8 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     params = CalibParams()
     masters = [build_master(by_type[kind], kind, params) for kind in ("bias", "dark", "background")]
     calib = build_calibration_set(*masters, detector)
-    science = calibrate_frame(by_type["science"][0], calib, saturation=detector.saturation)
+    # the simulator writes its science frames as IMAGETYP 'light'
+    science = calibrate_frame(by_type["light"][0], calib, saturation=detector.saturation)
     traces = [
         make_trace(
             i,
@@ -87,13 +88,9 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
             telescope=None if isinstance(row["telescope"], float) else row["telescope"],
             coeffs=coeffs,
         )
-        for i, (coeffs, (_, row)) in enumerate(
-            zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
-        )
+        for i, (coeffs, (_, row)) in enumerate(zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True))
     ]
-    return SimpleNamespace(
-        truth=truth, science=science, traces=TraceSet(traces=traces, shape=science.shape)
-    )
+    return SimpleNamespace(truth=truth, science=science, traces=TraceSet(traces=traces, shape=science.shape))
 
 
 # ------------------------------------------------------------------------- aperture_weights
@@ -141,19 +138,19 @@ def test_extract_sum_mean_and_metadata():
     ny, nx = 12, 6
     data = np.arange(ny * nx, dtype=float).reshape(ny, nx)
     variance = np.full((ny, nx), 2.0)
-    frame = toy_frame(data, variance, target="star")
+    frame = toy_frame(data, variance, targets=(("*", "star"),))
     traces = TraceSet(
         traces=[
-            make_trace(0, 5.0, role="science", telescope="T01"),
-            make_trace(1, 8.0, role="sky", telescope="T01", aperture=1.0),
+            make_trace(0, 5.0, role="science", telescope="mast01"),
+            make_trace(1, 8.0, role="sky", telescope="mast01", aperture=1.0),
         ],
         shape=(ny, nx),
     )
     spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=2.0, aperture="round"))
     assert [s.fiber for s in spectra] == [0, 1]
     science, sky = spectra
-    assert (science.role, science.telescope, science.target) == ("science", "T01", "star")
-    assert (sky.role, sky.telescope, sky.target) == ("sky", "T01", None)
+    assert (science.role, science.telescope, science.target) == ("science", "mast01", "star")
+    assert (sky.role, sky.telescope, sky.target) == ("sky", "mast01", None)
     assert science.pixel.tolist() == list(range(nx))
     # rows 3..7 summed per column, error sqrt(5 * 2)
     assert science.flux == pytest.approx(data[3:8].sum(axis=0))
@@ -179,6 +176,27 @@ def test_extract_sum_mean_and_metadata():
         extract_aperture(toy_frame(data), traces, ExtractParams(halfwidth=2.0))
 
 
+def test_extract_assigns_target_per_telescope():
+    ny, nx = 16, 4
+    data = np.ones((ny, nx))
+    targets = (("*", "target_z"), ("mast01", "target_a"), ("mast02", "target_b"))
+    frame = toy_frame(data, np.ones((ny, nx)), targets=targets)
+    traces = TraceSet(
+        traces=[
+            make_trace(0, 3.0, role="science", telescope="mast01"),
+            make_trace(1, 6.0, role="sky", telescope="mast01"),
+            make_trace(2, 9.0, role="science", telescope="mast02"),
+            make_trace(3, 12.0, role="science", telescope="mast03"),
+        ],
+        shape=(ny, nx),
+    )
+    spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=1.0))
+    assert [s.target for s in spectra] == ["target_a", None, "target_b", "target_z"]
+    only_one = toy_frame(data, np.ones((ny, nx)), targets=(("mast01", "target_a"),))
+    spectra = extract_aperture(only_one, traces, ExtractParams(halfwidth=1.0))
+    assert [s.target for s in spectra] == ["target_a", None, None, None]
+
+
 def test_extract_recovers_simulated_flux(night):
     truth = night.truth
     params = ExtractParams(halfwidth=APERTURE_HALFWIDTH, aperture="round", min_coverage=0.99)
@@ -192,8 +210,11 @@ def test_extract_recovers_simulated_flux(night):
         if trace.role != "science":
             assert spectrum.target is None
             continue
-        assert spectrum.target == night.science.meta.target
-        expected = truth.throughput[trace.index] * truth.science_flux
+        assert spectrum.target == night.science.meta.target_for(trace.telescope)
+        row = truth.layout.loc[truth.layout.trace == trace.index]
+        assert spectrum.target == row.target.item()
+        row_i = truth.row_of(trace.index)
+        expected = truth.throughput[row_i] * truth.science_flux[row_i]
         good = ~spectrum.mask
         assert good.mean() > 0.95
         ratios.append(float(np.median(spectrum.flux[good] / expected[good])))
@@ -209,7 +230,7 @@ def test_extract_recovers_simulated_flux(night):
     assert 0.8 < np.median(pulls) < 1.5
     # sky fibers carry the sky spectrum, not the science one
     sky = [s for s in spectra if s.role == "sky"][0]
-    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux)
+    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux[sky.fiber])
 
 
 def test_masked_pixel_masks_column():
@@ -281,9 +302,7 @@ def synthetic_spectrum(seed: int = 3) -> tuple[Spectrum, np.ndarray, np.ndarray]
     continuum = 100.0 + 30.0 * np.cos(2.0 * np.pi * 1.3 * x) + 20.0 * x
     centres = np.linspace(60.0, n - 60.0, 15)
     peaks = rng.uniform(500.0, 5000.0, size=centres.size)
-    lines = (peaks[:, None] * np.exp(-0.5 * ((pixel[None, :] - centres[:, None]) / 1.3) ** 2)).sum(
-        axis=0
-    )
+    lines = (peaks[:, None] * np.exp(-0.5 * ((pixel[None, :] - centres[:, None]) / 1.3) ** 2)).sum(axis=0)
     flux = continuum + lines + rng.normal(0.0, 1.0, size=n)
     flux[700] = -2000.0  # a cold pixel
     flux[1300] = np.nan

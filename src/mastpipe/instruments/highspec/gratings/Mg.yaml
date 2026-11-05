@@ -1,5 +1,5 @@
 # Mg b grating: 2724.8 lines/mm, first order, centred on 518 nm.
-name: mgb518
+name: Mg
 band_nm: [513.0, 527.5]
 resolving_power: 20000
 geometry:
@@ -10,5 +10,5 @@ geometry:
   camera_focal_mm: 479.41
   central_wavelength_nm: 518.0
   dispersion_sign: 1
-line_table: lines/mgb518.csv    # Murphy et al. catalogue lines in band with the usable flag
+line_table: lines/Mg.csv        # Murphy et al. catalogue lines in band with the usable flag
 params: {}

@@ -21,8 +21,8 @@ approval in the conversation before running Edit/Write on it. A deny rule in
   data model or products): explore, propose, list open questions, get explicit
   approval. Then implement.
 - **Same model throughout.** Design and implementation are both done with the
-  model the user is working with (Claude Fable at the time of writing). Do not
-  switch to a smaller model for implementation unless the user asks.
+  model the user is working with. Do not switch to a smaller model for
+  implementation unless the user asks.
 - **Test-first.** Every step function gets unit tests on synthetic arrays
   before or with its implementation. Never claim a step works without running
   its tests.
@@ -95,7 +95,7 @@ or collaborators.
 ## Stack
 
 Python ≥ 3.11 · numpy · scipy · astropy · pandas · matplotlib · pydantic v2 ·
-pyyaml. Optional extras: `pypeit` (adapter only), `dev` (pytest, pytest-cov,
+pyyaml · tzdata (time zones on Windows). Optional extras: `pypeit` (adapter only), `dev` (pytest, pytest-cov,
 ruff, nbstripout). **No new top-level dependency without telling the user
 what and why first.**
 
@@ -105,11 +105,12 @@ what and why first.**
 pip install -e ".[dev]"          # development install
 pytest                           # tiers 1–2, offline, synthetic data only
 MASTPIPE_TEST_DATA=<folder> MASTPIPE_ATLAS_DIR=<folder> pytest tests/regression   # tier 3, real lab frames
-ruff check src tests scripts && ruff format --check src tests scripts
+ruff format --check . && ruff check .
 python scripts/privacy_scan.py
-mastpipe identify <full-arc.fits> --out <dir> --instrument highspec --configuration mgb518 --stored-anchors
-mastpipe solve <full-arc.fits> --out <dir> --instrument highspec --configuration mgb518
+mastpipe identify <full-arc.fits> --out <dir> --instrument highspec --configuration Mg --stored-anchors
+mastpipe solve <full-arc.fits> --out <dir> --instrument highspec --configuration Mg
 mastpipe quicklook <night-folder> --out <dir> --instrument highspec [--layout lab3|survey45] [--manifest frames.csv]
+mastpipe quicklook <night-folder> --out <dir> --instrument highspec --configuration Mg --layout survey45   # site form, no manifest
 mastpipe show <product.fits>
 # `mastpipe reduce` (manual mode, --force <stage>) and `mastpipe focus` are later plans.
 ```
@@ -138,8 +139,13 @@ mastpipe show <product.fits>
   explicit encodings, no assumptions about path separators or line endings.
 - **Quick-look never stops on one bad frame; manual mode raises.** Both run
   the same step functions.
-- **PypeIt only through `ext/pypeit_adapter.py`**, lazily imported, behind the
-  native step signatures, version-pinned, with its own tests.
+- **PypeIt only through a planned optional adapter** (not written yet), lazily
+  imported, behind the native step signatures, version-pinned, with its own
+  tests; the `pypeit` extra pre-installs its dependency.
+- **Vocabulary comes from MAST_common.** Instrument, grating, frame-type, lamp
+  and unit names are those of `common.spec`, mirrored in `mastpipe.vocab` and
+  checked by the `fleet` CI job; never introduce a name of our own for
+  something MAST_common already names.
 - **Notebooks contain no logic**; they import the package.
 
 ## Testing conventions
@@ -152,6 +158,13 @@ mastpipe show <product.fits>
   wavelength rms, resolving power, best focus) and skip without real data.
 - CI runs on Linux, Windows and macOS; a change is not done until the matrix
   is green.
+
+## Fleet conventions
+
+Follow `The-MAST-project/mast-claude-config` (its
+`code-validation-and-ci-guidelines.md`), with two deliberate departures: CI
+tests Linux, Windows and macOS, and Python 3.11 stays supported, because
+mastpipe is a pip-installable library, not a fleet service.
 
 ## Out of scope (first release)
 

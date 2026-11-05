@@ -4,28 +4,51 @@ Everything is written under the output folder. File names come from the
 frame's metadata, never from the raw file name:
 
 ```text
-{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{kind}.fits
+{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits
 ```
 
-with the UTC mid-time of the exposure and `kind` one of `bias`, `dark`,
-`background`, `flat`, `traces`, `spec`, `comb_<target>`. Reference solutions
+with the UTC mid-time of the exposure (`notime` without one), `checksum` the
+first six hex digits of the input file's SHA-256 (for a master, its first input
+frame's), so two exposures with the same mid-time never share a name (`nosum`
+on a trace set built from a library flat, which has no input frame), and
+`kind` one of `bias`, `dark`,
+`background`, `flat`, `traces`, `spec`, `comb_<target>`. A frame whose header
+names no grating takes the configuration given with `--configuration`. Reference solutions
 are `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being
 the full arc's mid-time; the name without `_wref.fits` is the **reference
 identifier** quoted in every product that used it.
 
 ```text
 out/
-  calib/   masters, trace sets, references, fiber_agreement.csv, index.json
+  calib/   masters, trace sets, references, fiber_agreement.csv, index.json, index.lock
   spec/    *_spec.fits (one per science exposure), *_comb_<target>.fits (one per target)
   qa/      *.json: one per trace set, reference, drift arc and science frame
   logs/    quicklook_<UTC stamp>.log
 ```
 
+Every product, the QC files and `calib/index.json` are written to a temporary
+`<name>.tmp-<pid>-<random>` next to the target and moved into place when complete, so an
+interrupted run never leaves a partial file. `calib/index.lock` is the lock that
+lets several runs (a quick-look and an `identify`) share one `calib/` folder
+without losing each other's index entries; leave it in place.
+
+## Output folders of an earlier version
+
+Product names gained the checksum segment and the grating's new name
+(`Mg`, not `mgb518`), so a product written by Plan 1 is never found at its new
+path. It is not reduced again in place: a new file is written beside it, and
+the old `spec/` and `qa/` files stay, so a glob over the folder sees both.
+`quicklook` warns once per run when `spec/` holds product names without the
+checksum segment. Use a fresh `--out` for such a folder, or clear its `spec/`
+and `qa/` folders first. The calibration library in `calib/` may be kept: its
+old entries stay in the index but never match (their readout is keyed
+`…/unknown`), and the masters are rebuilt beside them.
+
 ## Looking inside
 
 ```bash
-mastpipe show out/spec/highspec_mgb518_main_20261001T221500_spec.fits
-mastpipe show out/calib/highspec_mgb518_lab3_20260909T113702_wref.fits
+mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
+mastpipe show out/calib/highspec_Mg_lab3_20260909T113702_wref.fits
 ```
 
 `show` prints the product kind, the frame and its statuses, a per-fiber
@@ -68,8 +91,9 @@ the same row, no re-run needed.
 
 A `DRIFT` table is attached when a drift model was applied: per calibration
 fiber, the shift and stretch measured, the lines used, the rms, a usable flag
-and the blend weight, with the arc's mid-time and the smoothed model's
-coefficients in its header.
+and the blend weight, with the arc's mid-time, the smoothed model's
+coefficients, the number of usable arc fibers (`MPDNUSE`) and whether the model
+is usable (`MPDUSE`) in its header.
 
 ## Wavelength status
 
@@ -87,9 +111,10 @@ release.
 
 One file per target and exposure: table `COMBINED` with `WAVELENGTH` on a
 common grid (log-uniform by default) and `FLUX_<V>`, `ERROR_<V>`, `MASK_<V>`
-for `RAW` and every version all contributors share; `CONTRIB` (fiber,
-telescope, weight) and `EXCLUDED` (fiber, telescope, reason) tables; the
-grouping rule in the header. Contributors are weighted by inverse variance
+for `RAW` and every version any contributor carries, each combined from the
+contributors that carry it; `CONTRIB` (fiber, telescope, weight) and
+`EXCLUDED` (fiber, telescope, reason) tables; the grouping rule in the header,
+and `MPVMISS` listing, per version, the contributing fibers without it. Contributors are weighted by inverse variance
 with a one-pass outlier clip. Excluded spectra are listed with the reason
 (configuration, no wavelength, low S/N, flux ratio) and remain in the
 per-exposure file.

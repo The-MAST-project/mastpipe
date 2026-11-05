@@ -15,6 +15,13 @@ cameras:
     crop: [1, 1599, 1, 399]     # [x_min, x_max, y_min, y_max], end exclusive: drops the first and
                                 # last row and column, leaving 398 x 1598 pixels
     dispersion_axis: 1
+    readouts:                   # per output amplifier (OUTPTAMP); the defaults above otherwise
+      conventional:             # the laboratory frames
+        gain: 1.0               # e-/ADU  PLACEHOLDER: not yet measured (flat pairs)
+        read_noise: 5.0         # e-      PLACEHOLDER: not yet measured (bias pairs)
+      em:                       # electron-multiplying, at the site
+        gain: 1.0               # e-/ADU  PLACEHOLDER: not yet measured (flat pairs)
+        read_noise: 5.0         # e-      PLACEHOLDER: not yet measured (bias pairs)
 
 # Step parameters; anything not listed keeps the defaults of mastpipe.config.models.
 params:

@@ -102,6 +102,13 @@ def build_effective(
     )
 
 
+def _canonical_hash(payload: Any) -> str:
+    """First 12 hex digits of the sha256 of ``payload``'s canonical JSON (sorted keys,
+    no whitespace, ASCII)."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
 def config_hash(effective: EffectiveConfig) -> str:
     """First 12 hex digits of the sha256 of the effective configuration's canonical JSON.
 
@@ -109,9 +116,21 @@ def config_hash(effective: EffectiveConfig) -> str:
     excluded), so the same effective configuration hashes the same on every platform and
     whether or not an override merely restates a value.
     """
-    payload = effective.model_dump(mode="json", exclude={"layers"})
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return _canonical_hash(effective.model_dump(mode="json", exclude={"layers"}))
+
+
+def calib_hash(effective: EffectiveConfig) -> str:
+    """The hash of what a master depends on besides its frames: the stacking and
+    calibration parameters (``params.calib``) and the detector (crop, orientation,
+    saturation, ...), canonicalised as :func:`config_hash` does. A library master is
+    reused only under the same ``calib_hash``; a change elsewhere in the configuration
+    (sky, drift, extraction) does not rebuild masters."""
+    return _canonical_hash(
+        {
+            "calib": effective.params.calib.model_dump(mode="json"),
+            "detector": effective.detector.model_dump(mode="json"),
+        }
+    )
 
 
 def parse_override(text: str) -> dict[str, Any]:

@@ -11,7 +11,7 @@ from mastpipe.pipeline.arcs import pair_arcs, status_for
 T0 = pd.Timestamp("2026-10-01T22:00:00")
 
 
-def meta(offset_minutes: float, exposure_type: str = "arc", configuration: str = "mgb518"):
+def meta(offset_minutes: float, exposure_type: str = "arc", configuration: str = "Mg"):
     return FrameMeta(
         instrument="highspec",
         camera="main",
@@ -37,7 +37,7 @@ def model(offset_minutes: float, usable: bool = True) -> DriftModel:
 
 
 def arc(offset_minutes: float, **kwargs) -> tuple[FrameMeta, DriftModel]:
-    configuration = kwargs.pop("configuration", "mgb518")
+    configuration = kwargs.pop("configuration", "Mg")
     return meta(offset_minutes, configuration=configuration), model(offset_minutes, **kwargs)
 
 
@@ -45,13 +45,13 @@ def reference(valid_from_minutes: float = -600.0) -> ReferenceSolution:
     valid_from = (T0 + pd.Timedelta(minutes=valid_from_minutes)).isoformat(timespec="seconds")
     return ReferenceSolution(
         instrument="highspec",
-        configuration="mgb518",
+        configuration="Mg",
         fiber_preset="survey45",
         solutions={},
         created=valid_from,
         valid_from=valid_from,
         source_checksums=(),
-        identifier="highspec_mgb518_survey45_x",
+        identifier="highspec_Mg_survey45_x",
     )
 
 
@@ -123,9 +123,7 @@ def test_no_candidates_gives_reference_status():
     stale = [arc(-20.0 * 60.0)]
     assert pair_arcs(exposure, stale, reference(), DriftParams()) == []
     # an exposure without a mid-time cannot be paired
-    no_time = FrameMeta(
-        instrument="highspec", camera="main", exposure_type="science", configuration="mgb518"
-    )
+    no_time = FrameMeta(instrument="highspec", camera="main", exposure_type="science", configuration="Mg")
     assert pair_arcs(no_time, [arc(-10.0)], reference(), DriftParams()) == []
 
 
@@ -135,7 +133,7 @@ def test_times_are_compared_in_utc():
         instrument="highspec",
         camera="main",
         exposure_type="arc",
-        configuration="mgb518",
+        configuration="Mg",
         mid_time="2026-10-01T23:50:00+02:00",  # 21:50 UTC, ten minutes before
         arc_kind="calfiber",
     )

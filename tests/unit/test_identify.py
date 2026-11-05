@@ -2,7 +2,8 @@
 panels and candidate table without anchors, the reference product written from truth
 anchors, the seeded re-solve, the anchor-pair parsing and the command line."""
 
-import shutil
+import logging
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,12 +18,12 @@ from mastpipe.config.models import CalibParams
 from mastpipe.core.model import Frame, ReferenceSolution
 from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.io.products import product_name, read_reference, reference_name, write_master
+from mastpipe.io.products import read_reference, reference_name
 from mastpipe.io.qa import plot_anchor_panels, strongest_spread
 from mastpipe.pipeline import identify
+from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import (
     _arc_lines,
-    _latest_master,
     parse_anchor_pairs,
     read_anchors_file,
     run_identify,
@@ -32,8 +33,9 @@ from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.geometry import grating_geometry
+from mastpipe.steps.lines import find_lines
 from mastpipe.steps.wavecal import wavelength_map
-from mastpipe.steps.wavemodel import GratingModel
+from tests.conftest import truth_model
 
 MIN_SOLVED = 43
 MAX_MAP_ERROR_DISP = 0.3
@@ -47,25 +49,22 @@ ANCHOR_LOG_INTENSITY = 2.0
 def survey_effective():
     """The HighSpec configuration with the ``survey45`` preset's parameters (the 8.5 px
     pitch narrows the three halfwidths to 4 px)."""
-    return build_effective(load_instrument("highspec"), "mgb518", "main", layout="survey45")
+    return build_effective(load_instrument("highspec"), "Mg", "main", layout="survey45")
 
 
 @pytest.fixture(scope="module")
-def arc(sim_night, survey_effective, mgb518_lines) -> SimpleNamespace:
+def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
     """The simulated full arc on disk, its truth anchors and the grating truth."""
     night_dir, truth = sim_night
     row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     path = night_dir / str(row["file"])
     geom = grating_geometry(survey_effective.geometry, survey_effective.detector.pixel_size_um)
     n_pix = truth.extras["n_pix"]
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
-    anchors = [
-        (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
-    ]
-    truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
+    anchors = [(float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)]
     return SimpleNamespace(
         path=path,
         mid_time=str(row["mid_time"]),
@@ -73,14 +72,15 @@ def arc(sim_night, survey_effective, mgb518_lines) -> SimpleNamespace:
         anchors=anchors,
         geom=geom,
         n_pix=n_pix,
-        truth_model=truth_model,
+        truth_model=lambda fiber: truth_model(truth, fiber, geom, n_pix),
         cat_wl=cat_wl,
     )
 
 
 @pytest.fixture(scope="module")
 def calib_dir(sim_night, survey_effective, tmp_path_factory) -> Path:
-    """An output folder whose ``calib/`` holds bias, background and flat masters."""
+    """An output folder whose calibration library ``calib/`` holds bias, background and
+    flat masters."""
     night_dir, _ = sim_night
     detector = survey_effective.detector
     out_dir = tmp_path_factory.mktemp("identify_calib")
@@ -96,9 +96,9 @@ def calib_dir(sim_night, survey_effective, tmp_path_factory) -> Path:
     flats = [calibrate_frame(f, calib, subtract_background=False) for f in by_type["flat"]]
     flat = build_master(flats, "flat", params)
     prov = Provenance("0.0.1", "abc", [], [])
+    library = CalibLibrary(out_dir / "calib")
     for master in (bias, background, flat):
-        name = product_name(by_type[master.kind][0].meta, master.kind)
-        write_master(out_dir / "calib" / name, master, prov)
+        library.add(master, prov, by_type[master.kind][0].meta)
     return out_dir
 
 
@@ -108,18 +108,16 @@ def master_names(calib_dir: Path) -> list[str]:
 
 @pytest.fixture(scope="module")
 def identified(arc, survey_effective, calib_dir) -> SimpleNamespace:
-    ref, path = run_identify(
-        arc.path, survey_effective, "survey45", calib_dir, anchors=arc.anchors, anchor_trace=0
-    )
+    ref, path = run_identify(arc.path, survey_effective, "survey45", calib_dir, anchors=arc.anchors, anchor_trace=0)
     return SimpleNamespace(ref=ref, path=path, out_dir=calib_dir)
 
 
 def map_error_in_dispersions(solution, arc) -> float:
+    """Largest map error against the fiber's own truth model, in dispersions."""
     lam = wavelength_map(solution, arc.geom)
     x = np.arange(arc.n_pix)
-    return float(
-        np.max(np.abs(lam - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(x))
-    )
+    model = arc.truth_model(solution.fiber)
+    return float(np.max(np.abs(lam - model.wavelength(x)) / model.dispersion(x)))
 
 
 # ------------------------------------------------------------------------- anchor panels
@@ -141,13 +139,8 @@ def test_strongest_spread_picks_strong_separated_lines_left_to_right():
 def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
     wave = np.linspace(513.0, 527.5, 4000)
     centres = np.array([514.0, 516.5, 519.0, 521.5, 524.0, 526.5])
-    flux = 1.0 + sum(
-        h * np.exp(-0.5 * ((wave - c) / 0.02) ** 2)
-        for c, h in zip(centres, [5, 9, 2, 7, 8, 4], strict=True)
-    )
-    usable = pd.DataFrame(
-        {"wavelength": np.concatenate([centres, [520.0]]), "usable": [True] * 6 + [False]}
-    )
+    flux = 1.0 + sum(h * np.exp(-0.5 * ((wave - c) / 0.02) ** 2) for c, h in zip(centres, [5, 9, 2, 7, 8, 4], strict=True))
+    usable = pd.DataFrame({"wavelength": np.concatenate([centres, [520.0]]), "usable": [True] * 6 + [False]})
     obs_flux = np.zeros(1000)
     x_lines = np.array([100.0, 300.0, 500.0, 700.0, 900.0])
     for x in x_lines:
@@ -161,9 +154,7 @@ def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
         }
     )
     out = tmp_path / "panels" / "anchor_panels.png"
-    template, measured = plot_anchor_panels(
-        wave, flux, usable, obs_flux, obs_lines, (513.0, 527.5), n_labels=4, out=out
-    )
+    template, measured = plot_anchor_panels(wave, flux, usable, obs_flux, obs_lines, (513.0, 527.5), n_labels=4, out=out)
     assert out.is_file() and out.stat().st_size > 0
     assert list(template.columns) == ["id", "wavelength"]
     assert list(measured.columns) == ["id", "x_center"]
@@ -207,7 +198,7 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
     assert path.is_file()
     back, prov = read_reference(path, lambda instrument, configuration: arc.geom)
     assert back.identifier == ref.identifier and back.hash == ref.hash
-    assert back.instrument == "highspec" and back.configuration == "mgb518"
+    assert back.instrument == "highspec" and back.configuration == "Mg"
     assert back.fiber_preset == "survey45"
     assert back.valid_from == back.created == arc.mid_time
     assert len(back.solutions) >= MIN_SOLVED
@@ -225,18 +216,12 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
     assert agreement["spread_px"].max() < MAX_MAP_ERROR_DISP
 
 
-def test_identify_uses_stored_anchors_and_trace(
-    tmp_path, sim_night_lab3, highspec_effective, mgb518_lines, monkeypatch
-):
+def test_identify_uses_stored_anchors_and_trace(tmp_path, sim_night_lab3, highspec_effective, mg_lines, monkeypatch):
     """Without an ``anchors`` argument the instrument's stored pairs and trace are used."""
     night_dir, truth = sim_night_lab3
     row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
-    cat_wl, _ = catalogue_arrays(mgb518_lines, usable_only=True)
-    bright = (
-        np.isin(truth.lines_nm, cat_wl)
-        & truth.lines_on_chip
-        & (truth.line_logI > ANCHOR_LOG_INTENSITY)
-    )
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
+    bright = np.isin(truth.lines_nm, cat_wl) & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
     stored = [(float(truth.lines_nm[i]), float(truth.line_pixels[1][i])) for i in (first, last)]
     asked: list[tuple] = []
@@ -252,7 +237,7 @@ def test_identify_uses_stored_anchors_and_trace(
     monkeypatch.setattr(identify, "solve_full_arc", spy)
     out_dir = tmp_path / "lab"
     ref, path = run_identify(night_dir / str(row["file"]), highspec_effective, "lab3", out_dir)
-    assert asked == [("highspec", "mgb518", "lab3")]
+    assert asked == [("highspec", "Mg", "lab3")]
     assert seeded["ref_fiber"] == 1
     assert isinstance(ref, ReferenceSolution) and set(ref.solutions) == {0, 1, 2}
     assert ref.fiber_preset == "lab3" and path.is_file()
@@ -279,25 +264,80 @@ def test_identify_uses_stored_anchors_and_trace(
     assert not (tmp_path / "dry").exists()
 
 
-def test_latest_master_sorts_by_stamp_within_the_configuration(tmp_path, survey_effective):
-    names = [
-        "highspec_mgb518_main_20260930T235900_bias.fits",
-        "highspec_mgb518_main_20261001T180000_bias.fits",
-        "highspec_mgb518_main_notime_bias.fits",  # sorts after every digit stamp by name
-        "highspec_noconf_main_20270101T000000_bias.fits",  # another configuration, later
-        "highspec_mgb518_other_20270101T000000_bias.fits",  # another camera, later
-        "highspec_mgb518_main_20270101T000000_flat.fits",  # another kind
-    ]
-    for name in names:
-        (tmp_path / name).write_bytes(b"")
-    assert sorted(names)[-1] != "highspec_mgb518_main_20261001T180000_bias.fits"
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_mgb518_main_20261001T180000_bias.fits"
-    assert _latest_master(tmp_path, survey_effective, "background") is None
-    for name in names[:2]:
-        (tmp_path / name).unlink()
-    chosen = _latest_master(tmp_path, survey_effective, "bias")
-    assert chosen is not None and chosen.name == "highspec_mgb518_main_notime_bias.fits"
+def _readout_ref(night_dir, truth, amplifier: str):
+    """The simulated full arc of the laboratory night, read out through ``amplifier``."""
+    row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
+    pattern = str(row["file"])
+    ref = scan_folder(night_dir, "highspec", load_header_map("highspec"), pattern=pattern, recursive=False)[0]
+    return replace(ref, meta=replace(ref.meta, readout_mode="image", amplifier=amplifier))
+
+
+def _readout_library(night_dir, highspec_effective, root: Path) -> dict[str, str]:
+    """A library at ``root`` holding an ``image/em`` and an ``image/conventional`` bias
+    (the EM one dated later, so neither time nor order favours the conventional one) and
+    an ``image/em`` flat of another configuration; returns the file names by key."""
+    detector = highspec_effective.detector
+    refs = scan_folder(night_dir, "highspec", load_header_map("highspec"))
+    bias_meta = next(ref.meta for ref in refs if ref.meta.exposure_type == "bias")
+    biases = [load_frame(ref, detector) for ref in refs if ref.meta.exposure_type == "bias"]
+    library = CalibLibrary(root)
+    prov = Provenance("0.0.1", "abc", [], [])
+    names = {}
+    for amplifier, checksum, mid_time in (
+        ("conventional", "c0ffee00", "2026-10-01T12:00:00"),
+        ("em", "e0e0e0e0", "2026-10-01T18:00:00"),
+    ):
+        meta = replace(bias_meta, readout_mode="image", amplifier=amplifier, checksum=checksum, mid_time=mid_time)
+        master = build_master([replace(f, meta=meta) for f in biases], "bias", CalibParams())
+        names[f"bias image/{amplifier}"] = library.add(master, prov, meta).name
+    meta = replace(bias_meta, readout_mode="image", amplifier="em", configuration="other", checksum="f1a7f1a7")
+    flat = build_master([replace(f, meta=replace(meta, exposure_type="flat")) for f in biases], "flat", CalibParams())
+    names["flat image/em other"] = library.add(flat, prov, meta).name
+    return names
+
+
+def test_arc_lines_takes_the_masters_of_the_arcs_own_readout(sim_night_lab3, highspec_effective, lab3_layout, tmp_path):
+    """Without injected masters the library gives the arc the masters of its own readout
+    key (and a flat of its own configuration only), not the latest file of any readout."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "calib")
+    for amplifier in ("conventional", "em"):
+        ref = _readout_ref(night_dir, truth, amplifier)
+        lines = _arc_lines(ref, highspec_effective, lab3_layout, tmp_path)
+        assert lines.calibrations == [names[f"bias image/{amplifier}"]], amplifier
+        assert any(step.startswith("traces arc_full") for step in lines.steps)
+    # a frame of a readout the library does not hold gets no master at all
+    lines = _arc_lines(_readout_ref(night_dir, truth, "other"), highspec_effective, lab3_layout, tmp_path)
+    assert lines.calibrations == []
+
+
+def test_arc_lines_reads_the_given_library(sim_night_lab3, highspec_effective, lab3_layout, tmp_path):
+    """``library_root`` replaces ``out_dir/calib``; an output folder without a library is
+    not created by the lookup."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "shared")
+    ref = _readout_ref(night_dir, truth, "em")
+    out_dir = tmp_path / "out"
+    lines = _arc_lines(ref, highspec_effective, lab3_layout, out_dir, library_root=tmp_path / "shared")
+    assert lines.calibrations == [names["bias image/em"]]
+    assert _arc_lines(ref, highspec_effective, lab3_layout, out_dir).calibrations == []
+    assert not out_dir.exists()
+
+
+def test_arc_lines_warns_of_an_unlisted_amplifier(sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog):
+    """An arc whose amplifier the camera's ``readouts`` table does not list takes the
+    camera's default noise; ``identify`` and ``solve`` say so, as the runner does."""
+    night_dir, truth = sim_night_lab3
+    detector = highspec_effective.detector
+    listed = detector.model_copy(update={"readouts": {"conventional": detector.noise()}})
+    effective = highspec_effective.model_copy(update={"detector": listed})
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        _arc_lines(_readout_ref(night_dir, truth, "conventional"), effective, lab3_layout, tmp_path)
+    assert not [r for r in caplog.records if "amplifier" in r.getMessage()]
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        _arc_lines(_readout_ref(night_dir, truth, "emm"), effective, lab3_layout, tmp_path)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("main: emm" in message for message in warnings), warnings
 
 
 def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
@@ -325,15 +365,9 @@ def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
 
     # with background subtraction off the background is not an applied calibration
     no_subtract = highspec_effective.model_copy(
-        update={
-            "params": highspec_effective.params.model_copy(
-                update={"calib": CalibParams(subtract_background=False)}
-            )
-        }
+        update={"params": highspec_effective.params.model_copy(update={"calib": CalibParams(subtract_background=False)})}
     )
-    lines2 = _arc_lines(
-        arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset
-    )
+    lines2 = _arc_lines(arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset)
     assert lines2.calibrations == [f"bias:{bias.validity['mid_time']}"]
     assert lines2.steps[0] == "bias"
     assert lines2.steps[1].startswith("background night background present but not subtracted")
@@ -342,17 +376,32 @@ def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
     assert not (tmp_path / "calib").exists()
 
 
+def test_arc_lines_passes_the_calibrated_mask_to_find_lines(
+    sim_night_lab3, highspec_effective, lab3_layout, tmp_path, monkeypatch
+):
+    """The arc's saturation mask reaches the line finder, which flags lines through it."""
+    night_dir, truth = sim_night_lab3
+    row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("mask"))
+        return find_lines(*args, **kwargs)
+
+    monkeypatch.setattr(identify, "find_lines", spy)
+    lines = _arc_lines(night_dir / str(row["file"]), highspec_effective, lab3_layout, tmp_path)
+    assert len(seen) == 1 and seen[0] is lines.frame.mask and seen[0] is not None
+
+
 # ------------------------------------------------------------------------------- solve
 
 
 def test_run_solve_seeded_by_previous_reference(identified, arc, survey_effective, tmp_path):
     previous = identified.ref
     out_dir = tmp_path / "again"
-    # the same masters as the anchor run, so the two solves see the same lines
-    (out_dir / "calib").mkdir(parents=True)
-    for name in master_names(identified.out_dir):
-        shutil.copy(identified.out_dir / "calib" / name, out_dir / "calib" / name)
-    again = run_solve(arc.path, survey_effective, "survey45", out_dir, previous)
+    # the anchor run's library (--library), so the two solves see the same masters and lines
+    library = identified.out_dir / "calib"
+    again = run_solve(arc.path, survey_effective, "survey45", out_dir, previous, library=library)
     path = out_dir / "calib" / reference_name(again)
     assert path.is_file()
     assert set(again.solutions) == set(previous.solutions)
@@ -363,6 +412,7 @@ def test_run_solve_seeded_by_previous_reference(identified, arc, survey_effectiv
         assert other.params[1] == pytest.approx(solution.params[1], rel=1e-6)
     back, prov = read_reference(path, lambda instrument, configuration: arc.geom)
     assert back.hash == again.hash
+    assert sorted(prov.calibrations) == master_names(identified.out_dir)
     assert prov.reference_id == previous.identifier and prov.reference_hash == previous.hash
     # a reference of another configuration or preset cannot seed this arc
     with pytest.raises(ValueError, match="preset"):
@@ -400,7 +450,7 @@ def test_cli_identify_parses_anchor_pairs(tmp_path, sim_night_lab3, capsys):
         "--instrument",
         "highspec",
         "--configuration",
-        "mgb518",
+        "Mg",
         "--layout",
         "lab3",
         "--set",
@@ -411,6 +461,9 @@ def test_cli_identify_parses_anchor_pairs(tmp_path, sim_night_lab3, capsys):
     assert str(out_dir / "anchor_panels.png") in out
     assert (out_dir / "anchor_panels.png").is_file()
     assert (out_dir / "anchor_candidates.csv").is_file()
+    # --library names the calibration library the masters are read from
+    assert main([*argv, "--library", str(tmp_path / "no_library")]) == 0
+    assert not (tmp_path / "no_library").exists()
     # the three anchor sources exclude one another
     with pytest.raises(SystemExit):
         main([*argv, "--anchors", "515.8605:267.22", "--stored-anchors"])

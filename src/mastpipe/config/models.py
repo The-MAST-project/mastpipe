@@ -20,8 +20,19 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ReadoutNoise(_Strict):
+    """The gain (e-/ADU) and read noise (e-) of one output amplifier."""
+
+    gain: float
+    read_noise: float
+
+
 class DetectorConfig(_Strict):
-    """One camera: raw frame geometry, noise model and orientation on read."""
+    """One camera: raw frame geometry, noise model and orientation on read.
+
+    ``gain`` and ``read_noise`` are the camera's defaults; ``readouts`` overrides them per
+    output amplifier (``FrameMeta.amplifier``, e.g. ``conventional`` / ``em``).
+    """
 
     name: str
     shape: tuple[int, int]
@@ -34,6 +45,14 @@ class DetectorConfig(_Strict):
     transpose: bool = False
     flip_x: bool = False
     flip_y: bool = False
+    readouts: dict[str, ReadoutNoise] = {}
+
+    def noise(self, amplifier: str | None = None) -> ReadoutNoise:
+        """The gain and read noise of ``amplifier``: its ``readouts`` entry when there is
+        one, else the camera's defaults."""
+        if amplifier is not None and amplifier in self.readouts:
+            return self.readouts[amplifier]
+        return ReadoutNoise(gain=self.gain, read_noise=self.read_noise)
 
 
 class GeometryConfig(_Strict):
@@ -127,6 +146,7 @@ class DriftParams(_Strict):
     stretch_significance: float = 3.0
     degree: int = 1
     max_scatter_px: float = 0.2
+    min_fibers: int = Field(3, ge=1)
     max_age_hours: float = 12.0
     time_policy: Literal["nearest_before", "nearest", "interpolate"] = "nearest_before"
     warn_shift_px: float = 2.0
@@ -149,6 +169,34 @@ class CombineParams(_Strict):
     log_grid: bool = True
 
 
+class ClassifyParams(_Strict):
+    """How a ``light`` frame is resolved into ``arc``, ``science`` or ``unknown`` from its
+    content (:mod:`mastpipe.steps.classify`).
+
+    The defaults are the brief's starting values, kept because they separate every frame
+    class with a wide margin (statistic of :func:`~mastpipe.steps.classify.arc_likeness`
+    measured with them, calibrated as the runner does it, no cosmic-ray flagging):
+
+    - ``signal_sigma = 5``: the 99th percentile of the collapsed spectrum is 12-18 sigma on
+      the simulated science frames and 70-4000 on the arcs, against 2-3 on a bias-level
+      noise frame or a lamp-off dark and 3.6 on the laboratory lamp-off background (its
+      ambient light is diffuse and removed as such);
+    - ``arc_peak_fraction = 0.5``: the share of the fiber light in narrow peaks is 0.99 on
+      the simulated full and calibration-fiber arcs and 0.69-0.74 on the eleven
+      laboratory Th-Ar focus frames, against at most 0.03 on the simulated science frames
+      (sky lines included) and 0.00 on the simulated and laboratory flats;
+    - ``continuum_window = 101`` columns: wide against a line (a few columns, broader on
+      the defocused focus frames) and narrow against the blaze;
+    - ``peak_halfwidth_px = 4`` columns grown on either side of a line's core, so that its
+      wings count with it.
+    """
+
+    continuum_window: int = 101
+    signal_sigma: float = 5.0
+    arc_peak_fraction: float = 0.5
+    peak_halfwidth_px: int = 4
+
+
 class StepParams(_Strict):
     """The parameters of every step, each group at its defaults unless set."""
 
@@ -160,6 +208,7 @@ class StepParams(_Strict):
     drift: DriftParams = Field(default_factory=DriftParams)
     sky: SkyParams = Field(default_factory=SkyParams)
     combine: CombineParams = Field(default_factory=CombineParams)
+    classify: ClassifyParams = Field(default_factory=ClassifyParams)
 
 
 class ConfigurationBlock(_Strict):

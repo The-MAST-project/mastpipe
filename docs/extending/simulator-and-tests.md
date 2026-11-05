@@ -21,21 +21,46 @@ classifies, plus `truth.npz` and `truth.json`:
 - bias, dark, flat and background frames with the detector's noise model;
 - one **full arc**: every trace lit, the line table's catalogue lines placed by
   the exact grating equation at the configured geometry, with per-fiber
-  throughput;
+  throughput; every fiber has its own small perturbation of the dispersion
+  solution (`dispersion_jitter_px`, 0.3 px by default: the central wavelength
+  moves by up to that much and the chip edges by up to that much again), so no
+  two fibers share a pixel-to-wavelength map;
 - **calibration-fiber arcs**: only the arc traces lit, the lines shifted and
   stretched by a linear drift law that is zero at the full arc and grows to the
-  configured end value at the last frame;
+  configured end value at the last frame; the shift also varies linearly with
+  the trace's row, by up to `drift_gradient_px` (0.05 px by default) between
+  the bottom and the top of the detector at the last frame;
 - **science frames**: a continuum with absorption dips in the science fibers,
   a continuum with emission lines in the sky fibers, no arc light, the same
   drift law, cosmic rays on single pixels;
 - a frame order in time (bias, dark, flat, full arc, background, then
   alternating arc and science groups at a cadence) so every science frame has
-  a calibration-fiber arc before it; `no_cal_arcs=True` writes none.
+  a calibration-fiber arc before it; `no_cal_arcs=True` writes none;
+- `swap_fibers=(a, b)` exchanges what two fibers carry on every frame while the
+  truth keeps the unswapped assignment: a pipeline that keys fibers correctly
+  then disagrees with the truth on exactly those two, which is how the
+  end-to-end test proves the truth comparison can see a fiber-identity bug;
+- `site_layout=True` writes the night the way the control software (`MAST_spec`)
+  files it: frame `k` (from 1) is `highspec/acquisition-<kkkk>/exposure-001.fits`,
+  one acquisition folder per frame, with a `seq.txt` in the night folder and in
+  `highspec/`, and the headers carry the site's cards only: `IMAGETYP` (`bias`,
+  `dark` and `flat` as themselves, `light` for the arcs, the science frames and
+  the background), `EXPOSURE`, `EXPREQ`, `FRAME` and `DATE` (both the exposure
+  start, with milliseconds), `CCD-TEMP`, `HBIN`, `VBIN`, `READMODE`, `OUTPTAMP`,
+  `INSTRUME = 'Highspec'` and `PROGRAM = 'MAST'`; no grating, lamp, target,
+  fiber-preset, shutter or `DATE-OBS` card. The pixels are those of the same
+  seed's default night, and the truth table's `file` is the relative path. Such a
+  night reduces with `--configuration Mg --layout survey45` and no manifest: the
+  runner resolves the `light` frames from their content, and the lamp-off
+  background, which content cannot type, is skipped.
 
-`SimTruth` records the trace polynomials, the dispersion solution, every
-line's pixel per fiber with an on-chip mask, the throughputs, the science and
-sky spectra, the noise constants, and a per-frame table with the drift at each
-frame's time. Everything is deterministic from a seed.
+`SimTruth` records the trace polynomials, the nominal and the per-fiber
+dispersion solutions, every line's pixel per fiber with an on-chip mask, the
+throughputs, the science and sky spectra per fiber, the noise constants, and a
+per-frame table with the drift (shift, stretch, row gradient) at each frame's
+time; `trace_shifts(file)` gives every fiber's shift on a frame. Compare a
+fiber's wavelengths with its own solution (`x_c_per_trace`, `B_per_trace`),
+not the nominal one. Everything is deterministic from a seed.
 
 ## How the tests use it
 
@@ -50,12 +75,25 @@ assertions:
   0.3 dispersions of truth; a reference-seeded re-solve equal to the first;
 - the drift fit recovering the planted shift to 0.05 px, the transfer landing
   drifted absorption dips within 0.3 dispersions;
-- sky lines removed to within 3σ; combination reducing the noise of four
+- sky lines removed to within 3σ plus the loss of linearly interpolating a
+  3 px line between two fibers' grids; combination reducing the noise of four
   copies by two;
 - the end-to-end quick-look: every science product `transferred`, wavelengths
   against truth, sky-subtracted versions present, one combined file per
   target, the idempotence and re-reduce behaviour, the `interpolate` blend;
-- a night with one fiber darkened: the other 44 keep their own solutions.
+- a night with one fiber darkened: the other 44 keep their own solutions;
+- a night with two fibers swapped: exactly those two fail the truth comparison;
+- a night with a 2 px drift gradient across the detector: the fitted drift
+  follows the planted shift at every arc fiber's row, which a drift flat in `y`
+  does not.
+
+The default jitter (0.3 px) and gradient (0.05 px) are deliberately small, so
+that the end-to-end tolerances stay stable and every fixture night reduces
+cleanly. At those values a fiber-identity or drift-row mistake could hide
+inside the tolerances, which is why sensitivity is proven by the two dedicated
+tests above rather than by the default nights: `test_swapped_fibers_are_detected`
+(end to end, at a jitter of 1 px) and `test_fit_drift_follows_a_y_gradient`.
+Keep both when changing the simulator or the tolerances.
 
 ## Tiers and markers
 
