@@ -104,12 +104,13 @@ def load_layout(name: str, preset: str) -> pd.DataFrame:
 
 def layout_hash(name: str, preset: str) -> str:
     """The first :data:`LAYOUT_HASH_LENGTH` hex characters of the SHA-256 of the layout
-    ``preset``'s CSV file bytes (part of a science product's idempotence key: an edited
-    layout reduces the night again). ``KeyError`` for an unknown preset."""
+    ``preset``'s CSV file bytes with CRLF line endings read as LF (part of a science
+    product's idempotence key: an edited layout reduces the night again, a checkout with
+    other line endings does not). ``KeyError`` for an unknown preset."""
     instrument = load_instrument(name)
     if preset not in instrument.layouts:
         raise KeyError(f"unknown layout preset {preset!r} for {name}; known: {instrument.layouts}")
-    data = (instrument_dir(name) / "layouts" / f"{preset}.csv").read_bytes()
+    data = (instrument_dir(name) / "layouts" / f"{preset}.csv").read_bytes().replace(b"\r\n", b"\n")
     return hashlib.sha256(data).hexdigest()[:LAYOUT_HASH_LENGTH]
 
 

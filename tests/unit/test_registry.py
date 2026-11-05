@@ -134,6 +134,23 @@ def test_layout_hash_follows_the_csv_bytes(tmp_path, monkeypatch):
         layout_hash("highspec", "nope")
 
 
+def test_layout_hash_ignores_line_endings(tmp_path, monkeypatch):
+    """A layout checked out with CRLF line endings (a Windows clone without the
+    ``.gitattributes`` rule) hashes as the LF file does, so the products' idempotence key
+    does not depend on the platform."""
+    first = layout_hash("highspec", "survey45")
+    copy = tmp_path / "highspec"
+    shutil.copytree(registry.instrument_dir("highspec"), copy)
+    monkeypatch.setattr(registry, "instrument_dir", lambda name: copy)
+    path = copy / "layouts" / "survey45.csv"
+    lf = path.read_bytes().replace(b"\r\n", b"\n")
+    assert b"\n" in lf
+    path.write_bytes(lf.replace(b"\n", b"\r\n"))
+    assert layout_hash("highspec", "survey45") == first
+    path.write_bytes(lf)
+    assert layout_hash("highspec", "survey45") == first
+
+
 def test_anchor_trace_loads_with_default():
     assert load_anchor_trace("highspec", "Mg", "lab3") == 0
     assert load_anchor_trace("highspec", "Mg", "survey45") == 0  # no file: default
