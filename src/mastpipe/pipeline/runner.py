@@ -3,8 +3,10 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
 
 :func:`run_quicklook` scans the folder and its subfolders (manifest applied; frames of
 another instrument and manifest rows matching no frame go into ``skipped``), drops the
-frames whose type is ``unknown`` into ``skipped`` with their classification rule, and
-reduces every ``(camera, configuration)`` group in turn:
+frames whose type is ``unknown`` into ``skipped`` with their classification rule, gives
+``options.configuration`` to every frame whose header and manifest name no grating (so its
+products, masters and library entries carry that name), and reduces every
+``(camera, configuration)`` group in turn:
 
 1. **masters** — bias, dark and background frames are stacked (dark and background one
    exposure time at a time, the largest batch serving the night), the flats calibrated
@@ -1393,7 +1395,11 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 summary.skipped.append(f"{meta.source}: {reason}")
                 log.warning("skipped %s: %s", meta.source, reason)
                 continue
-            groups[(meta.camera, meta.configuration or default_conf)].append(ref)
+            if meta.configuration is None and default_conf is not None:
+                # the run's --configuration names the grating of a frame whose header does
+                # not, so its products, masters and library entries carry that name too
+                ref = replace(ref, meta=replace(meta, configuration=default_conf))
+            groups[(meta.camera, ref.meta.configuration)].append(ref)
         for (camera, configuration), group_refs in sorted(groups.items(), key=str):
             label = f"group {camera}/{configuration}"
             if options.camera is not None and camera != options.camera:

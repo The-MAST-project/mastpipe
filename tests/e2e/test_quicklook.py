@@ -1010,6 +1010,11 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
     assert summary.failed == []
     products = spec_products(out)
     assert len(products) == N_SCIENCE
+    # --configuration names the grating of every frame, so nothing is filed under noconf
+    written = [p.name for p in summary.products] + [p.name for p in library.iterdir()]
+    assert not any("noconf" in name for name in written), written
+    (flat,) = CalibLibrary(library).list(kind="flat")
+    assert flat["configuration"] == "Mg"
 
     site_of = dict(zip(night.truth.frames["file"], site_night.truth.frames["file"], strict=True))
     labelled = {}
