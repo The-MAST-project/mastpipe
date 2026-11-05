@@ -28,7 +28,7 @@ from mastpipe.pipeline.identify import _arc_lines
 from mastpipe.sim.simulator import drift_x, simulate_night, undrift_x
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_master
-from mastpipe.steps.drift import apply_drift, fit_drift, fit_fiber_drift
+from mastpipe.steps.drift import apply_drift, drift_unusable_reason, fit_drift, fit_fiber_drift
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import build_reference, solve_full_arc
 from mastpipe.steps.wavemodel import anchor_model, model_from_solution
@@ -165,7 +165,12 @@ def test_fit_drift_single_usable_fiber_is_a_constant():
     assert model.shift_coeffs.shape == (1,) and model.stretch_coeffs.shape == (1,)
     assert model.shift_at(10.0) == pytest.approx(0.4, abs=0.02)
     assert model.shift_at(90.0) == pytest.approx(0.4, abs=0.02)
-    assert model.scatter_px == 0.0 and model.usable
+    # one fiber gives a constant with no scatter to judge it by: recorded, not usable
+    assert model.scatter_px == 0.0 and model.n_usable == 1 and not model.usable
+    one = fit_drift(
+        tables, make_reference(solutions), traces, make_meta(), DriftParams(min_fibers=1)
+    )
+    assert one.usable
     assert model.arc_checksums == ("abc123",) and model.arc_mid_time == "2026-10-01T20:00:00"
     assert model.n_pix == N_PIX
 
@@ -193,6 +198,41 @@ def test_fit_drift_linear_across_fibers_and_unusable_without_fibers():
     none = fit_drift({}, make_reference(solutions), traces, make_meta(), DriftParams())
     assert not none.usable and len(none.per_fiber) == 0
     assert none.shift_at(30.0) == 0.0 and none.stretch_at(30.0) == 0.0
+
+
+def test_drift_with_two_fibers_is_not_usable():
+    """Two usable fibers fix a degree-1 shift model exactly, so the scatter gate cannot fail:
+    the model needs ``min_fibers`` (three by default) and records how many it had."""
+    rng = np.random.default_rng(6)
+    x_ref = synthetic_lines(rng)
+    y_of = {0: 10.0, 1: 90.0, 2: 50.0}
+    solutions = {fiber: make_solution(x_ref, fiber=fiber) for fiber in y_of}
+    traces = SimpleNamespace(
+        traces=[SimpleNamespace(index=f, y_center=y) for f, y in y_of.items()], shape=(100, N_PIX)
+    )
+    two = synthetic_tables(x_ref, {0: 0.3, 1: 0.9}, rng)
+    model = fit_drift(two, make_reference(solutions), traces, make_meta(), DriftParams())
+    assert model.per_fiber["usable"].all()
+    assert model.scatter_px < 1e-9  # the line runs through both points
+    assert model.n_usable == 2 and not model.usable
+    assert drift_unusable_reason(model, DriftParams()) == "2 usable arc fibers, min_fibers is 3"
+
+    # a configuration that accepts two fibers makes the same model usable
+    relaxed = DriftParams(min_fibers=2)
+    model = fit_drift(two, make_reference(solutions), traces, make_meta(), relaxed)
+    assert model.n_usable == 2 and model.usable
+    assert drift_unusable_reason(model, relaxed) is None
+
+    three = synthetic_tables(x_ref, {0: 0.3, 1: 0.9, 2: 0.6}, rng)
+    model = fit_drift(three, make_reference(solutions), traces, make_meta(), DriftParams())
+    assert model.n_usable == 3 and model.usable
+
+    # the scatter gate names itself
+    bad = synthetic_tables(x_ref, {0: 0.3, 1: 0.9, 2: 2.0}, rng)
+    model = fit_drift(bad, make_reference(solutions), traces, make_meta(), DriftParams())
+    assert model.n_usable == 3 and not model.usable
+    reason = drift_unusable_reason(model, DriftParams())
+    assert reason is not None and reason.startswith("scatter") and "max_scatter_px 0.2" in reason
 
 
 # ------------------------------------------------------------------------ simulated night

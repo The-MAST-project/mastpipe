@@ -127,6 +127,7 @@ class DriftParams(_Strict):
     stretch_significance: float = 3.0
     degree: int = 1
     max_scatter_px: float = 0.2
+    min_fibers: int = 3
     max_age_hours: float = 12.0
     time_policy: Literal["nearest_before", "nearest", "interpolate"] = "nearest_before"
     warn_shift_px: float = 2.0

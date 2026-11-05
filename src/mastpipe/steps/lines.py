@@ -13,8 +13,9 @@ its neighbours, and the flags decide the two verdicts: ``use_x`` needs the line 
 along the dispersion, ``use_y`` only needs it complete and on the trace, so a blend keeps
 a valid spatial width.
 
-Beyond the notebook, a ``saturated`` flag (raw strip peak above ``LineParams.saturation``)
-bars a line from ``use_x``, and a variance image, when given, provides the per-line
+Beyond the notebook, a ``saturated`` flag (raw strip peak above ``LineParams.saturation``,
+or a masked pixel in the line's window when the calibrated frame's mask is given) bars a
+line from ``use_x``, and a variance image, when given, provides the per-line
 ``snr`` in place of the profile's robust noise. Two rules depart from the notebook:
 ``complete`` is judged on the measuring rows (``y_halfwidth`` about the trace) rather than
 the whole strip and is a condition of ``use_y`` only, so a trace closer than ``halfwidth``
@@ -303,13 +304,18 @@ def find_lines(
     variance: np.ndarray | None,
     traceset: TraceSet,
     params: LineParams,
+    mask: np.ndarray | None = None,
 ) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
     """Detect the emission lines on every trace of ``image`` and measure each in both axes.
 
     ``image`` is a calibrated frame ``(ny, nx)`` with the dispersion along x; ``variance``
-    (same shape) is optional. Every trace of ``traceset`` is measured, whatever its role.
-    Returns ``(tables, strips)``: one :data:`LINE_COLUMNS` table and one straightened,
-    continuum-subtracted strip of ``2 halfwidth + 1`` rows per trace, in trace order.
+    and ``mask`` (same shape, ``ValueError`` otherwise) are optional. ``mask`` is the
+    calibrated frame's mask, which :func:`~mastpipe.steps.calib.calibrate_frame` sets on raw
+    pixels at or above the detector's saturation: ``image`` is bias-subtracted, so a raw-ADU
+    threshold cannot be applied to it and the mask carries the raw-level fact. Every trace
+    of ``traceset`` is measured, whatever its role. Returns ``(tables, strips)``: one
+    :data:`LINE_COLUMNS` table and one straightened, continuum-subtracted strip of
+    ``2 halfwidth + 1`` rows per trace, in trace order.
 
     Detection: the strip is collapsed along y, the noise is the robust sigma of that
     profile, and ``find_peaks`` takes everything ``threshold_sigma`` noise units high at
@@ -325,7 +331,8 @@ def find_lines(
     ``complete`` (the measuring window, ``y_halfwidth`` rows about the trace, holds no
     off-detector pixel and is not cut by the detector edge along x), ``on_trace`` (spatial
     centroid within ``max_y_offset`` of the trace; ``None`` disables), ``fit_ok``,
-    ``saturated`` (peak of the raw strip above ``saturation``; ``None`` disables). ``use_x``
+    ``saturated`` (peak of the strip before continuum removal above ``saturation``, ``None``
+    disabling that test, or any pixel of the measuring window marked in ``mask``). ``use_x``
     needs ``isolated or fit_ok``, not ``near_edge``, ``on_trace`` and not ``saturated``;
     ``use_y`` needs not ``near_edge``, ``complete``, a finite ``fwhm_y`` and ``on_trace``,
     and stays valid for a blend.
@@ -338,6 +345,10 @@ def find_lines(
         variance = np.asarray(variance, dtype=float)
         if variance.shape != image.shape:
             raise ValueError(f"variance shape {variance.shape} differs from image {image.shape}")
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != image.shape:
+            raise ValueError(f"mask shape {mask.shape} differs from image {image.shape}")
     halfwidth = int(params.halfwidth)
     x_halfwidth = int(params.x_halfwidth)
     y_halfwidth = halfwidth if params.y_halfwidth is None else int(params.y_halfwidth)
@@ -351,6 +362,8 @@ def find_lines(
     strips: list[np.ndarray] = []
     for trace in traceset:
         strip_raw, centre = _detilt(image, trace, halfwidth)
+        # rows off the detector come back NaN, which is not a masked pixel
+        strip_mask = None if mask is None else _detilt(mask, trace, halfwidth)[0] > 0
         strip = _remove_row_continuum(strip_raw, params.baseline_window)
         var_prof = None
         if variance is not None:
@@ -451,6 +464,8 @@ def find_lines(
             raw_window = np.nan_to_num(strip_raw[ylo:yhi, xlo:xhi], nan=-np.inf)
             raw_peak = float(raw_window.max()) if raw_window.size else -np.inf
             saturated = params.saturation is not None and raw_peak > params.saturation
+            if strip_mask is not None:
+                saturated = saturated or bool(strip_mask[ylo:yhi, xlo:xhi].any())
 
             # truncation by the detector edge is a defect; clipping against a neighbour is
             # deliberate, so only the former marks a line incomplete

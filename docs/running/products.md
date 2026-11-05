@@ -78,8 +78,9 @@ the same row, no re-run needed.
 
 A `DRIFT` table is attached when a drift model was applied: per calibration
 fiber, the shift and stretch measured, the lines used, the rms, a usable flag
-and the blend weight, with the arc's mid-time and the smoothed model's
-coefficients in its header.
+and the blend weight, with the arc's mid-time, the smoothed model's
+coefficients, the number of usable arc fibers (`MPDNUSE`) and whether the model
+is usable (`MPDUSE`) in its header.
 
 ## Wavelength status
 
@@ -97,9 +98,10 @@ release.
 
 One file per target and exposure: table `COMBINED` with `WAVELENGTH` on a
 common grid (log-uniform by default) and `FLUX_<V>`, `ERROR_<V>`, `MASK_<V>`
-for `RAW` and every version all contributors share; `CONTRIB` (fiber,
-telescope, weight) and `EXCLUDED` (fiber, telescope, reason) tables; the
-grouping rule in the header. Contributors are weighted by inverse variance
+for `RAW` and every version any contributor carries, each combined from the
+contributors that carry it; `CONTRIB` (fiber, telescope, weight) and
+`EXCLUDED` (fiber, telescope, reason) tables; the grouping rule in the header,
+and `MPVMISS` listing, per version, the contributing fibers without it. Contributors are weighted by inverse variance
 with a one-pass outlier clip. Excluded spectra are listed with the reason
 (configuration, no wavelength, low S/N, flux ratio) and remain in the
 per-exposure file.

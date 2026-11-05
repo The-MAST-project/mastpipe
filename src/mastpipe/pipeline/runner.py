@@ -138,7 +138,7 @@ from mastpipe.steps.calib import (
 from mastpipe.steps.classify import ARC_LIKE, CONTINUUM, classify_light
 from mastpipe.steps.combine import combine_spectra, group_by_target
 from mastpipe.steps.cosmics import flag_cosmic_rays
-from mastpipe.steps.drift import apply_drift, fit_drift
+from mastpipe.steps.drift import apply_drift, drift_unusable_reason, fit_drift
 from mastpipe.steps.extract import extract_aperture
 from mastpipe.steps.fluxcal import apply_response, flux_status
 from mastpipe.steps.geometry import GratingGeometry, grating_geometry
@@ -873,11 +873,13 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
     per_fiber = drift.per_fiber
     shifts = per_fiber["shift_px"].to_numpy(dtype=float)
     worst = float(np.nanmax(np.abs(shifts))) if len(shifts) and np.isfinite(shifts).any() else 0.0
-    if not drift.usable:
+    unusable = drift_unusable_reason(drift, group.drift_params)
+    if unusable is not None:
         log.warning(
-            "drift arc %s: model not usable (%d of %d fibers usable, scatter %.3f px)",
+            "drift arc %s: model not usable: %s (%d of %d fibers usable, scatter %.3f px)",
             meta.source,
-            int(per_fiber["usable"].sum()),
+            unusable,
+            drift.n_usable,
             len(per_fiber),
             drift.scatter_px,
         )
@@ -899,6 +901,9 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
             "arc_mid_time": drift.arc_mid_time,
             "reference_id": reference.identifier,
             "usable": bool(drift.usable),
+            "unusable_reason": unusable,
+            "n_usable": int(drift.n_usable or 0),
+            "min_fibers": int(group.drift_params.min_fibers),
             "scatter_px": float(drift.scatter_px),
             "max_abs_shift_px": worst,
             "shift_coeffs": [float(c) for c in drift.shift_coeffs],
@@ -942,11 +947,11 @@ def _blend_drifts(
     single arc (weights ``None``: every fiber 1.0); for several, the weighted blend of their
     polynomials (right-aligned when the degrees differ) and per-fiber values (``n_lines`` the
     smallest, ``usable`` when all are), the sorted union of their checksums, the weighted
-    mid-time, the largest scatter and ``usable`` when every model is. The returned weights
-    feed the product's ``WEIGHT`` column: per fiber, the summed normalised weight of the
-    models that hold the fiber (1.0 when all do), which says how much of the blend that row
-    represents; the per-arc weights themselves are recorded in the science QC JSON
-    (``drift_weights``, aligned with ``drift_arcs``)."""
+    mid-time, the largest scatter, the smallest ``n_usable`` and ``usable`` when every model
+    is. The returned weights feed the product's ``WEIGHT`` column: per fiber, the summed
+    normalised weight of the models that hold the fiber (1.0 when all do), which says how
+    much of the blend that row represents; the per-arc weights themselves are recorded in
+    the science QC JSON (``drift_weights``, aligned with ``drift_arcs``)."""
     if len(pairs) == 1:
         return pairs[0][0], None
     total = sum(weight for _, weight in pairs)
@@ -994,6 +999,7 @@ def _blend_drifts(
         scatter_px=max(float(model.scatter_px) for model, _ in pairs),
         usable=all(model.usable for model, _ in pairs),
         n_pix=pairs[0][0].n_pix,
+        n_usable=min(int(model.n_usable or 0) for model, _ in pairs),
     )
     return blended, fiber_weights
 

@@ -517,15 +517,26 @@ def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinT
     header = hdu.header
     _set(header, "MPDTIME", drift.arc_mid_time, "drift arc mid-time, UTC")
     _set(header, "MPDSCAT", float(drift.scatter_px), "drift scatter, px")
-    _set(header, "MPDUSE", bool(drift.usable), "drift model usable")
+    _set(header, "MPDUSE", bool(drift.usable), _drift_use_comment(drift))
+    _set(header, "MPDNUSE", int(drift.n_usable or 0), "usable arc fibers in the drift model")
     _set(header, "MPDNPIX", int(drift.n_pix), "pixels along dispersion")
     _add_coefficients(header, DRIFT_SHIFT_SCHEME, drift.shift_coeffs)
     _add_coefficients(header, DRIFT_STRETCH_SCHEME, drift.stretch_coeffs)
     return hdu
 
 
+def _drift_use_comment(drift: DriftModel) -> str:
+    """The ``MPDUSE`` comment: what an unusable model was judged on (the thresholds are the
+    run's configuration, recorded in the drift QC JSON)."""
+    if drift.usable:
+        return "drift model usable"
+    return f"{drift.n_usable} usable arc fibers, scatter {drift.scatter_px:.3g} px"
+
+
 def _read_drift(hdu: fits.BinTableHDU, arc_checksums: tuple[str, ...]) -> DriftModel:
-    """The inverse of :func:`_drift_hdu`; the checksums come from the provenance cards."""
+    """The inverse of :func:`_drift_hdu`; the checksums come from the provenance cards. A
+    product without ``MPDNUSE`` (written before the card existed) counts its usable fibers
+    from the table."""
     header = hdu.header
     per_fiber = _frame_from_table(hdu).drop(columns=["weight"])
     return DriftModel(
@@ -537,6 +548,7 @@ def _read_drift(hdu: fits.BinTableHDU, arc_checksums: tuple[str, ...]) -> DriftM
         scatter_px=float(header["MPDSCAT"]),
         usable=bool(header["MPDUSE"]),
         n_pix=int(header["MPDNPIX"]),
+        n_usable=int(header["MPDNUSE"]) if "MPDNUSE" in header else None,
     )
 
 
@@ -574,7 +586,9 @@ def write_spectra(
 
     ``drift``, when given, is written as the ``DRIFT`` table: ``DriftModel.per_fiber`` plus
     a ``WEIGHT`` column (``weights`` by fiber, 1.0 when absent) with the cards ``MPDTIME``
-    (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE``, ``MPDNPIX`` and the shift / stretch
+    (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE`` (its comment saying, for an unusable
+    model, the usable arc fibers and the scatter it was judged on), ``MPDNUSE``
+    (``n_usable``), ``MPDNPIX`` and the shift / stretch
     coefficients as ``MPDNSH`` / ``MPDSHnn`` and ``MPDNST`` / ``MPDSTnn``; the arc checksums
     are the provenance's ``MPDARCnn`` cards.
 
@@ -911,8 +925,9 @@ def write_combined(
     MASK_<V>`` for every version present in ``cs.versions`` (``RAW`` included), plus the
     tables ``CONTRIB`` and ``EXCLUDED`` from the contributor and excluded frames.
 
-    Primary cards: ``MPTARGET``, ``MPGROUP``, the barycentric terms as ``MPNBC`` /
-    ``MPBCKnn`` / ``MPBCVnn``, the frame metadata and the provenance cards.
+    Primary cards: ``MPTARGET``, ``MPGROUP``, ``MPVMISS`` (``version_missing`` as a JSON
+    object: per version, the contributing fibers without it), the barycentric terms as
+    ``MPNBC`` / ``MPBCKnn`` / ``MPBCVnn``, the frame metadata and the provenance cards.
     """
     columns = [_column("WAVELENGTH", "D", np.asarray(cs.wavelength, dtype=float))]
     for version in COMBINED_VERSIONS:
@@ -927,6 +942,8 @@ def write_combined(
     header = primary.header
     _set(header, "MPTARGET", cs.target, "target")
     _set(header, "MPGROUP", cs.grouping, "grouping of the combined spectra")
+    missing = {str(k): sorted(int(f) for f in v) for k, v in cs.version_missing.items()}
+    _set(header, "MPVMISS", _json(missing), "fibers lacking a version, by version (JSON)")
     _add_mapping(header, BARYCENTRIC_SCHEME, cs.barycentric)
     _add_meta(header, meta)
     _add_provenance(header, prov)
@@ -942,7 +959,8 @@ def write_combined(
 
 
 def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Provenance]:
-    """The inverse of :func:`write_combined`: ``(combined, meta, provenance)``."""
+    """The inverse of :func:`write_combined`: ``(combined, meta, provenance)``; a product
+    without ``MPVMISS`` (written before the card existed) has nothing missing."""
     with fits.open(path) as hdul:
         header = hdul[0].header
         table = hdul["COMBINED"]
@@ -964,6 +982,10 @@ def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Proven
             excluded=_frame_from_table(hdul["EXCLUDED"]),
             grouping=str(header["MPGROUP"]),
             barycentric=_read_mapping(header, BARYCENTRIC_SCHEME) or {},
+            version_missing={
+                str(k): [int(f) for f in v]
+                for k, v in json.loads(header.get("MPVMISS", "{}")).items()
+            },
         )
         return cs, _read_meta(header), Provenance.from_header(header)
 

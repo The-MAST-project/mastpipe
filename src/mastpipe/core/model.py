@@ -163,7 +163,13 @@ class MasterCalib:
 
 @dataclass(eq=False)
 class CalibrationSet:
-    """The calibration inputs for one detector: masters, scaling times and noise model."""
+    """The calibration inputs for one detector: masters, scaling times and noise model.
+
+    ``bias_variance``, ``background_variance`` and ``dark_rate_variance`` are the per-pixel
+    variances of the bias and background masters and of the dark rate (ADU², ADU² s⁻²);
+    ``None`` where unknown (no master, or a master read from a product that stored no
+    variance), which counts as zero in the calibrated frame's error budget.
+    """
 
     bias: np.ndarray | None
     dark_rate: np.ndarray | float
@@ -172,6 +178,9 @@ class CalibrationSet:
     gain: float
     read_noise: float
     shape: tuple[int, int]
+    bias_variance: np.ndarray | None = None
+    background_variance: np.ndarray | None = None
+    dark_rate_variance: np.ndarray | None = None
 
 
 @dataclass(eq=False)
@@ -347,7 +356,11 @@ def make_identifier(instrument: str, configuration: str, fiber_preset: str, crea
 
 @dataclass(eq=False)
 class DriftModel:
-    """Shift and stretch of the calibration fibers against a reference, smoothed across y."""
+    """Shift and stretch of the calibration fibers against a reference, smoothed across y.
+
+    ``n_usable`` is the number of arc fibers the across-``y`` model was fitted to; given as
+    ``None`` it is counted from ``per_fiber["usable"]``, so it is an ``int`` once built.
+    """
 
     arc_checksums: tuple[str, ...]
     arc_mid_time: str
@@ -357,9 +370,12 @@ class DriftModel:
     scatter_px: float
     usable: bool
     n_pix: int
+    n_usable: int | None = None
 
     def __post_init__(self) -> None:
         _check_columns("per_fiber", self.per_fiber, PER_FIBER_COLUMNS)
+        if self.n_usable is None:
+            self.n_usable = int(self.per_fiber["usable"].astype(bool).sum())
 
     def shift_at(self, y: float | np.ndarray) -> float | np.ndarray:
         """Pixel shift at trace centre ``y``."""
@@ -372,7 +388,11 @@ class DriftModel:
 
 @dataclass(eq=False)
 class CombinedSpectrum:
-    """Spectra of one target combined on a common grid, version by version."""
+    """Spectra of one target combined on a common grid, version by version.
+
+    ``version_missing`` maps a version some contributors lack to those contributors'
+    fibers (sorted); such a version is combined from the contributors that carry it.
+    """
 
     target: str
     wavelength: np.ndarray
@@ -381,6 +401,7 @@ class CombinedSpectrum:
     excluded: pd.DataFrame
     grouping: str
     barycentric: dict[str, float]
+    version_missing: dict[str, list[int]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         n = len(self.wavelength)

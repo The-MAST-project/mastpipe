@@ -5,15 +5,16 @@ Every contributor is resampled onto the grid of :func:`common_grid` (the union o
 contributors' coverage at the finest dispersion among them, log-uniform by default) and the
 contributors are averaged pixel by pixel with inverse-variance weights, with one pass of
 sigma clipping about the weighted mean where at least three contributors are unmasked.
-Every version present in all contributors is combined separately and stored under the same
-key, the raw extraction under ``"raw"`` (see
-:data:`mastpipe.core.model.COMBINED_VERSIONS`), so the combined product carries the same
-stages as its inputs. Spectra that do not take part are never dropped silently: the
-``excluded`` table lists each one with its reason, whether it was excluded by configuration
-(``include`` / ``exclude`` telescope lists), rejected on quality (``reject``), or had no
-wavelength grid. ``Spectrum`` carries no source file name, so the ``source`` column of
-both tables is empty in this plan; the runner knows the exposure the combination came
-from. Everything here is pure: dataclasses and a parameter model in, a dataclass out.
+Every version present in any contributor is combined separately, from the contributors that
+carry it, and stored under the same key, the raw extraction under ``"raw"`` (see
+:data:`mastpipe.core.model.COMBINED_VERSIONS`), so the combined product carries every stage
+of its inputs; ``version_missing`` lists, per version, the fibers that lack it. Spectra
+that do not take part are never dropped silently: the ``excluded`` table lists each one
+with its reason, whether it was excluded by configuration (``include`` / ``exclude``
+telescope lists), rejected on quality (``reject``), or had no wavelength grid. ``Spectrum``
+carries no source file name, so the ``source`` column of both tables is empty in this plan;
+the runner knows the exposure the combination came from. Everything here is pure:
+dataclasses and a parameter model in, a dataclass out.
 """
 
 from __future__ import annotations
@@ -284,7 +285,9 @@ def combine_spectra(
     unmasked contributors (never emptying a pixel; a non-positive ``clip_sigma`` disables
     the clipping). The raw extractions are combined under ``"raw"`` and every
     version of :data:`mastpipe.core.model.VERSIONS` (up to ``version`` when given) that
-    all contributors carry is combined separately under its own key. ``contributors`` holds
+    any contributor carries is combined separately under its own key, from the
+    contributors that carry it; ``version_missing`` maps each version some contributors
+    lack to their fibers (sorted), so a version is never dropped silently. ``contributors`` holds
     ``fiber, telescope, source, weight`` with the weight the contributor's mean share of
     the raw combination's weights (``1 / n`` when no pixel was combined); ``source`` is
     empty, since a :class:`Spectrum` carries no file name. ``grouping`` is
@@ -313,20 +316,24 @@ def combine_spectra(
     if kept:
         wavelength = common_grid(kept, log=params.log_grid)
         allowed = VERSIONS if version is None else VERSIONS[: VERSIONS.index(version) + 1]
-        keys = [key for key in allowed if all(key in s.versions for s in kept)]
+        keys = [key for key in allowed if any(key in s.versions for s in kept)]
     else:
         wavelength = np.zeros(0, dtype=float)
 
     versions: dict[str, SpectrumVersion] = {}
+    version_missing: dict[str, list[int]] = {}
     shares = np.zeros((len(kept), len(wavelength)))
     if kept:
         for key in (None, *keys):
+            carriers = kept if key is None else [s for s in kept if key in s.versions]
             combined, share = _weighted_mean(
-                *_stack(kept, key, wavelength), clip_sigma=params.clip_sigma
+                *_stack(carriers, key, wavelength), clip_sigma=params.clip_sigma
             )
             versions["raw" if key is None else key] = combined
             if key is None:
                 shares = share
+            elif len(carriers) < len(kept):
+                version_missing[key] = sorted(int(s.fiber) for s in kept if key not in s.versions)
     else:
         empty = np.zeros(0, dtype=float)
         versions["raw"] = SpectrumVersion(empty, empty.copy(), np.zeros(0, dtype=bool))
@@ -347,4 +354,5 @@ def combine_spectra(
         excluded=_rows(excluded, "reason", EXCLUDED_COLUMNS),
         grouping=GROUPING,
         barycentric=dict(barycentric or {}),
+        version_missing=version_missing,
     )

@@ -172,6 +172,8 @@ def test_blend_drifts_weights_two_models():
     assert blended.n_pix == N_PIX
     assert blended.scatter_px == pytest.approx(0.05)
     assert blended.usable is True
+    # the fewest usable arc fibers of the blended models, not a count of the merged table
+    assert (first.n_usable, second.n_usable, blended.n_usable) == (2, 1, 1)
     table = blended.per_fiber.set_index("fiber")
     assert sorted(table.index) == [0, 20, 44]
     assert table.loc[0, "shift_px"] == pytest.approx(0.3 * 0.2 + 0.7 * 1.2)

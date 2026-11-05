@@ -226,6 +226,8 @@ def _arc_lines(
         gain=detector.gain,
         read_noise=detector.read_noise,
         shape=shape,
+        bias_variance=None if bias is None else bias[0].variance,
+        background_variance=None if background is None else background[0].variance,
     )
     subtract_background = background is not None and params.calib.subtract_background
     arc = calibrate_frame(frame, calib, subtract_background, saturation=detector.saturation)
@@ -265,7 +267,7 @@ def _arc_lines(
     spectra = extract_aperture(arc, traceset, params.extract)
     spectra = continuum_subtract_all(spectra, params.extract)
     fluxes = [spectrum.flux - spectrum.continuum for spectrum in spectra]
-    tables, _ = find_lines(arc.data, arc.variance, traceset, params.lines)
+    tables, _ = find_lines(arc.data, arc.variance, traceset, params.lines, mask=arc.mask)
     steps += ["extract", "continuum", "lines"]
     return ArcLines(
         frame=arc,

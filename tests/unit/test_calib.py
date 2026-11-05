@@ -1,6 +1,8 @@
 """Tests for the calibration step: stacking, masters, the calibration set and frame
 calibration, checked against hand-computed values."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -287,3 +289,68 @@ def test_variance_and_saturation_mask():
     # without a saturation level only non-finite and input-masked pixels are flagged
     out_nosat = calibrate_frame(sci, calib, subtract_background=True)
     assert out_nosat.mask.sum() == 2 and out_nosat.mask[3, 5] and out_nosat.mask[3, 0]
+
+
+def test_master_variance_enters_the_error_budget():
+    rng = np.random.default_rng(3)
+    bias_variance = rng.uniform(0.5, 2.0, SHAPE).astype(np.float32)
+    background_variance = rng.uniform(1.0, 3.0, SHAPE).astype(np.float32)
+    dark_rate_variance = rng.uniform(1e-4, 1e-3, SHAPE).astype(np.float32)
+    base = CalibrationSet(
+        bias=np.full(SHAPE, 500.0, dtype=np.float32),
+        dark_rate=0.1,
+        background=np.full(SHAPE, 560.0, dtype=np.float32),
+        t_background=6.0,
+        gain=2.0,
+        read_noise=4.0,
+        shape=SHAPE,
+    )
+    sci = frame(1000.0, "science", 12.0)
+    plain_bkg = calibrate_frame(sci, base, subtract_background=True)
+    plain_dark = calibrate_frame(sci, base, subtract_background=False)
+
+    # the same frame with a bias variance: on the dark path (dark_rate_variance unset) the
+    # variance is larger by exactly bias_variance, up to float32 rounding
+    with_bias = replace(base, bias_variance=bias_variance)
+    out = calibrate_frame(sci, with_bias, subtract_background=False)
+    assert np.allclose(out.variance - plain_dark.variance, bias_variance, rtol=0.0, atol=1e-4)
+    assert np.array_equal(out.data, plain_dark.data)
+
+    # background path: bias_variance + (t / t_bkg)^2 (background_variance + bias_variance)
+    full = replace(
+        base,
+        bias_variance=bias_variance,
+        background_variance=background_variance,
+        dark_rate_variance=dark_rate_variance,
+    )
+    scale = 12.0 / 6.0
+    out = calibrate_frame(sci, full, subtract_background=True)
+    expected = bias_variance + scale**2 * (background_variance + bias_variance)
+    assert np.allclose(out.variance - plain_bkg.variance, expected, rtol=0.0, atol=1e-4)
+    # dark path: bias_variance + t^2 dark_rate_variance
+    out = calibrate_frame(sci, full, subtract_background=False)
+    expected = bias_variance + 12.0**2 * dark_rate_variance
+    assert np.allclose(out.variance - plain_dark.variance, expected, rtol=0.0, atol=1e-4)
+
+
+def test_calibration_set_carries_the_master_variances():
+    biases = [frame(v, "bias", 0.0) for v in (499.0, 500.0, 502.0)]
+    darks = [frame(v, "dark", 300.0) for v in (528.0, 530.0, 533.0)]
+    backgrounds = [frame(v, "background", 6.0) for v in (557.0, 560.0, 561.0)]
+    bias = build_master(biases, "bias", CalibParams())
+    dark = build_master(darks, "dark", CalibParams())
+    bkg = build_master(backgrounds, "background", CalibParams())
+    assert bias.variance is not None and (bias.variance > 0).all()
+
+    calib = build_calibration_set(bias, dark, bkg, DET)
+    assert np.array_equal(calib.bias_variance, bias.variance)
+    assert np.array_equal(calib.background_variance, bkg.variance)
+    assert np.allclose(calib.dark_rate_variance, (dark.variance + bias.variance) / 300.0**2)
+
+    # a master without a variance (a library product that did not store one) counts as zero
+    bare = replace(bias, variance=None)
+    calib = build_calibration_set(bare, dark, None, DET)
+    assert calib.bias_variance is None and calib.background_variance is None
+    assert np.allclose(calib.dark_rate_variance, dark.variance / 300.0**2)
+    no_dark_rate = build_calibration_set(bias, None, None, DET)
+    assert no_dark_rate.dark_rate_variance is None

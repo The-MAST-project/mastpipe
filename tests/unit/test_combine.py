@@ -256,9 +256,33 @@ def test_versions_combined_separately():
     assert np.median(cs.versions["raw"].flux) == pytest.approx(CONTINUUM, abs=1.0)
     assert np.median(cs.versions["skysub"].flux) == pytest.approx(CONTINUUM - 10.0, abs=1.0)
 
-    del spectra[2].versions["skysub"]
+    assert cs.version_missing == {}
+
+
+def test_combine_keeps_a_version_some_contributors_lack():
+    """A version carried by some contributors is combined from those that carry it and the
+    fibers without it are listed, never dropped silently."""
+    rng = np.random.default_rng(11)
+    spectra = noisy_copies(rng, n_copies=3)
+    for spectrum in spectra[:2]:
+        spectrum.versions["skysub"] = SpectrumVersion(
+            flux=spectrum.flux - 10.0, error=spectrum.error.copy(), mask=spectrum.mask.copy()
+        )
     cs = combine_spectra(spectra, "star", CombineParams(log_grid=False))
-    assert set(cs.versions) == {"raw"}
+    assert set(cs.versions) == {"raw", "skysub"}
+    assert cs.version_missing == {"skysub": [spectra[2].fiber]}
+    assert len(cs.contributors) == 3
+    # the version is the mean of the two that carry it, so its error is that of two
+    two = combine_spectra(spectra[:2], "star", CombineParams(log_grid=False))
+    np.testing.assert_allclose(cs.versions["skysub"].flux, two.versions["skysub"].flux)
+    np.testing.assert_allclose(cs.versions["skysub"].error, two.versions["skysub"].error)
+    assert two.version_missing == {}
+
+    # a version only one contributor carries is still kept
+    spectra[1].versions.pop("skysub")
+    cs = combine_spectra(spectra, "star", CombineParams(log_grid=False))
+    assert set(cs.versions) == {"raw", "skysub"}
+    assert cs.version_missing == {"skysub": [spectra[1].fiber, spectra[2].fiber]}
 
 
 def test_version_cap_limits_combined_versions():

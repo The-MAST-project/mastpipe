@@ -420,6 +420,31 @@ def test_spectra_roundtrip_with_versions_and_drift(tmp_path):
         assert json.loads(primary["MPMV08"]) == [1, 1]
 
 
+def test_drift_n_usable_round_trips_and_mpduse_says_why(tmp_path):
+    rng = np.random.default_rng(3)
+    es = ExposureSpectra(
+        meta=META,
+        spectra=[make_spectrum(0, rng, with_versions=False)],
+        wavelength_status="transferred",
+        reference_id="highspec_Mg_survey45_20261001T180000",
+        reference_hash="0011223344aa",
+        drift_arcs=(CHECKSUMS[1], CHECKSUMS[2]),
+    )
+    drift = replace(make_drift(), usable=False, n_usable=2)
+    path = tmp_path / product_name(META, "spec")
+    write_spectra(path, es, make_provenance(), drift)
+    _, _, back = read_spectra(path)
+    assert back is not None and back.n_usable == 2 and back.usable is False
+    with fits.open(path, mode="update") as hdul:
+        header = hdul["DRIFT"].header
+        assert header["MPDNUSE"] == 2 and header["MPDUSE"] is False
+        assert "2 usable arc fibers" in header.comments["MPDUSE"]
+        del header["MPDNUSE"]
+    # a product written before the card existed derives the count from the fiber table
+    _, _, back = read_spectra(path)
+    assert back is not None and back.n_usable == 2
+
+
 def make_drift() -> DriftModel:
     return DriftModel(
         arc_checksums=(CHECKSUMS[1], CHECKSUMS[2]),
@@ -451,6 +476,7 @@ def assert_drift_equal(actual: DriftModel, expected: DriftModel) -> None:
     assert_arrays_equal(actual.stretch_coeffs, expected.stretch_coeffs)
     assert actual.scatter_px == pytest.approx(expected.scatter_px)
     assert actual.usable is expected.usable
+    assert actual.n_usable == expected.n_usable
     assert actual.n_pix == expected.n_pix
     assert actual.shift_at(100.0) == pytest.approx(expected.shift_at(100.0))
 
@@ -672,6 +698,7 @@ def test_combined_roundtrip(tmp_path):
         excluded=excluded,
         grouping="exposure",
         barycentric={"bjd_tdb": 2461000.5, "rv_kms": 12.25},
+        version_missing={"skysub": [4]},
     )
     prov = make_provenance()
     path = tmp_path / combined_name(META, cs.target)
@@ -680,6 +707,7 @@ def test_combined_roundtrip(tmp_path):
     assert prov_back == prov and meta_back == META
     assert back.target == "HD 1234" and back.grouping == "exposure"
     assert back.barycentric == cs.barycentric
+    assert back.version_missing == {"skysub": [4]}
     assert_arrays_equal(back.wavelength, wavelength)
     assert set(back.versions) == {"raw", "skysub"}
     assert_version_equal(back.versions["raw"], raw)
@@ -695,12 +723,17 @@ def test_combined_roundtrip(tmp_path):
         assert header["MPTARGET"] == "HD 1234" and header["MPGROUP"] == "exposure"
         assert header["MPBCK01"] == "bjd_tdb" and json.loads(header["MPBCV01"]) == 2461000.5
         assert len(hdul["CONTRIB"].data) == 2 and len(hdul["EXCLUDED"].data) == 1
+        assert json.loads(header["MPVMISS"]) == {"skysub": [4]}
 
-    empty = replace(cs, excluded=excluded.iloc[:0], versions={"raw": raw})
+    empty = replace(cs, excluded=excluded.iloc[:0], versions={"raw": raw}, version_missing={})
     write_combined(tmp_path / "empty.fits", empty, META, prov)
     back, _, _ = read_combined(tmp_path / "empty.fits")
     assert len(back.excluded) == 0 and list(back.excluded.columns) == list(excluded.columns)
-    assert set(back.versions) == {"raw"}
+    assert set(back.versions) == {"raw"} and back.version_missing == {}
+    # a product written before the card existed reads as nothing missing
+    with fits.open(path, mode="update") as hdul:
+        del hdul[0].header["MPVMISS"]
+    assert read_combined(path)[0].version_missing == {}
 
 
 # -------------------------------------------------------------------------------------- qc

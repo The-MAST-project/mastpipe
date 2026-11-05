@@ -32,6 +32,7 @@ from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.geometry import grating_geometry
+from mastpipe.steps.lines import find_lines
 from mastpipe.steps.wavecal import wavelength_map
 from tests.conftest import truth_model
 
@@ -356,6 +357,23 @@ def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
     assert lines2.steps[2] == "traces given (3 found, 0 missing)"
     assert lines2.traceset is lines.traceset
     assert not (tmp_path / "calib").exists()
+
+
+def test_arc_lines_passes_the_calibrated_mask_to_find_lines(
+    sim_night_lab3, highspec_effective, lab3_layout, tmp_path, monkeypatch
+):
+    """The arc's saturation mask reaches the line finder, which flags lines through it."""
+    night_dir, truth = sim_night_lab3
+    row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("mask"))
+        return find_lines(*args, **kwargs)
+
+    monkeypatch.setattr(identify, "find_lines", spy)
+    lines = _arc_lines(night_dir / str(row["file"]), highspec_effective, lab3_layout, tmp_path)
+    assert len(seen) == 1 and seen[0] is lines.frame.mask and seen[0] is not None
 
 
 # ------------------------------------------------------------------------------- solve
