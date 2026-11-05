@@ -35,9 +35,7 @@ BASELINE_WINDOW = 2001
 BASELINE_PERCENTILE = 10
 
 
-def load_murphy_atlas(
-    folder: Path, band: tuple[float, float], pad: float = 0.5
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_murphy_atlas(folder: Path, band: tuple[float, float], pad: float = 0.5) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Atlas spectrum and catalogue over ``band`` (air nm) from the atlas ``folder``.
 
     The spectrum file is a 2-D image whose row 0 is the flux on a log-linear wavelength
@@ -69,9 +67,7 @@ def load_murphy_atlas(
         encoding="utf-8",
     )
     catalogue["wavelength"] = catalogue["wavelength"].astype(float) / 10.0
-    catalogue["species"] = (catalogue["element"] + " " + catalogue["ion"]).str.replace(
-        r" [01]$", "", regex=True
-    )
+    catalogue["species"] = (catalogue["element"] + " " + catalogue["ion"]).str.replace(r" [01]$", "", regex=True)
     in_band = (catalogue["wavelength"] >= band[0]) & (catalogue["wavelength"] <= band[1])
     return spectrum, catalogue.loc[in_band].reset_index(drop=True)
 
@@ -161,9 +157,7 @@ def synthetic_atlas(
     wave = np.arange(band[0], band[1], step_nm)
     sigma = 0.5 * (band[0] + band[1]) / R / GAUSSIAN_FWHM / 4.0
     flux = np.full_like(wave, 10.0)
-    for wl, logI in zip(
-        cat["wavelength"].to_numpy(dtype=float), cat["logI"].to_numpy(dtype=float), strict=True
-    ):
+    for wl, logI in zip(cat["wavelength"].to_numpy(dtype=float), cat["logI"].to_numpy(dtype=float), strict=True):
         flux += 10.0**logI * np.exp(-0.5 * ((wave - wl) / sigma) ** 2)
     flux += rng.normal(0.0, noise, wave.size)
     return wave, flux

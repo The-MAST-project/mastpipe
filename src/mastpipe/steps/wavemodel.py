@@ -270,9 +270,7 @@ def fit_model(
     lo, hi = [-np.inf, -np.inf], [np.inf, np.inf]
     scale = [1e2, 1e4]
     if B_bound_frac is not None:
-        lo[1], hi[1] = sorted(
-            [sign * geom.B_nom * (1.0 - B_bound_frac), sign * geom.B_nom * (1.0 + B_bound_frac)]
-        )
+        lo[1], hi[1] = sorted([sign * geom.B_nom * (1.0 - B_bound_frac), sign * geom.B_nom * (1.0 + B_bound_frac)])
     if fit_alpha:
         p0.append(model.alpha)
         scale.append(1e-3)
@@ -313,9 +311,7 @@ def fit_model(
     return fitted, model_x(result.x) - x
 
 
-def anchor_model(
-    pairs: list[tuple[float, float]], geom: GratingGeometry, n_pix: int
-) -> GratingModel:
+def anchor_model(pairs: list[tuple[float, float]], geom: GratingGeometry, n_pix: int) -> GratingModel:
     """The grating model through ``(wavelength nm, pixel)`` anchor pairs.
 
     Least squares of ``x = x_c + B tan(theta(lam))`` at the design ``alpha``: two pairs fix

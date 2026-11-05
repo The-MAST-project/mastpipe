@@ -329,12 +329,7 @@ def _by_exposure(refs: list[FrameRef]) -> list[list[FrameRef]]:
 
 
 def _median_snr(spectrum: Spectrum) -> float | None:
-    good = (
-        ~spectrum.mask
-        & np.isfinite(spectrum.flux)
-        & np.isfinite(spectrum.error)
-        & (spectrum.error > 0)
-    )
+    good = ~spectrum.mask & np.isfinite(spectrum.flux) & np.isfinite(spectrum.error) & (spectrum.error > 0)
     if not good.any():
         return None
     return float(np.median(spectrum.flux[good] / spectrum.error[good]))
@@ -376,16 +371,12 @@ def _calibrated(group: _Group, ref: FrameRef, cosmics: bool = False) -> tuple[Fr
     assert calib is not None
     frame = load_frame(ref, detector)
     subtract = params.calib.subtract_background and calib.background is not None
-    out = calibrate_frame(
-        frame, calib, subtract_background=subtract, saturation=detector.saturation
-    )
+    out = calibrate_frame(frame, calib, subtract_background=subtract, saturation=detector.saturation)
     steps = calibration_steps(calib, float(ref.meta.exposure_time or 0.0), subtract)
     if cosmics:
         assert out.variance is not None
         before = 0 if out.mask is None else int(out.mask.sum())
-        mask = flag_cosmic_rays(
-            out.data, out.variance, out.mask, params.calib.cosmic_sigma, params.calib.cosmic_size
-        )
+        mask = flag_cosmic_rays(out.data, out.variance, out.mask, params.calib.cosmic_sigma, params.calib.cosmic_size)
         out = Frame(data=out.data, meta=out.meta, variance=out.variance, mask=mask)
         steps.append(
             f"cosmic rays: {int(mask.sum()) - before} px flagged "
@@ -405,9 +396,7 @@ def _timezone(metas: Iterable[FrameMeta]) -> str | None:
     return ",".join(zones) if zones else None
 
 
-def _master_provenance(
-    group: _Group, frames: list[Frame], calibrations: list[str], steps: list[str]
-) -> Provenance:
+def _master_provenance(group: _Group, frames: list[Frame], calibrations: list[str], steps: list[str]) -> Provenance:
     return Provenance(
         pipeline_version=__version__,
         config_hash=group.cfg_hash,
@@ -493,9 +482,7 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
             calib = group.calib
             assert calib is not None
             subtract = group.params.calib.flat_subtract_background and calib.background is not None
-            frame = calibrate_frame(
-                frame, calib, subtract_background=subtract, saturation=detector.saturation
-            )
+            frame = calibrate_frame(frame, calib, subtract_background=subtract, saturation=detector.saturation)
         frames.append(frame)
 
     for ref in refs:
@@ -664,10 +651,7 @@ def _resolve_light(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
 def _content_steps(meta: FrameMeta) -> list[str]:
     """The provenance step recording a type resolved from the frame's content, if it was."""
     if meta.classification_rule in (ARC_LIKE, CONTINUUM):
-        return [
-            f"exposure type {meta.exposure_type} from the frame's content "
-            f"({meta.classification_rule})"
-        ]
+        return [f"exposure type {meta.exposure_type} from the frame's content ({meta.classification_rule})"]
     return []
 
 
@@ -706,9 +690,7 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     inputs: list[str] = []
     if "flat" in group.masters:
         master, path = group.masters["flat"]
-        flat_frame = Frame(
-            data=master.data, meta=_master_meta(group, master), variance=master.variance
-        )
+        flat_frame = Frame(data=master.data, meta=_master_meta(group, master), variance=master.variance)
         flat_name = [path.name]
         inputs = [str(c) for c in master.provenance.get("inputs", [])]
     arcs = [] if flat_frame is not None else _full_arc_candidates(group, by_type.get("arc", []))
@@ -719,16 +701,12 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     if source == "arc_full":
         trace_params = trace_params.model_copy(update={"collapse": "percentile"})
         inputs = [frame.meta.checksum]
-    matched = match_layout(
-        find_traces(frame.data, trace_params), group.layout, params.trace.layout_tolerance
-    )
+    matched = match_layout(find_traces(frame.data, trace_params), group.layout, params.trace.layout_tolerance)
     extras = [trace for trace in matched if trace.role is None]
     traceset = layout_indexed(matched)
     where = source.replace("_", " ")
     if len(traceset) == 0:
-        raise RuntimeError(
-            f"no trace of layout {group.preset} found on the {where} ({len(matched)} detected)"
-        )
+        raise RuntimeError(f"no trace of layout {group.preset} found on the {where} ({len(matched)} detected)")
     if extras:
         log.warning(
             "%d detection(s) on the %s match no row of layout %s and are dropped: y = %s",
@@ -776,12 +754,9 @@ def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     )
     group.traceset = traceset
     group.traces_path = path
-    group.throughput = (
-        relative_throughput(flat_frame, traceset, params.extract.halfwidth) if flat_frame else {}
-    )
+    group.throughput = relative_throughput(flat_frame, traceset, params.extract.halfwidth) if flat_frame else {}
     log.info(
-        "traces from the %s: %d of %d detections matched to layout %s, shift %s px, "
-        "missing %s, %d extra dropped -> %s",
+        "traces from the %s: %d of %d detections matched to layout %s, shift %s px, missing %s, %d extra dropped -> %s",
         where,
         len(traceset),
         len(matched),
@@ -805,9 +780,7 @@ def _reference_for(group: _Group, at_time: str | None) -> ReferenceSolution | No
     if group.options.reference_id is not None:
         ref = library.find_reference(*keys, identifier=group.options.reference_id)
         if ref is None:
-            raise KeyError(
-                f"reference {group.options.reference_id!r} is not in the library {library.root}"
-            )
+            raise KeyError(f"reference {group.options.reference_id!r} is not in the library {library.root}")
         return ref
     return library.find_reference(*keys, at_time=at_time)
 
@@ -1012,9 +985,7 @@ def _blend_drifts(
     stretch = np.zeros(n_stretch)
     for model, weight in pairs:
         shift[n_shift - len(model.shift_coeffs) :] += weight * np.asarray(model.shift_coeffs)
-        stretch[n_stretch - len(model.stretch_coeffs) :] += weight * np.asarray(
-            model.stretch_coeffs
-        )
+        stretch[n_stretch - len(model.stretch_coeffs) :] += weight * np.asarray(model.stretch_coeffs)
     tables = [(model.per_fiber.set_index("fiber"), weight) for model, weight in pairs]
     fibers = sorted({int(f) for table, _ in tables for f in table.index})
     rows: list[dict[str, Any]] = []
@@ -1149,12 +1120,9 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
     traceset = group.traces()
     spectra = extract_aperture(frame, traceset, params.extract)
     steps.append(
-        f"extract {params.extract.aperture} aperture of halfwidth {params.extract.halfwidth:g} "
-        f"({params.extract.method})"
+        f"extract {params.extract.aperture} aperture of halfwidth {params.extract.halfwidth:g} ({params.extract.method})"
     )
-    status, wavelengths, drift, weights, skipped = _wavelengths(
-        group, reference, pairs, frame.shape[1]
-    )
+    status, wavelengths, drift, weights, skipped = _wavelengths(group, reference, pairs, frame.shape[1])
     for spectrum in spectra:
         if spectrum.fiber in wavelengths:
             spectrum.wavelength = wavelengths[spectrum.fiber]
@@ -1164,9 +1132,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         if any(spectrum.fiber == fiber for spectrum in spectra)
     ]
     for item in withheld:
-        log.warning(
-            "%s: fiber %d is given no wavelength: %s", meta.source, item["fiber"], item["reason"]
-        )
+        log.warning("%s: fiber %d is given no wavelength: %s", meta.source, item["fiber"], item["reason"])
     if reference is None:
         steps.append("wavelength nominal from the configuration geometry")
     elif drift is None:
@@ -1177,10 +1143,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
             f"{len(pairs)} drift arc(s) ({group.drift_params.time_policy})"
         )
     if withheld:
-        steps.append(
-            f"wavelength withheld from {len(withheld)} fiber(s) whose trace is off the "
-            "reference's centre"
-        )
+        steps.append(f"wavelength withheld from {len(withheld)} fiber(s) whose trace is off the reference's centre")
     spectra, sky_reasons = subtract_sky_all(spectra, traceset, group.throughput, params.sky)
     n_sky = sum(1 for spectrum in spectra if "skysub" in spectrum.versions)
     steps.append(f"skysub: {n_sky} science fibers subtracted, {len(sky_reasons)} left raw")
@@ -1237,14 +1200,8 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
             "telescopes": [s.telescope for s in spectra],
             "median_snr": [_median_snr(s) for s in spectra],
             "masked_fraction": [float(np.mean(s.mask)) for s in spectra],
-            "drift_shift_px": [
-                None if drift is None else float(drift.shift_at(traces[s.fiber].y_center))
-                for s in spectra
-            ],
-            "drift_stretch": [
-                None if drift is None else float(drift.stretch_at(traces[s.fiber].y_center))
-                for s in spectra
-            ],
+            "drift_shift_px": [None if drift is None else float(drift.shift_at(traces[s.fiber].y_center)) for s in spectra],
+            "drift_stretch": [None if drift is None else float(drift.stretch_at(traces[s.fiber].y_center)) for s in spectra],
             "sky": sky_reasons,
         },
     )
@@ -1265,9 +1222,7 @@ def _combine_targets(group: _Group, es: ExposureSpectra, prov: Provenance) -> No
     meta = es.meta
     for target, members in group_by_target(es.spectra).items():
         if any(spectrum.target is None for spectrum in members):
-            log.info(
-                "%s: %d science fibers without a target are not combined", meta.source, len(members)
-            )
+            log.info("%s: %d science fibers without a target are not combined", meta.source, len(members))
             continue
         try:
             cs = combine_spectra(es.spectra, target, group.params.combine, version=None)
@@ -1340,9 +1295,7 @@ def _run_group(
     # may be science (light ones included, before their content is known)
     candidates = sorted(by_type.get("science", []) + by_type.get("light", []), key=_time_key)
     first = candidates[0].meta if candidates else refs[0].meta
-    temperatures = [
-        m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None
-    ]
+    temperatures = [m.detector_temperature for m in (r.meta for r in refs) if m.detector_temperature is not None]
     readout_key, amplifier = _group_readout(refs)
     group = _Group(
         effective=effective,
@@ -1448,9 +1401,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 log.info("skipped %s: not camera %s", label, options.camera)
                 continue
             if configuration is None:
-                summary.failed.append(
-                    (label, f"configuration unknown; pass --configuration one of {GRATING_NAMES}")
-                )
+                summary.failed.append((label, f"configuration unknown; pass --configuration one of {GRATING_NAMES}"))
                 log.error("%s: configuration unknown, group skipped", label)
                 continue
             try:

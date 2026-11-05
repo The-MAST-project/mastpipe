@@ -126,13 +126,7 @@ def test_frame_never_receives_drift_fitted_against_another_reference(policy):
     # fifteen minutes away (nearest_before alone is safe: no B arc precedes the frame)
     unfiltered = pair_arcs(frame, [(m, d) for m, d, _ in arcs], ref_a, params)
     taken = sorted(c for model, _ in unfiltered for c in model.arc_checksums)
-    assert taken == (
-        ["a1"]
-        if policy == "nearest_before"
-        else ["a1", "b1"]
-        if policy == "interpolate"
-        else ["b1"]
-    )
+    assert taken == (["a1"] if policy == "nearest_before" else ["a1", "b1"] if policy == "interpolate" else ["b1"])
     # a frame after B's time uses B and only B's arcs
     later = make_meta("2026-10-01T21:20:00", "sci2", exposure_type="science")
     theirs = _arcs_for(arcs, ref_b)
@@ -154,17 +148,11 @@ def test_blend_drifts_weights_two_models():
     fibers_a = {0: (0.2, 1e-5, 20, 0.02, True), 20: (0.4, 1e-5, 18, 0.03, True)}
     fibers_b = {0: (1.2, 3e-5, 15, 0.04, True), 44: (1.6, 3e-5, 16, 0.01, False)}
     first = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers_a, scatter_px=0.02)
-    second = make_drift(
-        "bbb", "2026-10-01T21:00:00", [2e-3, 1.2], [0.0, 3e-5], fibers_b, scatter_px=0.05
-    )
+    second = make_drift("bbb", "2026-10-01T21:00:00", [2e-3, 1.2], [0.0, 3e-5], fibers_b, scatter_px=0.05)
     blended, weights = _blend_drifts([(first, 0.3), (second, 0.7)])
     for y in (10.0, 300.0):
-        assert blended.shift_at(y) == pytest.approx(
-            0.3 * first.shift_at(y) + 0.7 * second.shift_at(y)
-        )
-        assert blended.stretch_at(y) == pytest.approx(
-            0.3 * first.stretch_at(y) + 0.7 * second.stretch_at(y)
-        )
+        assert blended.shift_at(y) == pytest.approx(0.3 * first.shift_at(y) + 0.7 * second.shift_at(y))
+        assert blended.stretch_at(y) == pytest.approx(0.3 * first.stretch_at(y) + 0.7 * second.stretch_at(y))
     # right-aligned coefficients: the constant model contributes to the last slot only
     assert blended.shift_coeffs == pytest.approx([0.7 * 2e-3, 0.3 * 0.2 + 0.7 * 1.2])
     assert blended.stretch_coeffs == pytest.approx([0.0, 0.3 * 1e-5 + 0.7 * 3e-5])
@@ -341,9 +329,7 @@ def test_group_readout_follows_the_science_frames():
 
 def usable_group(on_error: str = "continue") -> SimpleNamespace:
     """The parts of a ``_Group`` that :func:`_usable_frames` reads."""
-    detector = SimpleNamespace(
-        shape=(8, 10), crop=None, transpose=False, flip_x=False, flip_y=False
-    )
+    detector = SimpleNamespace(shape=(8, 10), crop=None, transpose=False, flip_x=False, flip_y=False)
     return SimpleNamespace(
         effective=SimpleNamespace(detector=detector),
         binning=(1, 1),
@@ -369,9 +355,7 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
         ref = binned_ref(name, "bias", binning)
         refs.append(FrameRef(path=tmp_path / name, extension=0, meta=ref.meta))
     (tmp_path / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
-    refs.insert(
-        1, FrameRef(tmp_path / "junk.fits", 0, binned_ref("junk.fits", "bias", (1, 1)).meta)
-    )
+    refs.insert(1, FrameRef(tmp_path / "junk.fits", 0, binned_ref("junk.fits", "bias", (1, 1)).meta))
 
     group = usable_group()
     frames = _usable_frames(group, refs, calibrate=False)

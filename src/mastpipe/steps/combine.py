@@ -87,9 +87,7 @@ def common_grid(spectra: list[Spectrum], log: bool = True) -> np.ndarray:
     spectrum has a wavelength grid with at least two unmasked pixels.
     """
     coverages = [
-        _coverage(spectrum)
-        for spectrum in spectra
-        if spectrum.wavelength is not None and len(spectrum.wavelength) >= 2
+        _coverage(spectrum) for spectrum in spectra if spectrum.wavelength is not None and len(spectrum.wavelength) >= 2
     ]
     coverages = [coverage for coverage in coverages if coverage is not None]
     if not coverages:
@@ -147,9 +145,7 @@ def _reject(
         if np.isfinite(group_median) and group_median > 0:
             ratio = median / group_median
             if not (ratio >= params.reject_flux_ratio):
-                rejected.append(
-                    (spectrum, f"flux ratio {ratio:.3g} below min {params.reject_flux_ratio}")
-                )
+                rejected.append((spectrum, f"flux ratio {ratio:.3g} below min {params.reject_flux_ratio}"))
                 continue
         if params.reject_drift_px is not None and qc is not None:
             drift = (qc.get(spectrum.fiber) or {}).get("drift_px")
@@ -194,11 +190,7 @@ def _stack(
     contributors' version ``key`` (``None`` for the raw extraction) on ``wavelength``."""
     rows = []
     for spectrum in contributors:
-        version = (
-            SpectrumVersion(spectrum.flux, spectrum.error, spectrum.mask)
-            if key is None
-            else spectrum.versions[key]
-        )
+        version = SpectrumVersion(spectrum.flux, spectrum.error, spectrum.mask) if key is None else spectrum.versions[key]
         rows.append(_resampled(spectrum, version, wavelength))
     flux = np.array([row[0] for row in rows], dtype=float)
     error = np.array([row[1] for row in rows], dtype=float)
@@ -326,9 +318,7 @@ def combine_spectra(
     if kept:
         for key in (None, *keys):
             carriers = kept if key is None else [s for s in kept if key in s.versions]
-            combined, share = _weighted_mean(
-                *_stack(carriers, key, wavelength), clip_sigma=params.clip_sigma
-            )
+            combined, share = _weighted_mean(*_stack(carriers, key, wavelength), clip_sigma=params.clip_sigma)
             versions["raw" if key is None else key] = combined
             if key is None:
                 shares = share
@@ -343,9 +333,7 @@ def combine_spectra(
         weights = shares[:, combined_pixels].mean(axis=1)
     else:
         weights = np.full(len(kept), 1.0 / len(kept) if kept else 0.0)
-    contributors = _rows(
-        list(zip(kept, (float(w) for w in weights), strict=True)), "weight", CONTRIBUTOR_COLUMNS
-    )
+    contributors = _rows(list(zip(kept, (float(w) for w in weights), strict=True)), "weight", CONTRIBUTOR_COLUMNS)
     return CombinedSpectrum(
         target=target,
         wavelength=wavelength,

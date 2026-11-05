@@ -64,9 +64,7 @@ def registry_geometry(camera: str) -> Any:
     def lookup(instrument: str, configuration: str) -> GratingGeometry:
         definition = load_instrument(instrument)
         if camera not in definition.cameras:
-            raise KeyError(
-                f"unknown camera {camera!r} for {instrument}: {sorted(definition.cameras)}"
-            )
+            raise KeyError(f"unknown camera {camera!r} for {instrument}: {sorted(definition.cameras)}")
         block = definition.configurations[configuration]
         return grating_geometry(block.geometry, definition.cameras[camera].pixel_size_um)
 
@@ -107,9 +105,8 @@ class CalibLibrary:
     def _save(self) -> None:
         """Write the index atomically; callers hold the lock (see :meth:`_replace`)."""
         text = json.dumps(self._entries, indent=1, sort_keys=True, ensure_ascii=True)
-        with atomic_write(self.root / INDEX_FILE) as tmp:
-            with tmp.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(text + "\n")
+        with atomic_write(self.root / INDEX_FILE) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text + "\n")
 
     def _replace(self, key: str, value: Any, entry: dict[str, Any]) -> None:
         """Append ``entry``, dropping any entry whose ``key`` already equals ``value``.
@@ -232,11 +229,7 @@ class CalibLibrary:
         else:
             chosen = max(
                 matches,
-                key=lambda e: (
-                    to_utc(e["mid_time"])
-                    if e.get("mid_time")
-                    else pd.Timestamp.min.tz_localize("UTC")
-                ),
+                key=lambda e: to_utc(e["mid_time"]) if e.get("mid_time") else pd.Timestamp.min.tz_localize("UTC"),
             )
         path = self.root / str(chosen["path"])
         return read_master(path)[0], path
@@ -294,9 +287,7 @@ class CalibLibrary:
         self._replace("identifier", ref.identifier, entry)
         return path
 
-    def _reference_entries(
-        self, instrument: str, configuration: str, fiber_preset: str
-    ) -> list[dict[str, Any]]:
+    def _reference_entries(self, instrument: str, configuration: str, fiber_preset: str) -> list[dict[str, Any]]:
         return [
             e
             for e in self._entries

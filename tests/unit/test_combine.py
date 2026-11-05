@@ -137,9 +137,7 @@ def test_exclude_list_and_reason():
     assert list(cs.excluded["fiber"]) == [2]
     assert list(cs.excluded["reason"]) == ["excluded by configuration"]
 
-    cs = combine_spectra(
-        spectra, "star", CombineParams(include=["mast01", "mast02"], log_grid=False)
-    )
+    cs = combine_spectra(spectra, "star", CombineParams(include=["mast01", "mast02"], log_grid=False))
     assert list(cs.contributors["telescope"]) == ["mast01", "mast02"]
     assert sorted(cs.excluded["telescope"]) == ["mast03", "mast04"]
     assert set(cs.excluded["reason"]) == {"excluded by configuration"}
@@ -148,9 +146,7 @@ def test_exclude_list_and_reason():
 def test_rejection_low_snr_listed_not_dropped_silently():
     rng = np.random.default_rng(5)
     spectra = noisy_copies(rng)
-    spectra[1] = make_spectrum(
-        1, CONTINUUM + rng.normal(0, 60.0, N_PIX), grid(), telescope="mast02", error=60.0
-    )
+    spectra[1] = make_spectrum(1, CONTINUUM + rng.normal(0, 60.0, N_PIX), grid(), telescope="mast02", error=60.0)
     params = CombineParams(reject=True, reject_snr_min=3.0, log_grid=False)
     cs = combine_spectra(spectra, "star", params)
     assert list(cs.contributors["telescope"]) == ["mast01", "mast03", "mast04"]
@@ -167,9 +163,7 @@ def test_rejection_low_snr_listed_not_dropped_silently():
 def test_rejection_flux_ratio_and_drift():
     rng = np.random.default_rng(6)
     spectra = noisy_copies(rng)
-    spectra[2] = make_spectrum(
-        2, 0.1 * CONTINUUM + rng.normal(0, 0.5, N_PIX), grid(), telescope="mast03", error=0.5
-    )
+    spectra[2] = make_spectrum(2, 0.1 * CONTINUUM + rng.normal(0, 0.5, N_PIX), grid(), telescope="mast03", error=0.5)
     qc = {0: {"drift_px": 0.1}, 1: {"drift_px": 0.1}, 2: {"drift_px": 0.1}, 3: {"drift_px": 2.5}}
     params = CombineParams(reject=True, reject_drift_px=1.0, log_grid=False)
     cs = combine_spectra(spectra, "star", params, qc=qc)
@@ -230,9 +224,7 @@ def test_default_params_log_grid_fractional_offsets():
     cs = combine_spectra(spectra, "star", CombineParams())
     assert np.allclose(np.diff(np.log(cs.wavelength)), np.diff(np.log(cs.wavelength))[0])
     raw = cs.versions["raw"]
-    overlap = (cs.wavelength >= spectra[3].wavelength[0]) & (
-        cs.wavelength <= spectra[0].wavelength[-1]
-    )
+    overlap = (cs.wavelength >= spectra[3].wavelength[0]) & (cs.wavelength <= spectra[0].wavelength[-1])
     assert overlap.sum() > 150
     assert not raw.mask.any()  # every grid pixel is covered by at least one contributor
     assert np.std(raw.flux[overlap]) == pytest.approx(SIGMA / 2, rel=0.25)
@@ -332,9 +324,7 @@ def test_other_targets_and_no_wavelength_are_not_combined():
     other = make_spectrum(7, np.ones(N_PIX), grid(), telescope="mast08", target="other")
     sky = make_spectrum(8, np.ones(N_PIX), grid(), role="sky", telescope="mast01", target="star")
     bare = make_spectrum(9, np.ones(N_PIX), None, telescope="mast10", target="star")
-    cs = combine_spectra(
-        [*spectra, other, sky, bare], "star", CombineParams(log_grid=False), barycentric={"rv": 1.5}
-    )
+    cs = combine_spectra([*spectra, other, sky, bare], "star", CombineParams(log_grid=False), barycentric={"rv": 1.5})
     assert list(cs.contributors["fiber"]) == [0, 1]
     assert list(cs.excluded["fiber"]) == [9]
     assert cs.excluded["reason"].iloc[0] == "no wavelength"

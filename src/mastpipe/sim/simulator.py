@@ -302,9 +302,7 @@ def _assign_targets(layout: pd.DataFrame) -> pd.DataFrame:
     """The layout with a ``target`` column: telescopes in layout order, five per target."""
     telescopes = [t for t in layout["telescope"].tolist() if t is not None]
     unique = list(dict.fromkeys(telescopes))
-    target_of = {
-        tel: TARGETS[(i // TELESCOPES_PER_TARGET) % len(TARGETS)] for i, tel in enumerate(unique)
-    }
+    target_of = {tel: TARGETS[(i // TELESCOPES_PER_TARGET) % len(TARGETS)] for i, tel in enumerate(unique)}
     table = layout.copy()
     targets = [None if t is None else target_of[t] for t in layout["telescope"]]
     table["target"] = pd.Series(targets, index=table.index, dtype=object)
@@ -392,14 +390,10 @@ def _arc_spectra(scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: f
     x = np.arange(scene.n_pix, dtype=float)
     centres = drift_x(scene.line_x[rows], shifts[rows, None], stretch, scene.n_pix)
     peaks = ARC_PEAK_ADU * 10.0 ** (scene.line_logI - scene.line_logI.max()) * scene.column_factor
-    return np.array([_gaussian_comb(x, c, peaks, scene.sigma_px) for c in centres]).reshape(
-        -1, x.size
-    )
+    return np.array([_gaussian_comb(x, c, peaks, scene.sigma_px) for c in centres]).reshape(-1, x.size)
 
 
-def _science_spectra(
-    scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: float
-) -> np.ndarray:
+def _science_spectra(scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: float) -> np.ndarray:
     x = np.arange(scene.n_pix, dtype=float)
     lam = scene.wavelength_of(undrift_x(x, shifts[rows, None], stretch, scene.n_pix), rows)
     sigma_nm = ABSORPTION_FWHM_NM / GAUSSIAN_FWHM
@@ -438,9 +432,7 @@ def _fiber_fluxes(
 # ------------------------------------------------------------------------- frame builders
 
 
-def render_traces(
-    shape: tuple[int, int], coeffs: np.ndarray, fluxes: np.ndarray, fwhm_px: float
-) -> np.ndarray:
+def render_traces(shape: tuple[int, int], coeffs: np.ndarray, fluxes: np.ndarray, fwhm_px: float) -> np.ndarray:
     """Image of column spectra ``fluxes`` (one row per trace) spread along the traces with a
     Gaussian profile of ``fwhm_px``, normalised so a column's sum equals its flux."""
     ny, nx = shape
@@ -555,10 +547,7 @@ def _cards(
 ) -> dict[str, Any]:
     """The frame's header cards; ``unit_targets`` (telescope -> target) adds one
     ``OBJnn`` card per telescope unit, ``OBJECT`` staying the readable summary."""
-    per_unit = {
-        f"OBJ{unit_number(telescope):02d}": name
-        for telescope, name in sorted((unit_targets or {}).items())
-    }
+    per_unit = {f"OBJ{unit_number(telescope):02d}": name for telescope, name in sorted((unit_targets or {}).items())}
     return {
         "IMAGETYP": IMAGE_TYPES[exposure_type],
         "EXPOSURE": exposure,
@@ -648,9 +637,7 @@ def simulate_night(
     scene = _build_scene(effective, layout, line_table, rng, jitter_rng, dispersion_jitter_px)
     lit = scene.swapped(swap_rows)
     y_center = scene.y_center
-    schedule = _schedule(
-        n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science
-    )
+    schedule = _schedule(n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science)
     start = datetime.fromisoformat(night_start)
     kinds = [kind for _, kind in schedule]
     origin_seconds = (kinds.index("full") if "full" in kinds else 0) * cadence_min * 60.0
@@ -659,9 +646,7 @@ def simulate_night(
     targets = sorted({t for t in scene.layout["target"] if t is not None})
     science_object = "+".join(targets) if targets else "sim"
     unit_targets = {
-        row.telescope: row.target
-        for row in scene.layout.itertuples()
-        if pd.notna(row.telescope) and pd.notna(row.target)
+        row.telescope: row.target for row in scene.layout.itertuples() if pd.notna(row.telescope) and pd.notna(row.target)
     }
 
     rows: list[dict[str, Any]] = []
@@ -680,9 +665,7 @@ def simulate_night(
         index = counters.get(exposure_type, 0)
         counters[exposure_type] = index + 1
         name = f"sim_{exposure_type}_{index:02d}.fits"
-        data, cosmic = _build_frame(
-            lit, detector, exposure_type, arc_kind, exposure, shifts, stretch, cosmic_rays, rng
-        )
+        data, cosmic = _build_frame(lit, detector, exposure_type, arc_kind, exposure, shifts, stretch, cosmic_rays, rng)
         target = science_object if exposure_type == "science" else exposure_type
         cards = _cards(
             exposure_type,
@@ -709,9 +692,7 @@ def simulate_night(
 
     every_row = np.arange(len(scene.layout))
     undrifted = np.zeros(len(scene.layout))
-    nominal_x = np.asarray(
-        grating_x(scene.lines_nm, *scene.nominal, scene.geometry.alpha_rad, scene.geometry)
-    )
+    nominal_x = np.asarray(grating_x(scene.lines_nm, *scene.nominal, scene.geometry.alpha_rad, scene.geometry))
     truth = SimTruth(
         layout=scene.layout,
         trace_coeffs=scene.coeffs,
@@ -720,8 +701,7 @@ def simulate_night(
         lines_nm=scene.lines_nm,
         line_logI=scene.line_logI,
         line_pixels=scene.line_x,
-        lines_on_chip=(nominal_x >= ON_CHIP_MARGIN_PX)
-        & (nominal_x <= scene.n_pix - ON_CHIP_MARGIN_PX),
+        lines_on_chip=(nominal_x >= ON_CHIP_MARGIN_PX) & (nominal_x <= scene.n_pix - ON_CHIP_MARGIN_PX),
         throughput=scene.throughput,
         science_flux=_science_spectra(scene, every_row, undrifted, 0.0),
         sky_flux=_sky_spectra(scene, every_row, undrifted, 0.0),
@@ -773,10 +753,7 @@ def _records(table: pd.DataFrame) -> list[dict[str, Any]]:
     """Rows as JSON-native dicts: NaN becomes ``None``, numpy scalars become Python ones."""
     clean = table.astype(object).where(table.notna(), None)
     return [
-        {
-            key: (value.item() if isinstance(value, np.generic) else value)
-            for key, value in row.items()
-        }
+        {key: (value.item() if isinstance(value, np.generic) else value) for key, value in row.items()}
         for row in clean.to_dict("records")
     ]
 

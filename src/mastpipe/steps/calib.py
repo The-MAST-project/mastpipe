@@ -137,9 +137,7 @@ def build_master(frames: list[Frame], kind: str, params: CalibParams) -> MasterC
     shapes = {frame.data.shape for frame in frames}
     if len(shapes) != 1:
         raise ValueError(f"master {kind}: inputs have different shapes {sorted(shapes)}")
-    data, variance = stack_frames(
-        [frame.data for frame in frames], params.stack_method, params.clip_sigma
-    )
+    data, variance = stack_frames([frame.data for frame in frames], params.stack_method, params.clip_sigma)
     validity: dict[str, Any] = {
         "camera": metas[0].camera,
         "binning": metas[0].binning,
@@ -240,9 +238,7 @@ def build_calibration_set(
 # ------------------------------------------------------------------------- calibration
 
 
-def calibration_steps(
-    calib: CalibrationSet, t_frame: float, subtract_background: bool
-) -> list[str]:
+def calibration_steps(calib: CalibrationSet, t_frame: float, subtract_background: bool) -> list[str]:
     """The operations :func:`calibrate_frame` applies, as short strings for provenance."""
     steps: list[str] = []
     if calib.bias is not None:
@@ -250,9 +246,7 @@ def calibration_steps(
     if subtract_background:
         _check_background(calib)
         scale = float(t_frame) / float(calib.t_background)
-        steps.append(
-            f"background x {scale:.6g} (t {t_frame:g} s / t_background {calib.t_background:g} s)"
-        )
+        steps.append(f"background x {scale:.6g} (t {t_frame:g} s / t_background {calib.t_background:g} s)")
     elif np.any(np.asarray(calib.dark_rate) != 0.0):
         steps.append(f"dark_rate x {float(t_frame):g} s")
     return steps
@@ -288,9 +282,7 @@ def calibrate_frame(
         _check_background(calib)
     raw = np.asarray(frame.data, dtype=np.float32)
     if raw.shape != tuple(calib.shape):
-        raise ValueError(
-            f"{_label(frame.meta)}: shape {raw.shape} differs from calibration {calib.shape}"
-        )
+        raise ValueError(f"{_label(frame.meta)}: shape {raw.shape} differs from calibration {calib.shape}")
     bias = np.zeros_like(raw) if calib.bias is None else np.asarray(calib.bias, dtype=np.float32)
     signal = raw - bias
     if subtract_background:
@@ -301,9 +293,7 @@ def calibrate_frame(
     gain, read_noise = float(calib.gain), float(calib.read_noise)
     signal_e = np.clip(signal, 0.0, None) * gain
     variance = signal_e / gain**2 + (read_noise / gain) ** 2
-    variance = (variance + _master_variance(calib, float(t), subtract_background)).astype(
-        np.float32
-    )
+    variance = (variance + _master_variance(calib, float(t), subtract_background)).astype(np.float32)
     mask = ~np.isfinite(out)
     if saturation is not None:
         mask |= raw >= saturation
@@ -315,9 +305,7 @@ def calibrate_frame(
     return Frame(data=out.astype(np.float32), meta=frame.meta, variance=variance, mask=mask)
 
 
-def _master_variance(
-    calib: CalibrationSet, t: float, subtract_background: bool
-) -> np.ndarray | float:
+def _master_variance(calib: CalibrationSet, t: float, subtract_background: bool) -> np.ndarray | float:
     """The variance the subtracted masters add to a calibrated pixel, ADU². The bias array
     enters both subtractions, so with ``s = t / t_bkg`` (background) or ``s = t / t_dark``
     (dark) its coefficient is ``1 - s``: ``(1 - s)² var_bias + s² var_bkg``, or ``(1 - s)²
@@ -340,8 +328,7 @@ def _master_variance(
 def _check_background(calib: CalibrationSet) -> None:
     if calib.background is None or not calib.t_background:
         raise ValueError(
-            "background subtraction requested but the calibration set has no background "
-            "master with a positive exposure time"
+            "background subtraction requested but the calibration set has no background master with a positive exposure time"
         )
 
 

@@ -22,11 +22,7 @@ from typing import IO
 LOCK_POLL_S = 0.05
 """Seconds between attempts to take a lock that another holder has."""
 
-_BUSY = (
-    frozenset({errno.EACCES})
-    if sys.platform == "win32"
-    else frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
-)
+_BUSY = frozenset({errno.EACCES}) if sys.platform == "win32" else frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 """``errno`` values meaning "held by someone else": ``msvcrt.locking`` raises ``EACCES``;
 ``flock`` raises ``EWOULDBLOCK`` (= ``EAGAIN``), and some systems ``EACCES``."""
 

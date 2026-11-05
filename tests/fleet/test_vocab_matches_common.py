@@ -31,9 +31,7 @@ SIBLING_LAYOUT = (
     "named 'common' and put the parent folder on PYTHONPATH"
 )
 common_spec = (
-    importlib.import_module("common.spec")
-    if REQUIRED
-    else pytest.importorskip("common.spec", reason=SIBLING_LAYOUT)
+    importlib.import_module("common.spec") if REQUIRED else pytest.importorskip("common.spec", reason=SIBLING_LAYOUT)
 )
 
 

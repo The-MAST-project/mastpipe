@@ -134,9 +134,7 @@ def test_subtract_sky_resamples_scaled_sky_onto_science_grid():
     x = np.arange(N_PIX, dtype=float)
     science_wl = grid(0.0)
     sky_wl = grid(0.4)
-    science = make_spectrum(
-        1, 1.5 * gaussian_line(x, LINE_PX), "science", "mast01", wavelength=science_wl
-    )
+    science = make_spectrum(1, 1.5 * gaussian_line(x, LINE_PX), "science", "mast01", wavelength=science_wl)
     sky = make_spectrum(2, gaussian_line(x, LINE_PX - 0.4), "sky", "mast01", wavelength=sky_wl)
     out = subtract_sky(science, sky, 1.5, SkyParams())
     assert out is not science
@@ -162,9 +160,7 @@ def test_subtract_sky_resamples_scaled_sky_onto_science_grid():
     assert skysub.mask[0] and not skysub.mask[inside].any()
     assert np.isnan(out.sky[0]) and np.isnan(skysub.flux[0])
     # a decreasing sky grid is interpolated the same way
-    sky_flipped = make_spectrum(
-        2, sky.flux[::-1], "sky", "mast01", wavelength=sky_wl[::-1], mask=sky.mask[::-1]
-    )
+    sky_flipped = make_spectrum(2, sky.flux[::-1], "sky", "mast01", wavelength=sky_wl[::-1], mask=sky.mask[::-1])
     flipped = subtract_sky(science, sky_flipped, 1.5, SkyParams())
     assert np.allclose(flipped.sky, out.sky, equal_nan=True)
 
@@ -176,9 +172,7 @@ def test_sky_mask_marks_any_masked_neighbour():
     science_mask = np.zeros(N_PIX, dtype=bool)
     science_mask[5] = True
     science.mask = science_mask
-    sky = make_spectrum(
-        2, np.full(N_PIX, CONTINUUM), "sky", "mast01", wavelength=grid(0.5), mask=sky_mask
-    )
+    sky = make_spectrum(2, np.full(N_PIX, CONTINUUM), "sky", "mast01", wavelength=grid(0.5), mask=sky_mask)
     out = subtract_sky(science, sky, 1.0, SkyParams())
     skysub = out.versions["skysub"]
     # science pixel 100 falls between sky pixels 99 and 100, pixel 101 between 100 and 101
@@ -194,9 +188,7 @@ def test_sky_error_propagates_exactly():
     # its sky error is sqrt(0.25 s[i-1]^2 + 0.25 s[i]^2), not the mean of the two sigmas
     x = np.arange(N_PIX, dtype=float)
     sigma = 1.0 + 0.5 * np.sin(x / 7.0) + (x % 3)  # varies pixel to pixel
-    science = make_spectrum(
-        1, np.zeros(N_PIX), "science", "mast01", wavelength=grid(0.0), error=0.0
-    )
+    science = make_spectrum(1, np.zeros(N_PIX), "science", "mast01", wavelength=grid(0.0), error=0.0)
     sky = make_spectrum(2, np.zeros(N_PIX), "sky", "mast01", wavelength=grid(0.5))
     sky.error = sigma.copy()
     out = subtract_sky(science, sky, 2.0, SkyParams())
@@ -364,9 +356,7 @@ def test_bad_throughput_leaves_raw_only():
     assert skipped[0] == {"fiber": 1, "telescope": "mast01", "reason": "bad throughput"}
     assert "skysub" in out[3].versions  # mast02 has no throughput at all: ratio 1
     # with scaling off the throughputs are not consulted
-    out, skipped = subtract_sky_all(
-        spectra, traces, throughput, SkyParams(scale_by_throughput=False)
-    )
+    out, skipped = subtract_sky_all(spectra, traces, throughput, SkyParams(scale_by_throughput=False))
     assert [s["reason"] for s in skipped] == ["no sky fiber"]
     assert "skysub" in out[1].versions and "skysub" in out[3].versions
     assert np.all(np.isfinite(out[1].sky))

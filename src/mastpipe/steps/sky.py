@@ -37,9 +37,7 @@ def _increasing(wavelength: np.ndarray, name: str) -> tuple[np.ndarray, bool]:
     raise ValueError(f"the {name} wavelength grid must be strictly monotonic")
 
 
-def resample_sky(
-    sky: Spectrum, wavelength: np.ndarray, scale: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def resample_sky(sky: Spectrum, wavelength: np.ndarray, scale: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``sky``'s flux and error scaled by ``scale`` and linearly interpolated onto
     ``wavelength``, with the mask they carry.
 
@@ -71,9 +69,7 @@ def resample_sky(
     flux_out = np.where(on_left, flux[j], np.where(on_right, flux[k], np.nan))
     error_out = np.where(on_left, error[j], np.where(on_right, error[k], np.nan))
     flux_out[between] = (1.0 - t[between]) * flux[j][between] + t[between] * flux[k][between]
-    error_out[between] = np.sqrt(
-        (1.0 - t[between]) ** 2 * error[j][between] ** 2 + t[between] ** 2 * error[k][between] ** 2
-    )
+    error_out[between] = np.sqrt((1.0 - t[between]) ** 2 * error[j][between] ** 2 + t[between] ** 2 * error[k][between] ** 2)
     mask_out = (bad[j] & ~on_right) | (bad[k] & ~on_left)
     flux_out[~inside] = np.nan
     error_out[~inside] = np.nan
@@ -81,9 +77,7 @@ def resample_sky(
     return flux_out, error_out, mask_out
 
 
-def subtract_sky(
-    science: Spectrum, sky: Spectrum, throughput_ratio: float, params: SkyParams
-) -> Spectrum:
+def subtract_sky(science: Spectrum, sky: Spectrum, throughput_ratio: float, params: SkyParams) -> Spectrum:
     """``science`` with the scaled, resampled ``sky`` subtracted into ``versions["skysub"]``.
 
     The sky flux is scaled by ``throughput_ratio`` (science throughput over sky throughput)
@@ -142,18 +136,12 @@ def subtract_sky_all(
             reason = "no wavelength"
         else:
             ratio = 1.0
-            if (
-                params.scale_by_throughput
-                and spectrum.fiber in throughput
-                and sky.fiber in throughput
-            ):
+            if params.scale_by_throughput and spectrum.fiber in throughput and sky.fiber in throughput:
                 own = float(throughput[spectrum.fiber])
                 other = float(throughput[sky.fiber])
                 if not (np.isfinite(own) and np.isfinite(other) and own > 0 and other > 0):
                     reason = "bad throughput"
-                    skipped.append(
-                        {"fiber": spectrum.fiber, "telescope": telescope, "reason": reason}
-                    )
+                    skipped.append({"fiber": spectrum.fiber, "telescope": telescope, "reason": reason})
                     out.append(spectrum)
                     continue
                 ratio = own / other

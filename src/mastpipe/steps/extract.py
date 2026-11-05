@@ -38,9 +38,7 @@ METHODS = ("sum", "mean")
 # ------------------------------------------------------------------------ aperture weights
 
 
-def _aperture_grid(
-    centres: np.ndarray, halfwidth: float, aperture: str
-) -> tuple[np.ndarray, np.ndarray]:
+def _aperture_grid(centres: np.ndarray, halfwidth: float, aperture: str) -> tuple[np.ndarray, np.ndarray]:
     """Rows ``(k, n)`` and weights ``(k, n)`` of the aperture around every centre in
     ``centres`` (``(n,)``), padded with zero-weight rows so every column has ``k`` entries.
 
@@ -70,9 +68,7 @@ def _aperture_grid(
     return rows, weights
 
 
-def aperture_weights(
-    y_center: float, halfwidth: float, aperture: str = "round"
-) -> tuple[np.ndarray, np.ndarray]:
+def aperture_weights(y_center: float, halfwidth: float, aperture: str = "round") -> tuple[np.ndarray, np.ndarray]:
     """Rows and per-row weights of the aperture of ``halfwidth`` around ``y_center``.
 
     ``aperture`` is one of :data:`APERTURES` (see the module docstring for the
@@ -173,9 +169,7 @@ def _chebyshev(pixel: np.ndarray, flux: np.ndarray, kept: np.ndarray, degree: in
     return np.asarray(fit(pixel), dtype=float)
 
 
-def fit_continuum(
-    spectrum: Spectrum, degree: int, clip_above: float, clip_below: float, n_iter: int = 10
-) -> Spectrum:
+def fit_continuum(spectrum: Spectrum, degree: int, clip_above: float, clip_below: float, n_iter: int = 10) -> Spectrum:
     """``spectrum`` with its ``continuum`` set to a clipped Chebyshev fit of its flux.
 
     The fit is a Chebyshev polynomial of ``degree`` on the pixel grid mapped to
@@ -209,11 +203,7 @@ def fit_continuum(
             break
         centre = float(np.median(residual[kept]))
         with np.errstate(invalid="ignore"):
-            tighter = (
-                usable
-                & (residual - centre <= clip_above * sigma)
-                & (residual - centre >= -clip_below * sigma)
-            )
+            tighter = usable & (residual - centre <= clip_above * sigma) & (residual - centre >= -clip_below * sigma)
         if tighter.sum() < degree + 1 or np.array_equal(tighter, kept):
             break
         kept = tighter

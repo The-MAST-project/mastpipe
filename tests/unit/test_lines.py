@@ -65,9 +65,7 @@ def synthetic_arc(
     yy, xx = np.mgrid[0:ny, 0:nx]
     y_trace = trace.y(xx)
     for x0, peak in lines:
-        image += peak * np.exp(
-            -0.5 * (((xx - x0) / sigma_x) ** 2 + ((yy - y_trace) / sigma_y) ** 2)
-        )
+        image += peak * np.exp(-0.5 * (((xx - x0) / sigma_x) ** 2 + ((yy - y_trace) / sigma_y) ** 2))
     return image
 
 
@@ -108,8 +106,7 @@ def test_find_lines_recovers_simulated_arc_positions(night, arc_lines):
     offsets = np.abs(expected[:, None] - usable[None, :]).min(axis=1)
     found = offsets <= MATCH_TOLERANCE_PX
     assert found.mean() >= MIN_RECOVERED_FRACTION, (
-        f"{found.sum()} of {found.size} bright lines recovered, "
-        f"median |dx| = {np.median(offsets[found]):.3f} px"
+        f"{found.sum()} of {found.size} bright lines recovered, median |dx| = {np.median(offsets[found]):.3f} px"
     )
     # the fitted widths follow the simulator's line image
     assert table.loc[table["use_x"], "fwhm_x_fit"].median() == pytest.approx(FWHM_PX, abs=0.3)
@@ -218,9 +215,7 @@ def test_saturated_lines_are_flagged_through_the_mask(sim_full_arc, highspec_eff
     detector = highspec_effective.detector
     arc, traces, params = sim_full_arc.arc, sim_full_arc.traces, sim_full_arc.params
     assert params.saturation is None
-    (table,), _ = find_lines(
-        arc.data, arc.variance, TraceSet([traces.traces[0]], arc.shape), params
-    )
+    (table,), _ = find_lines(arc.data, arc.variance, TraceSet([traces.traces[0]], arc.shape), params)
     clean = table.loc[table["use_x"] & table["isolated"]]
     x0 = int(clean["x_peak"].iloc[len(clean) // 2])
     trace = traces.traces[0]
@@ -235,9 +230,7 @@ def test_saturated_lines_are_flagged_through_the_mask(sim_full_arc, highspec_eff
         read_noise=detector.read_noise,
         shape=arc.shape,
     )
-    frame = calibrate_frame(
-        Frame(data=raw, meta=arc.meta), calib, False, saturation=detector.saturation
-    )
+    frame = calibrate_frame(Frame(data=raw, meta=arc.meta), calib, False, saturation=detector.saturation)
     assert frame.mask is not None and int(frame.mask.sum()) == 1
 
     one = TraceSet([trace], arc.shape)

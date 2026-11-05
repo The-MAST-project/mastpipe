@@ -100,9 +100,7 @@ def make_spectrum(fiber: int, rng: np.random.Generator, with_versions: bool) -> 
     mask[fiber] = True
     versions = {}
     if with_versions:
-        versions["skysub"] = SpectrumVersion(
-            flux - 20.0, error * 1.1, mask | (np.arange(N_SPEC) == 7)
-        )
+        versions["skysub"] = SpectrumVersion(flux - 20.0, error * 1.1, mask | (np.arange(N_SPEC) == 7))
     return Spectrum(
         fiber=fiber,
         pixel=np.arange(N_SPEC),
@@ -179,9 +177,7 @@ def test_provenance_cards_roundtrip():
     del header["MPTZ"]
     assert Provenance.from_header(header).timezone is None
 
-    bare = Provenance(
-        pipeline_version="0.0.1", config_hash="abcdef012345", inputs=[], calibrations=[]
-    )
+    bare = Provenance(pipeline_version="0.0.1", config_hash="abcdef012345", inputs=[], calibrations=[])
     header = fits.Header()
     for key, value, comment in bare.to_header_cards():
         header[key] = (value, comment)
@@ -197,16 +193,12 @@ def test_provenance_cards_roundtrip():
 
 def test_product_name_format():
     assert product_name(META, "spec") == "highspec_Mg_main_20261001T203015_012345_spec.fits"
-    assert product_name(META, "qc", ext=".json") == (
-        "highspec_Mg_main_20261001T203015_012345_qc.json"
-    )
+    assert product_name(META, "qc", ext=".json") == ("highspec_Mg_main_20261001T203015_012345_qc.json")
     bare = replace(META, configuration=None, mid_time=None, checksum="")
     assert product_name(bare, "trace") == "highspec_noconf_main_notime_nosum_trace.fits"
     aware = replace(META, mid_time="2026-10-01T22:30:15+02:00")
     assert product_name(aware, "spec") == "highspec_Mg_main_20261001T203015_012345_spec.fits"
-    assert combined_name(META, "HD 1234/b") == (
-        "highspec_Mg_main_20261001T203015_012345_comb_HD_1234_b.fits"
-    )
+    assert combined_name(META, "HD 1234/b") == ("highspec_Mg_main_20261001T203015_012345_comb_HD_1234_b.fits")
 
 
 def test_product_name_differs_for_equal_times():
@@ -608,9 +600,7 @@ def reference(highspec_effective):
         0: make_solution(0, nominal, make_lines(x, nominal.wavelength(np.array(x)))),
         2: make_solution(2, with_poly, make_lines(x[:2], with_poly.wavelength(np.array(x[:2])))),
     }
-    ref = build_reference(
-        "highspec", "Mg", "survey45", solutions, "2026-10-01T18:00:00", CHECKSUMS[:2]
-    )
+    ref = build_reference("highspec", "Mg", "survey45", solutions, "2026-10-01T18:00:00", CHECKSUMS[:2])
     return ref, geom
 
 
@@ -643,9 +633,7 @@ def test_reference_roundtrip(tmp_path, reference):
         assert actual.geometry == expected.geometry
         pd.testing.assert_frame_equal(actual.lines, expected.lines, check_dtype=False)
         model = model_from_solution(actual, geom)
-        np.testing.assert_allclose(
-            model.wavelength(grid), expected_model(expected, geom), rtol=0, atol=1e-12
-        )
+        np.testing.assert_allclose(model.wavelength(grid), expected_model(expected, geom), rtol=0, atol=1e-12)
     with fits.open(path) as hdul:
         header = hdul[0].header
         assert header["MPREFID"] == ref.identifier and header["MPREFH"] == ref.hash
@@ -671,9 +659,7 @@ def expected_model(solution: WavelengthSolution, geom) -> np.ndarray:
 def test_combined_roundtrip(tmp_path):
     rng = np.random.default_rng(5)
     wavelength = 515.0 + 0.004 * np.arange(N_SPEC)
-    raw = SpectrumVersion(
-        rng.normal(1.0, 0.1, N_SPEC), np.full(N_SPEC, 0.1), np.zeros(N_SPEC, bool)
-    )
+    raw = SpectrumVersion(rng.normal(1.0, 0.1, N_SPEC), np.full(N_SPEC, 0.1), np.zeros(N_SPEC, bool))
     skysub = SpectrumVersion(raw.flux - 0.1, raw.error, np.arange(N_SPEC) == 3)
     contributors = pd.DataFrame(
         {

@@ -84,9 +84,7 @@ SELF_DRIFT_MAX_PX = 0.01
 @pytest.fixture(scope="module")
 def lab_root() -> Path:
     root = Path(os.environ[DATA_VARIABLE]) / LAB_FOLDER
-    missing = [
-        str(Path("calib") / name) for name in CALIB_FRAMES if not (root / "calib" / name).is_file()
-    ]
+    missing = [str(Path("calib") / name) for name in CALIB_FRAMES if not (root / "calib" / name).is_file()]
     if not (root / "scan" / FULL_ARC).is_file():
         missing.append(str(Path("scan") / FULL_ARC))
     if missing:
@@ -138,9 +136,7 @@ def first_run(night, out_dir):
 @pytest.fixture(scope="module")
 def reference(first_run, night, effective, out_dir, atlas_dir) -> SimpleNamespace:
     """``mastpipe identify --stored-anchors`` on the full arc, with the masters of the run."""
-    ref, path = run_identify(
-        night.arc, effective, PRESET, out_dir, anchors=None, anchor_trace=None, atlas_dir=atlas_dir
-    )
+    ref, path = run_identify(night.arc, effective, PRESET, out_dir, anchors=None, anchor_trace=None, atlas_dir=atlas_dir)
     return SimpleNamespace(ref=ref, path=path)
 
 
@@ -185,9 +181,7 @@ def test_lab_traces_match_notebook(night, effective):
     detector, params = effective.detector, effective.params
     refs = {
         ref.meta.source: ref
-        for ref in scan_folder(
-            night.dir, "highspec", load_header_map("highspec"), manifest=night.manifest
-        )
+        for ref in scan_folder(night.dir, "highspec", load_header_map("highspec"), manifest=night.manifest)
     }
     assert {refs[name].meta.exposure_type for name in CALIB_FRAMES} == set(CALIB_FRAMES.values())
     assert refs[FULL_ARC].meta.exposure_type == "arc" and refs[FULL_ARC].meta.arc_kind == "full"
@@ -200,12 +194,8 @@ def test_lab_traces_match_notebook(night, effective):
     raw_flat = load_frame(refs["flat_518.fits"], detector)
     layout = load_layout("highspec", PRESET)
 
-    flat = calibrate_frame(
-        raw_flat, calib, params.calib.flat_subtract_background, saturation=detector.saturation
-    )
-    traceset = match_layout(
-        find_traces(flat.data, params.trace), layout, params.trace.layout_tolerance
-    )
+    flat = calibrate_frame(raw_flat, calib, params.calib.flat_subtract_background, saturation=detector.saturation)
+    traceset = match_layout(find_traces(flat.data, params.trace), layout, params.trace.layout_tolerance)
     assert traceset.missing == ()
     arcs = traceset.by_role("arc")
     assert len(arcs) == 3
@@ -229,12 +219,8 @@ def test_lab_focus_frames_are_arc_like(lab_root, effective):
     no signal."""
     detector, params = effective.detector, effective.params
     header_map = load_header_map("highspec")
-    calib_refs = {
-        ref.meta.source: ref for ref in scan_folder(lab_root / "calib", "highspec", header_map)
-    }
-    focus = sorted(
-        scan_folder(lab_root / "scan", "highspec", header_map), key=lambda r: r.meta.source
-    )
+    calib_refs = {ref.meta.source: ref for ref in scan_folder(lab_root / "calib", "highspec", header_map)}
+    focus = sorted(scan_folder(lab_root / "scan", "highspec", header_map), key=lambda r: r.meta.source)
     assert len(focus) >= 11
     for ref in [*focus, calib_refs["flat_518.fits"], calib_refs["background.fits"]]:
         assert (ref.meta.exposure_type, ref.meta.classification_rule) == ("light", "header")
@@ -249,9 +235,7 @@ def test_lab_focus_frames_are_arc_like(lab_root, effective):
 
     def resolved(ref, calib) -> tuple[str, str]:
         subtract = calib.background is not None
-        frame = calibrate_frame(
-            load_frame(ref, detector), calib, subtract, saturation=detector.saturation
-        )
+        frame = calibrate_frame(load_frame(ref, detector), calib, subtract, saturation=detector.saturation)
         return classify_light(frame, params.classify)
 
     for ref in focus:
@@ -326,9 +310,7 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     the calibration folder and fails on nothing."""
     assert first_run.failed == []
     assert first_run.reduced_again == []
-    assert any(
-        item.startswith(FULL_ARC) and "run identify" in item for item in first_run.skipped
-    ), first_run.skipped
+    assert any(item.startswith(FULL_ARC) and "run identify" in item for item in first_run.skipped), first_run.skipped
     assert not any(p.name.endswith("_spec.fits") for p in first_run.products)
     library = CalibLibrary(out_dir / CALIB_FOLDER)
     assert {e["kind"] for e in library.list()} >= {"bias", "background", "flat"}
@@ -347,8 +329,7 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     assert summary.failed == []
     assert summary.reduced_again == []
     assert any(
-        item.startswith(FULL_ARC)
-        and f"already solved into reference {reference.ref.identifier}" in item
+        item.startswith(FULL_ARC) and f"already solved into reference {reference.ref.identifier}" in item
         for item in summary.skipped
     ), summary.skipped
     assert not any(p.name.endswith("_spec.fits") for p in summary.products)

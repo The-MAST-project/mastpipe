@@ -63,9 +63,7 @@ def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
-    anchors = [
-        (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
-    ]
+    anchors = [(float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)]
     return SimpleNamespace(
         path=path,
         mid_time=str(row["mid_time"]),
@@ -108,9 +106,7 @@ def master_names(calib_dir: Path) -> list[str]:
 
 @pytest.fixture(scope="module")
 def identified(arc, survey_effective, calib_dir) -> SimpleNamespace:
-    ref, path = run_identify(
-        arc.path, survey_effective, "survey45", calib_dir, anchors=arc.anchors, anchor_trace=0
-    )
+    ref, path = run_identify(arc.path, survey_effective, "survey45", calib_dir, anchors=arc.anchors, anchor_trace=0)
     return SimpleNamespace(ref=ref, path=path, out_dir=calib_dir)
 
 
@@ -141,13 +137,8 @@ def test_strongest_spread_picks_strong_separated_lines_left_to_right():
 def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
     wave = np.linspace(513.0, 527.5, 4000)
     centres = np.array([514.0, 516.5, 519.0, 521.5, 524.0, 526.5])
-    flux = 1.0 + sum(
-        h * np.exp(-0.5 * ((wave - c) / 0.02) ** 2)
-        for c, h in zip(centres, [5, 9, 2, 7, 8, 4], strict=True)
-    )
-    usable = pd.DataFrame(
-        {"wavelength": np.concatenate([centres, [520.0]]), "usable": [True] * 6 + [False]}
-    )
+    flux = 1.0 + sum(h * np.exp(-0.5 * ((wave - c) / 0.02) ** 2) for c, h in zip(centres, [5, 9, 2, 7, 8, 4], strict=True))
+    usable = pd.DataFrame({"wavelength": np.concatenate([centres, [520.0]]), "usable": [True] * 6 + [False]})
     obs_flux = np.zeros(1000)
     x_lines = np.array([100.0, 300.0, 500.0, 700.0, 900.0])
     for x in x_lines:
@@ -161,9 +152,7 @@ def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
         }
     )
     out = tmp_path / "panels" / "anchor_panels.png"
-    template, measured = plot_anchor_panels(
-        wave, flux, usable, obs_flux, obs_lines, (513.0, 527.5), n_labels=4, out=out
-    )
+    template, measured = plot_anchor_panels(wave, flux, usable, obs_flux, obs_lines, (513.0, 527.5), n_labels=4, out=out)
     assert out.is_file() and out.stat().st_size > 0
     assert list(template.columns) == ["id", "wavelength"]
     assert list(measured.columns) == ["id", "x_center"]
@@ -225,18 +214,12 @@ def test_identify_with_anchors_writes_reference(identified, arc, survey_effectiv
     assert agreement["spread_px"].max() < MAX_MAP_ERROR_DISP
 
 
-def test_identify_uses_stored_anchors_and_trace(
-    tmp_path, sim_night_lab3, highspec_effective, mg_lines, monkeypatch
-):
+def test_identify_uses_stored_anchors_and_trace(tmp_path, sim_night_lab3, highspec_effective, mg_lines, monkeypatch):
     """Without an ``anchors`` argument the instrument's stored pairs and trace are used."""
     night_dir, truth = sim_night_lab3
     row = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
     cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
-    bright = (
-        np.isin(truth.lines_nm, cat_wl)
-        & truth.lines_on_chip
-        & (truth.line_logI > ANCHOR_LOG_INTENSITY)
-    )
+    bright = np.isin(truth.lines_nm, cat_wl) & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
     stored = [(float(truth.lines_nm[i]), float(truth.line_pixels[1][i])) for i in (first, last)]
     asked: list[tuple] = []
@@ -342,15 +325,9 @@ def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
 
     # with background subtraction off the background is not an applied calibration
     no_subtract = highspec_effective.model_copy(
-        update={
-            "params": highspec_effective.params.model_copy(
-                update={"calib": CalibParams(subtract_background=False)}
-            )
-        }
+        update={"params": highspec_effective.params.model_copy(update={"calib": CalibParams(subtract_background=False)})}
     )
-    lines2 = _arc_lines(
-        arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset
-    )
+    lines2 = _arc_lines(arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset)
     assert lines2.calibrations == [f"bias:{bias.validity['mid_time']}"]
     assert lines2.steps[0] == "bias"
     assert lines2.steps[1].startswith("background night background present but not subtracted")

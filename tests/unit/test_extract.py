@@ -88,13 +88,9 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
             telescope=None if isinstance(row["telescope"], float) else row["telescope"],
             coeffs=coeffs,
         )
-        for i, (coeffs, (_, row)) in enumerate(
-            zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
-        )
+        for i, (coeffs, (_, row)) in enumerate(zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True))
     ]
-    return SimpleNamespace(
-        truth=truth, science=science, traces=TraceSet(traces=traces, shape=science.shape)
-    )
+    return SimpleNamespace(truth=truth, science=science, traces=TraceSet(traces=traces, shape=science.shape))
 
 
 # ------------------------------------------------------------------------- aperture_weights
@@ -306,9 +302,7 @@ def synthetic_spectrum(seed: int = 3) -> tuple[Spectrum, np.ndarray, np.ndarray]
     continuum = 100.0 + 30.0 * np.cos(2.0 * np.pi * 1.3 * x) + 20.0 * x
     centres = np.linspace(60.0, n - 60.0, 15)
     peaks = rng.uniform(500.0, 5000.0, size=centres.size)
-    lines = (peaks[:, None] * np.exp(-0.5 * ((pixel[None, :] - centres[:, None]) / 1.3) ** 2)).sum(
-        axis=0
-    )
+    lines = (peaks[:, None] * np.exp(-0.5 * ((pixel[None, :] - centres[:, None]) / 1.3) ** 2)).sum(axis=0)
     flux = continuum + lines + rng.normal(0.0, 1.0, size=n)
     flux[700] = -2000.0  # a cold pixel
     flux[1300] = np.nan

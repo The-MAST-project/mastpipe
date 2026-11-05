@@ -183,9 +183,9 @@ def test_missing_values_make_a_field_unresolved():
 
 
 def test_time_reference_option_is_validated():
-    spec = HeaderMap.from_dict(
-        {"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", "reference": "end"}}}
-    ).fields["mid_time"]
+    spec = HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"], "type": "str", "reference": "end"}}}).fields[
+        "mid_time"
+    ]
     assert spec.reference == "end"
     plain = HeaderMap.from_dict({"fields": {"mid_time": {"keys": ["DATE-OBS"]}}})
     assert plain.fields["mid_time"].reference == "start"

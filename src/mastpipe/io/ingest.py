@@ -268,9 +268,7 @@ def _build_meta(
     spec = header_map.fields.get(TIME_FIELD)
     reference = "mid" if spec is None else spec.reference
     timezone = UTC if spec is None else spec.timezone
-    mid_time, derived, zone = _mid_time(
-        fields.get(TIME_FIELD), fields.get("exposure_time"), reference, timezone
-    )
+    mid_time, derived, zone = _mid_time(fields.get(TIME_FIELD), fields.get("exposure_time"), reference, timezone)
     fields[TIME_FIELD] = mid_time
     fields["timezone"] = zone
     if not derived:
@@ -309,9 +307,7 @@ def _axis_binning(value: Any) -> int:
     return 1 if value is None else int(value)
 
 
-def _mid_time(
-    value: Any, exposure_time: Any, reference: str, timezone: str = UTC
-) -> tuple[str | None, bool, str | None]:
+def _mid_time(value: Any, exposure_time: Any, reference: str, timezone: str = UTC) -> tuple[str | None, bool, str | None]:
     """``(mid_time, derived, zone)``: the exposure's UTC mid-time from the header's time
     ``value`` (an ISO-8601 string) and ``exposure_time`` in seconds, according to
     ``reference``; a ``value`` without an offset is read according to ``timezone``.
@@ -346,9 +342,7 @@ def _mid_time(
     return utc_iso(mid), True, zone
 
 
-def _binned_crop(
-    detector: DetectorConfig, binning: tuple[int, int]
-) -> tuple[int, int, int, int] | None:
+def _binned_crop(detector: DetectorConfig, binning: tuple[int, int]) -> tuple[int, int, int, int] | None:
     """``detector.crop`` (unbinned pixels) in the pixels of a frame binned ``binning``
     (``(x, y)`` factors): each bound integer-divided by its axis's factor."""
     if detector.crop is None:
@@ -382,9 +376,7 @@ def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
     with fits.open(ref.path) as hdul:
         data = np.asarray(hdul[ref.extension].data, dtype=np.float32)
     if data.ndim != 2:
-        raise ValueError(
-            f"{ref.meta.source}[{ref.extension}]: expected a 2-D image, got {data.ndim}-D"
-        )
+        raise ValueError(f"{ref.meta.source}[{ref.extension}]: expected a 2-D image, got {data.ndim}-D")
     crop = _binned_crop(detector, ref.meta.binning)
     if crop is not None:
         x_min, x_max, y_min, y_max = crop
@@ -406,17 +398,13 @@ def read_manifest(path: Path | str) -> pd.DataFrame:
     table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
     if "source" not in table.columns:
         raise ValueError(f"{path.name}: a manifest needs a 'source' column")
-    unknown = [
-        column for column in table.columns if column not in (*MANIFEST_KEYS, *MANIFEST_FIELDS)
-    ]
+    unknown = [column for column in table.columns if column not in (*MANIFEST_KEYS, *MANIFEST_FIELDS)]
     if unknown:
         raise ValueError(f"{path.name}: unknown manifest columns {unknown}")
     return table
 
 
-def apply_manifest(
-    refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: list[str] | None = None
-) -> list[FrameRef]:
+def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: list[str] | None = None) -> list[FrameRef]:
     """New refs with the manifest's non-empty cells written over their metadata.
 
     A row's ``source`` matches a ref whose relative path it is; else, when it holds glob

@@ -84,9 +84,7 @@ def write_line_table(table: pd.DataFrame, path: Path, comments: list[str]) -> No
         writer = csv.writer(handle)
         writer.writerow(["wavelength_nm", "species", "logI", "usable"])
         for row in ordered.itertuples(index=False):
-            writer.writerow(
-                [f"{row.wavelength:.7f}", row.species, f"{row.logI:.3f}", bool(row.usable)]
-            )
+            writer.writerow([f"{row.wavelength:.7f}", row.species, f"{row.logI:.3f}", bool(row.usable)])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,17 +111,11 @@ def main(argv: list[str] | None = None) -> int:
 
     spectrum, catalogue = load_murphy_atlas(Path(atlas_dir), block.band_nm, pad=PAD_NM)
     wave = spectrum["wavelength"].to_numpy()
-    flux = remove_pedestal(
-        spectrum["flux"].to_numpy(), window=PEDESTAL_WINDOW, q=PEDESTAL_PERCENTILE
-    )
+    flux = remove_pedestal(spectrum["flux"].to_numpy(), window=PEDESTAL_WINDOW, q=PEDESTAL_PERCENTILE)
     flux_conv, fwhm_nm = convolve_to_resolving_power(wave, flux, resolving_power)
-    flagged = flag_usable_lines(
-        wave, flux_conv, catalogue, fwhm_nm, max_shift=MAX_SHIFT_FWHM, min_snr=MIN_SNR
-    )
+    flagged = flag_usable_lines(wave, flux_conv, catalogue, fwhm_nm, max_shift=MAX_SHIFT_FWHM, min_snr=MIN_SNR)
     n_usable = int(flagged["usable"].sum())
-    comments = header_lines(
-        args.instrument, args.configuration, block.band_nm, resolving_power, n_usable, len(flagged)
-    )
+    comments = header_lines(args.instrument, args.configuration, block.band_nm, resolving_power, n_usable, len(flagged))
     write_line_table(flagged, output, comments)
     print(f"{len(flagged)} lines, {n_usable} usable -> {output.name}")
     return 0

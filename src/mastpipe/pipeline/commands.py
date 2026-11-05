@@ -31,9 +31,7 @@ def _resolve_camera(instrument: InstrumentConfig, camera: str | None) -> str:
     if camera is not None:
         return camera
     if len(instrument.cameras) != 1:
-        raise SystemExit(
-            f"{instrument.name} has cameras {sorted(instrument.cameras)}; pass --camera"
-        )
+        raise SystemExit(f"{instrument.name} has cameras {sorted(instrument.cameras)}; pass --camera")
     return next(iter(instrument.cameras))
 
 
@@ -65,32 +63,22 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("night_dir", type=Path, help="folder of raw FITS frames")
     parser.add_argument("--out", type=Path, required=True, help="output folder")
     parser.add_argument("--instrument", required=True, help="instrument name, e.g. highspec")
-    parser.add_argument(
-        "--configuration", help="configuration of frames whose header has none, e.g. Mg"
-    )
+    parser.add_argument("--configuration", help="configuration of frames whose header has none, e.g. Mg")
     parser.add_argument("--camera", help="reduce this camera only")
     parser.add_argument(
         "--layout",
         help="fiber layout preset (default: a manifest's fiber_preset, else the instrument's)",
     )
-    parser.add_argument(
-        "--manifest", type=Path, help="CSV of metadata overrides by path, pattern or file name"
-    )
+    parser.add_argument("--manifest", type=Path, help="CSV of metadata overrides by path, pattern or file name")
     parser.add_argument(
         "--on-error",
         choices=["continue", "raise"],
         default="continue",
         help="record a frame's failure and go on (default), or stop at the first",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="reduce products that exist and rebuild masters"
-    )
-    parser.add_argument(
-        "--reference", metavar="ID", help="use this reference solution instead of the one valid"
-    )
-    parser.add_argument(
-        "--time-policy", choices=list(TIME_POLICIES), help="how drift arcs are paired in time"
-    )
+    parser.add_argument("--force", action="store_true", help="reduce products that exist and rebuild masters")
+    parser.add_argument("--reference", metavar="ID", help="use this reference solution instead of the one valid")
+    parser.add_argument("--time-policy", choices=list(TIME_POLICIES), help="how drift arcs are paired in time")
     parser.add_argument("--library", type=Path, help="calibration library (default: OUT/calib)")
     _add_set(parser)
     parser.set_defaults(func=quicklook_command)
@@ -174,10 +162,7 @@ def solve_command(args: argparse.Namespace) -> int:
     if root.resolve() != path.parent.resolve():
         _, prov = products.read_reference(path, registry_geometry(camera))
         library.add_reference(ref, prov, camera)
-    print(
-        f"reference {ref.identifier}: {len(ref.solutions)} fibers solved, "
-        f"seeded by {previous.identifier}"
-    )
+    print(f"reference {ref.identifier}: {len(ref.solutions)} fibers solved, seeded by {previous.identifier}")
     print(f"written: {path}")
     return 0
 
@@ -221,10 +206,7 @@ def _fmt(value: Any) -> str:
 
 def _print_provenance(prov: Provenance) -> None:
     print(f"mastpipe {prov.pipeline_version}, configuration {prov.config_hash}")
-    print(
-        f"wavelength {prov.wavelength_status}, flux {prov.flux_status}, "
-        f"telluric {prov.telluric_status}"
-    )
+    print(f"wavelength {prov.wavelength_status}, flux {prov.flux_status}, telluric {prov.telluric_status}")
     if prov.reference_id is not None:
         print(f"reference {prov.reference_id} ({prov.reference_hash})")
     print(f"inputs: {', '.join(prov.inputs) or '-'}")
@@ -243,15 +225,9 @@ def _targets_text(targets: tuple[tuple[str, str], ...]) -> str:
 def _show_spectra(path: Path) -> None:
     es, _, drift = products.read_spectra(path)
     meta = es.meta
-    print(
-        f"frame {meta.source} ({meta.exposure_type}), mid-time {meta.mid_time}, "
-        f"targets {_targets_text(meta.targets)}"
-    )
+    print(f"frame {meta.source} ({meta.exposure_type}), mid-time {meta.mid_time}, targets {_targets_text(meta.targets)}")
     if drift is not None:
-        print(
-            f"drift arc {drift.arc_mid_time}: scatter {drift.scatter_px:.3f} px, "
-            f"usable {drift.usable}"
-        )
+        print(f"drift arc {drift.arc_mid_time}: scatter {drift.scatter_px:.3f} px, usable {drift.usable}")
     print(f"{'fiber':>5} {'role':<8} {'tel':<5} {'target':<16} {'S/N':>8} {'masked':>7} versions")
     traces = {} if drift is None else {int(f): True for f in drift.per_fiber["fiber"]}
     for s in es.spectra:
@@ -308,10 +284,7 @@ def _show_combined(hdul: fits.HDUList) -> None:
     contributors = hdul["CONTRIB"].data
     print(
         f"{len(contributors)} contributors: "
-        + ", ".join(
-            f"fiber {int(row['FIBER'])} ({row['TELESCOPE']}, w {float(row['WEIGHT']):.2f})"
-            for row in contributors
-        )
+        + ", ".join(f"fiber {int(row['FIBER'])} ({row['TELESCOPE']}, w {float(row['WEIGHT']):.2f})" for row in contributors)
     )
     for row in hdul["EXCLUDED"].data:
         print(f"excluded fiber {int(row['FIBER'])} ({row['TELESCOPE']}): {row['REASON']}")
@@ -319,10 +292,7 @@ def _show_combined(hdul: fits.HDUList) -> None:
 
 def _show_master(hdul: fits.HDUList) -> None:
     header = hdul[0].header
-    validity = {
-        str(header[f"MPVALK{n:02d}"]): header[f"MPVALV{n:02d}"]
-        for n in range(1, int(header["MPNVAL"]) + 1)
-    }
+    validity = {str(header[f"MPVALK{n:02d}"]): header[f"MPVALV{n:02d}"] for n in range(1, int(header["MPNVAL"]) + 1)}
     print(f"{header['MPNFRM']} frames stacked, shape {hdul[0].data.shape}")
     print("validity: " + ", ".join(f"{k} {v}" for k, v in validity.items()))
 

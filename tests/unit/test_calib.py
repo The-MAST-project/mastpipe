@@ -139,13 +139,9 @@ def test_build_master_validity_and_provenance():
     with pytest.raises(ValueError):
         build_master(mixed, "background", CalibParams())
     nearly = [frame(1.0, "dark", 300.0), frame(1.0, "dark", 300.0 * (1 + 1e-7))]
-    assert build_master(nearly, "dark", CalibParams()).validity["exposure_time"] == (
-        pytest.approx(300.0)
-    )
+    assert build_master(nearly, "dark", CalibParams()).validity["exposure_time"] == (pytest.approx(300.0))
     biases = [frame(1.0, "bias", 0.0), frame(1.0, "bias", 0.1)]
-    assert build_master(biases, "bias", CalibParams()).validity["exposure_time"] == (
-        pytest.approx(0.05)
-    )
+    assert build_master(biases, "bias", CalibParams()).validity["exposure_time"] == (pytest.approx(0.05))
     bare = Frame(
         data=np.zeros(SHAPE, dtype=np.float32),
         meta=FrameMeta(instrument="toy", camera="main", exposure_type="bias"),
@@ -331,9 +327,7 @@ def test_master_variance_enters_the_error_budget():
         shape=SHAPE,
         t_dark=t_dark,
     )
-    full = replace(
-        base, bias_variance=vb, background_variance=vg, dark_rate_variance=vd / t_dark**2
-    )
+    full = replace(base, bias_variance=vb, background_variance=vg, dark_rate_variance=vd / t_dark**2)
 
     def added(t: float, subtract_background: bool, calib=full) -> np.ndarray:
         sci = frame(1000.0, "science", t)

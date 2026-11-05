@@ -54,27 +54,20 @@ def sim_frames(sim_night, highspec_effective) -> SimpleNamespace:
     ``light`` frame."""
     out_dir, truth = sim_night
     detector = highspec_effective.detector
-    refs = {
-        ref.meta.source: ref
-        for ref in scan_folder(out_dir, "highspec", load_header_map("highspec"))
-    }
+    refs = {ref.meta.source: ref for ref in scan_folder(out_dir, "highspec", load_header_map("highspec"))}
     rows = truth.frames
     files = {
         kind: rows.loc[rows["exposure_type"] == kind, "file"].tolist()
         for kind in ("bias", "dark", "background", "flat", "science")
     }
     masters = [
-        build_master(
-            [load_frame(refs[name], detector) for name in files[kind]], kind, CalibParams()
-        )
+        build_master([load_frame(refs[name], detector) for name in files[kind]], kind, CalibParams())
         for kind in ("bias", "dark", "background")
     ]
     calib = build_calibration_set(*masters, detector)
 
     def calibrated(name: str) -> Frame:
-        return calibrate_frame(
-            load_frame(refs[name], detector), calib, saturation=detector.saturation
-        )
+        return calibrate_frame(load_frame(refs[name], detector), calib, saturation=detector.saturation)
 
     return SimpleNamespace(
         full_arc=calibrated(rows.loc[rows["arc_kind"] == "full", "file"].iloc[0]),

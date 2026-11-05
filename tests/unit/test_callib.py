@@ -143,9 +143,7 @@ def test_find_by_inputs_matches_sorted_checksums(tmp_path):
     back, found_path = found
     assert found_path == path and float(back.data[0, 0]) == 500.0
     # the index as written, seen by a fresh instance, finds it too
-    assert CalibLibrary(tmp_path / "calib").find_by_inputs(
-        "bias", ["c1", "c2", "c3"], "main", CALIB
-    )
+    assert CalibLibrary(tmp_path / "calib").find_by_inputs("bias", ["c1", "c2", "c3"], "main", CALIB)
     # another set of frames, another kind or another camera does not
     assert library.find_by_inputs("bias", ["c1", "c2"], "main", CALIB) is None
     assert library.find_by_inputs("bias", ["c1", "c2", "c3", "c4"], "main", CALIB) is None
@@ -262,15 +260,11 @@ def test_callib_find_reference_by_time_and_identifier(tmp_path, highspec_effecti
     after = library.find_reference("highspec", "Mg", "survey45", at_time="2026-10-06T00:00:00")
     assert after is not None and after.identifier == later.identifier
     # a time-zone-aware time compares as a time, not as a string
-    aware = library.find_reference(
-        "highspec", "Mg", "survey45", at_time="2026-10-05T19:00:00+02:00"
-    )
+    aware = library.find_reference("highspec", "Mg", "survey45", at_time="2026-10-05T19:00:00+02:00")
     assert aware is not None and aware.identifier == earlier.identifier
     latest = library.find_reference("highspec", "Mg", "survey45")
     assert latest is not None and latest.identifier == later.identifier
-    assert (
-        library.find_reference("highspec", "Mg", "survey45", at_time="2026-09-01T00:00:00") is None
-    )
+    assert library.find_reference("highspec", "Mg", "survey45", at_time="2026-09-01T00:00:00") is None
     by_id = library.find_reference(
         "highspec",
         "Mg",
@@ -322,19 +316,14 @@ def add_biases(root: str, worker: str, barrier) -> None:
     library = CalibLibrary(root)
     barrier.wait(timeout=60)
     for i in range(N_PER_WORKER):
-        master, meta = make_master(
-            "bias", f"2026-10-01T18:{i:02d}:00", 500.0, checksum=f"{worker}{i:05d}"
-        )
+        master, meta = make_master("bias", f"2026-10-01T18:{i:02d}:00", 500.0, checksum=f"{worker}{i:05d}")
         library.add(master, make_provenance(), meta)
 
 
 def test_two_processes_add_to_one_library(tmp_path):
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(2)
-    workers = [
-        context.Process(target=add_biases, args=(str(tmp_path), name, barrier))
-        for name in ("a", "b")
-    ]
+    workers = [context.Process(target=add_biases, args=(str(tmp_path), name, barrier)) for name in ("a", "b")]
     for worker in workers:
         worker.start()
     for worker in workers:

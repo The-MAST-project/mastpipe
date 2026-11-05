@@ -22,15 +22,7 @@ PITCH = 8.5
 SLOPE = 0.0020
 APERTURE = 4.0
 ARC_SLOTS = (0, 11, 22, 33, 44)
-OUTPUT = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "mastpipe"
-    / "instruments"
-    / "highspec"
-    / "layouts"
-    / "survey45.csv"
-)
+OUTPUT = Path(__file__).resolve().parents[1] / "src" / "mastpipe" / "instruments" / "highspec" / "layouts" / "survey45.csv"
 
 
 def layout_rows() -> list[tuple[str, ...]]:

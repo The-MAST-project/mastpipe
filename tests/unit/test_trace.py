@@ -50,9 +50,7 @@ def calibrated_night(sim, highspec_effective) -> SimpleNamespace:
     calib = build_calibration_set(bias, dark, background, detector)
 
     def clean(frame: Frame, subtract_background: bool = True) -> Frame:
-        return calibrate_frame(
-            frame, calib, subtract_background=subtract_background, saturation=detector.saturation
-        )
+        return calibrate_frame(frame, calib, subtract_background=subtract_background, saturation=detector.saturation)
 
     flats = [clean(frame, subtract_background=False) for frame in by_type["flat"]]
     master = build_master(flats, "flat", params)
@@ -157,9 +155,7 @@ def test_find_traces_lab3_like_curvature():
     y0 = np.array([17.4, 189.0, 360.7])
     slope = np.full(3, 0.002)
     curvature = np.array([2e-6, -1.5e-6, 2e-6])
-    coeffs = np.column_stack(
-        [curvature, slope - 2 * curvature * xc, y0 - slope * xc + curvature * xc**2]
-    )
+    coeffs = np.column_stack([curvature, slope - 2 * curvature * xc, y0 - slope * xc + curvature * xc**2])
     column_factor = FWHM_PX / GAUSSIAN_FWHM * np.sqrt(2 * np.pi)
     fluxes = np.full((3, nx), 15000.0 * column_factor)
     image = render_traces(shape, coeffs, fluxes, FWHM_PX)
@@ -277,9 +273,7 @@ def test_match_layout_with_global_shift_and_missing(night, survey_layout):
         assert trace.telescope == row["telescope"]
         assert trace.aperture == 4.0  # the survey layout fixes the aperture halfwidth
         assert abs(trace.y_center - (row["y_nominal"] + matched.layout_shift)) < 1.0
-    assert [trace.layout_index for trace in matched] == [
-        i for i in range(len(survey_layout)) if i != dropped
-    ]
+    assert [trace.layout_index for trace in matched] == [i for i in range(len(survey_layout)) if i != dropped]
     # the input is left untouched
     assert all(trace.role is None for trace in traces)
 
@@ -396,10 +390,7 @@ def test_classify_arc_toy_frames():
     x_center = 100.0
     traces = [make_trace(i, y, x_center) for i, y in enumerate((10.0, 30.0, 50.0))]
     roles = ("arc", "science", "sky")
-    traces = [
-        replace(trace, role=role, layout_index=i)
-        for i, (trace, role) in enumerate(zip(traces, roles, strict=True))
-    ]
+    traces = [replace(trace, role=role, layout_index=i) for i, (trace, role) in enumerate(zip(traces, roles, strict=True))]
     traceset = TraceSet(traces=traces, shape=shape)
     rng = np.random.default_rng(7)
     noise = rng.normal(0.0, 2.0, size=shape)

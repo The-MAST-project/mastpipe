@@ -73,9 +73,7 @@ def _empty_lines() -> pd.DataFrame:
 # ------------------------------------------------------------------------ identification
 
 
-def identify_lines(
-    x_obs, model: WavelengthModel, cat_wl, cat_sp, tol_px: float, unique_tol_px: float
-) -> pd.DataFrame:
+def identify_lines(x_obs, model: WavelengthModel, cat_wl, cat_sp, tol_px: float, unique_tol_px: float) -> pd.DataFrame:
     """Match measured line columns to catalogue wavelengths through ``model``.
 
     Every column of ``x_obs`` is mapped to a wavelength and matched to the nearest line of
@@ -233,10 +231,7 @@ def _usable_columns(table: pd.DataFrame) -> np.ndarray:
 def _warm_start(solution: WavelengthSolution, geom: GratingGeometry, n_pix: int) -> GratingModel:
     """``x_c, B, alpha`` of a stored solution as a seed; the distortion term is left to the fit."""
     if solution.n_pix != n_pix:
-        raise ValueError(
-            f"fiber {solution.fiber}: the previous solution has n_pix {solution.n_pix}, "
-            f"the spectrum {n_pix}"
-        )
+        raise ValueError(f"fiber {solution.fiber}: the previous solution has n_pix {solution.n_pix}, the spectrum {n_pix}")
     previous = model_from_solution(solution, geom)
     if not isinstance(previous, GratingModel):
         raise NotImplementedError("solve_full_arc seeds from grating solutions only")
@@ -272,9 +267,7 @@ def _seed_models(
             y = traceset.traces[k].y_center
             j = min(centres, key=lambda other: abs(centres[other] - y))
             seed = _warm_start(previous[j], geom, n_pix)
-            shift = (
-                shift_to_reference(flux_list[k], flux_list[position[j]]) if j in position else 0.0
-            )
+            shift = shift_to_reference(flux_list[k], flux_list[position[j]]) if j in position else 0.0
             seeds[fiber] = GratingModel(seed.x_c + shift, seed.B, seed.alpha, None, n_pix, geom)
         return seeds
     if not isinstance(start, GratingModel):
@@ -286,9 +279,7 @@ def _seed_models(
         k = position[fiber]
         n_pix = len(flux_list[k])
         shift = 0.0 if fiber == ref_fiber else shift_to_reference(flux_list[k], reference_flux)
-        seeds[fiber] = GratingModel(
-            start.x_c + shift, start.B, start.alpha, None, n_pix, start.geom
-        )
+        seeds[fiber] = GratingModel(start.x_c + shift, start.B, start.alpha, None, n_pix, start.geom)
     return seeds
 
 
@@ -339,8 +330,7 @@ def solve_full_arc(
     n = len(traceset)
     if len(line_tables) != n or len(flux_list) != n:
         raise ValueError(
-            f"line_tables ({len(line_tables)}) and flux_list ({len(flux_list)}) must have one "
-            f"entry per trace ({n})"
+            f"line_tables ({len(line_tables)}) and flux_list ({len(flux_list)}) must have one entry per trace ({n})"
         )
     position = _positions(traceset)
     fibers = sorted(position) if fibers is None else [int(k) for k in fibers]

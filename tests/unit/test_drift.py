@@ -138,9 +138,7 @@ def make_reference(solutions: dict[int, WavelengthSolution]) -> ReferenceSolutio
     return build_reference("highspec", "Mg", "survey45", solutions, "2026-10-01T18:00:00", ())
 
 
-def synthetic_tables(
-    x_ref: np.ndarray, shifts: dict[int, float], rng: np.random.Generator
-) -> dict[int, pd.DataFrame]:
+def synthetic_tables(x_ref: np.ndarray, shifts: dict[int, float], rng: np.random.Generator) -> dict[int, pd.DataFrame]:
     tables = {}
     for fiber, shift in shifts.items():
         x_obs = x_ref + shift + rng.normal(0.0, 0.01, x_ref.size)
@@ -167,9 +165,7 @@ def test_fit_drift_single_usable_fiber_is_a_constant():
     assert model.shift_at(90.0) == pytest.approx(0.4, abs=0.02)
     # one fiber gives a constant with no scatter to judge it by: recorded, not usable
     assert model.scatter_px == 0.0 and model.n_usable == 1 and not model.usable
-    one = fit_drift(
-        tables, make_reference(solutions), traces, make_meta(), DriftParams(min_fibers=1)
-    )
+    one = fit_drift(tables, make_reference(solutions), traces, make_meta(), DriftParams(min_fibers=1))
     assert one.usable
     assert model.arc_checksums == ("abc123",) and model.arc_mid_time == "2026-10-01T20:00:00"
     assert model.n_pix == N_PIX
@@ -181,9 +177,7 @@ def test_fit_drift_linear_across_fibers_and_unusable_without_fibers():
     y_of = {0: 10.0, 1: 50.0, 2: 90.0}
     shifts = {fiber: 0.2 + 0.005 * y for fiber, y in y_of.items()}
     solutions = {fiber: make_solution(x_ref, fiber=fiber) for fiber in y_of}
-    traces = SimpleNamespace(
-        traces=[SimpleNamespace(index=f, y_center=y) for f, y in y_of.items()], shape=(100, N_PIX)
-    )
+    traces = SimpleNamespace(traces=[SimpleNamespace(index=f, y_center=y) for f, y in y_of.items()], shape=(100, N_PIX))
     model = fit_drift(
         synthetic_tables(x_ref, shifts, rng),
         make_reference(solutions),
@@ -207,9 +201,7 @@ def test_drift_with_two_fibers_is_not_usable():
     x_ref = synthetic_lines(rng)
     y_of = {0: 10.0, 1: 90.0, 2: 50.0}
     solutions = {fiber: make_solution(x_ref, fiber=fiber) for fiber in y_of}
-    traces = SimpleNamespace(
-        traces=[SimpleNamespace(index=f, y_center=y) for f, y in y_of.items()], shape=(100, N_PIX)
-    )
+    traces = SimpleNamespace(traces=[SimpleNamespace(index=f, y_center=y) for f, y in y_of.items()], shape=(100, N_PIX))
     two = synthetic_tables(x_ref, {0: 0.3, 1: 0.9}, rng)
     model = fit_drift(two, make_reference(solutions), traces, make_meta(), DriftParams())
     assert model.per_fiber["usable"].all()
@@ -247,9 +239,7 @@ def reference(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> Referenc
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
-    pairs = [
-        (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
-    ]
+    pairs = [(float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)]
     anchor = anchor_model(pairs, geom, sim_full_arc.n_pix)
     solutions = solve_full_arc(
         sim_arc_lines[0],
@@ -261,9 +251,7 @@ def reference(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> Referenc
         WavecalParams(),
     )
     full = truth.frames.loc[truth.frames["arc_kind"] == "full"].iloc[0]
-    return build_reference(
-        "highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",)
-    )
+    return build_reference("highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",))
 
 
 @pytest.fixture(scope="module")
@@ -289,9 +277,7 @@ def cal_arc(sim_night, sim_full_arc, highspec_effective, survey_layout) -> Simpl
     )
     arc_fibers = [trace.index for trace in sim_full_arc.traces.by_role("arc")]
     tables = {fiber: lines.tables[fiber] for fiber in arc_fibers}
-    return SimpleNamespace(
-        meta=lines.frame.meta, tables=tables, fibers=arc_fibers, row=row, truth=truth
-    )
+    return SimpleNamespace(meta=lines.frame.meta, tables=tables, fibers=arc_fibers, row=row, truth=truth)
 
 
 @pytest.fixture(scope="module")
@@ -379,9 +365,7 @@ def gradient_night(tmp_path_factory, survey_layout, mg_lines) -> SimpleNamespace
         cat_sp,
         effective.params.wavecal,
     )
-    reference = build_reference(
-        "highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",)
-    )
+    reference = build_reference("highspec", "Mg", "survey45", solutions, str(full["mid_time"]), ("fullarc",))
     cal_lines = lines_of(cal)
     arc_fibers = [trace.index for trace in traces.by_role("arc")]
     return SimpleNamespace(
@@ -442,9 +426,7 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     geom = sim_full_arc.geom
     n_pix = sim_full_arc.n_pix
 
-    wavelengths, skipped = apply_drift(
-        reference, [(drift, 1.0)], sim_full_arc.traces, geom, tolerance=3.0, n_pix=n_pix
-    )
+    wavelengths, skipped = apply_drift(reference, [(drift, 1.0)], sim_full_arc.traces, geom, tolerance=3.0, n_pix=n_pix)
     assert set(wavelengths) == set(reference.solutions) and skipped == {}
     x = np.arange(n_pix, dtype=float)
     dips = np.array(truth.extras["absorption_nm"], dtype=float)
@@ -469,9 +451,7 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     fiber = sim_full_arc.traces.by_role("science")[0].index
     s = float(drift.shift_at(sim_full_arc.traces.traces[fiber].y_center))
     e = float(drift.stretch_at(sim_full_arc.traces.traces[fiber].y_center))
-    expected = model_from_solution(reference.solutions[fiber], geom).wavelength(
-        undrift_x(x, s, e, n_pix)
-    )
+    expected = model_from_solution(reference.solutions[fiber], geom).wavelength(undrift_x(x, s, e, n_pix))
     assert np.allclose(wavelengths[fiber], expected)
     # weights combine linearly
     halves, _ = apply_drift(reference, [(drift, 0.5), (drift, 0.5)], sim_full_arc.traces, geom)

@@ -66,9 +66,7 @@ def sim_night(
     mg_lines: pd.DataFrame,
 ) -> tuple[Path, SimTruth]:
     out_dir = tmp_path_factory.mktemp("sim_night")
-    truth = simulate_night(
-        highspec_effective, survey_layout, mg_lines, out_dir, seed=0, n_science=4
-    )
+    truth = simulate_night(highspec_effective, survey_layout, mg_lines, out_dir, seed=0, n_science=4)
     return out_dir, truth
 
 
@@ -121,9 +119,7 @@ def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:
             role=row["role"],
             telescope=None if isinstance(row["telescope"], float) else row["telescope"],
         )
-        for i, (coeffs, (_, row)) in enumerate(
-            zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True)
-        )
+        for i, (coeffs, (_, row)) in enumerate(zip(truth.trace_coeffs, truth.layout.iterrows(), strict=True))
     ]
     return TraceSet(traces=traces, shape=shape)
 
@@ -160,16 +156,12 @@ def sim_full_arc(sim_night, highspec_effective) -> SimpleNamespace:
 @pytest.fixture(scope="session")
 def sim_arc_lines(sim_full_arc) -> tuple[list[pd.DataFrame], list[np.ndarray]]:
     """Line tables and strips of every trace of the simulated full arc."""
-    return find_lines(
-        sim_full_arc.arc.data, sim_full_arc.arc.variance, sim_full_arc.traces, sim_full_arc.params
-    )
+    return find_lines(sim_full_arc.arc.data, sim_full_arc.arc.variance, sim_full_arc.traces, sim_full_arc.params)
 
 
 @pytest.fixture(scope="session")
 def sim_arc_fluxes(sim_full_arc) -> list[np.ndarray]:
     """Continuum-subtracted extracted fluxes of every trace of the simulated full arc."""
-    spectra = extract_aperture(
-        sim_full_arc.arc, sim_full_arc.traces, ExtractParams(halfwidth=ARC_STRIP_HALFWIDTH)
-    )
+    spectra = extract_aperture(sim_full_arc.arc, sim_full_arc.traces, ExtractParams(halfwidth=ARC_STRIP_HALFWIDTH))
     spectra = continuum_subtract_all(spectra, ExtractParams())
     return [spectrum.flux - spectrum.continuum for spectrum in spectra]

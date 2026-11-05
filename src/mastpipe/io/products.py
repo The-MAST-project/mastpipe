@@ -173,10 +173,7 @@ def _read_mapping(header: fits.Header, scheme: tuple[str, str, str]) -> dict[str
     if count_key not in header:
         return None
     count = int(header[count_key])
-    return {
-        str(header[f"{key_prefix}{n:02d}"]): json.loads(header[f"{value_prefix}{n:02d}"])
-        for n in range(1, count + 1)
-    }
+    return {str(header[f"{key_prefix}{n:02d}"]): json.loads(header[f"{value_prefix}{n:02d}"]) for n in range(1, count + 1)}
 
 
 def _tuplify(value: Any) -> Any:
@@ -311,9 +308,7 @@ def read_master(path: Path | str) -> tuple[MasterCalib, Provenance]:
     """The inverse of :func:`write_master`; validity lists come back as tuples."""
     with fits.open(path) as hdul:
         header = hdul[0].header
-        validity = {
-            k: _tuplify(v) for k, v in (_read_mapping(header, VALIDITY_SCHEME) or {}).items()
-        }
+        validity = {k: _tuplify(v) for k, v in (_read_mapping(header, VALIDITY_SCHEME) or {}).items()}
         master = MasterCalib(
             kind=str(header["MPKIND"]),
             data=_native(hdul[0].data),
@@ -366,12 +361,8 @@ def write_traceset(path: Path | str, traceset: TraceSet, prov: Provenance) -> Pa
             _column("SNR", "D", [t.snr for t in traces]),
             _string_column("ROLE", [t.role for t in traces]),
             _string_column("TELESCOPE", [t.telescope for t in traces]),
-            _column(
-                "LAYOUT", "J", [-1 if t.layout_index is None else t.layout_index for t in traces]
-            ),
-            _column(
-                "APERTURE", "D", [np.nan if t.aperture is None else t.aperture for t in traces]
-            ),
+            _column("LAYOUT", "J", [-1 if t.layout_index is None else t.layout_index for t in traces]),
+            _column("APERTURE", "D", [np.nan if t.aperture is None else t.aperture for t in traces]),
         ],
     )
     index = np.concatenate([np.full(len(t.x_samples), t.index) for t in traces] or [[]])
@@ -614,17 +605,13 @@ def write_spectra(
             _vector_format(n_pix, "K" if integral else "D"),
             _stack(spectra, lambda s: s.pixel, 0, np.int64 if integral else float)[0],
         ),
-        _column(
-            "FLUX", _vector_format(n_pix, "D"), _stack(spectra, lambda s: s.flux, np.nan, float)[0]
-        ),
+        _column("FLUX", _vector_format(n_pix, "D"), _stack(spectra, lambda s: s.flux, np.nan, float)[0]),
         _column(
             "ERROR",
             _vector_format(n_pix, "D"),
             _stack(spectra, lambda s: s.error, np.nan, float)[0],
         ),
-        _column(
-            "MASK", _vector_format(n_pix, "L"), _stack(spectra, lambda s: s.mask, True, bool)[0]
-        ),
+        _column("MASK", _vector_format(n_pix, "L"), _stack(spectra, lambda s: s.mask, True, bool)[0]),
     ]
     presence: list[tuple[str, bool, str]] = []
     for name, card in GRID_CARDS.items():
@@ -634,9 +621,7 @@ def write_spectra(
         presence.append((card, bool(present.any()), f"{name} column populated"))
     for version in VERSIONS:
         tag = version.upper()
-        flux, present = _stack(
-            spectra, lambda s, v=version: _version_part(s, v, "flux"), np.nan, float
-        )
+        flux, present = _stack(spectra, lambda s, v=version: _version_part(s, v, "flux"), np.nan, float)
         error, _ = _stack(spectra, lambda s, v=version: _version_part(s, v, "error"), np.nan, float)
         mask, _ = _stack(spectra, lambda s, v=version: _version_part(s, v, "mask"), True, bool)
         columns.append(_column(f"HAS_{tag}", "L", present))
@@ -707,13 +692,10 @@ def read_spectra(
         spectra = []
         for i in range(n):
             versions = {
-                version: SpectrumVersion(f[i], e[i], m[i])
-                for version, (f, e, m, present) in kept.items()
-                if present[i]
+                version: SpectrumVersion(f[i], e[i], m[i]) for version, (f, e, m, present) in kept.items() if present[i]
             }
             optional = {
-                name: (values[0][i] if values is not None and values[1][i] else None)
-                for name, values in grids.items()
+                name: (values[0][i] if values is not None and values[1][i] else None) for name, values in grids.items()
             }
             spectra.append(
                 Spectrum(
@@ -767,9 +749,7 @@ def write_reference(path: Path | str, ref: ReferenceSolution, prov: Provenance) 
     for i, solution in enumerate(solutions):
         p = np.asarray(solution.params, dtype=float)
         if p.ndim != 1 or p.size > MAX_PARAMS:
-            raise ValueError(
-                f"fiber {solution.fiber}: {p.size} parameters exceed the {MAX_PARAMS} PARAMS slots"
-            )
+            raise ValueError(f"fiber {solution.fiber}: {p.size} parameters exceed the {MAX_PARAMS} PARAMS slots")
         n_params[i] = p.size
         params[i, : p.size] = p
     solutions_hdu = _table(
@@ -898,9 +878,7 @@ def read_reference(
         if stored_hash and solutions_hash(solutions) != stored_hash:
             raise ValueError(f"reference {identifier}: solutions do not match the stored hash")
         count_key, prefix, digits = SOURCE_SCHEME
-        checksums = tuple(
-            str(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, int(header[count_key]) + 1)
-        )
+        checksums = tuple(str(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, int(header[count_key]) + 1))
         ref = ReferenceSolution(
             instrument=instrument,
             configuration=configuration,
@@ -918,9 +896,7 @@ def read_reference(
 # ---------------------------------------------------------------------------- combined
 
 
-def write_combined(
-    path: Path | str, cs: CombinedSpectrum, meta: FrameMeta, prov: Provenance
-) -> Path:
+def write_combined(path: Path | str, cs: CombinedSpectrum, meta: FrameMeta, prov: Provenance) -> Path:
     """Table ``COMBINED``, one row per wavelength: ``WAVELENGTH`` and ``FLUX_<V>, ERROR_<V>,
     MASK_<V>`` for every version present in ``cs.versions`` (``RAW`` included), plus the
     tables ``CONTRIB`` and ``EXCLUDED`` from the contributor and excluded frames.
@@ -982,10 +958,7 @@ def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Proven
             excluded=_frame_from_table(hdul["EXCLUDED"]),
             grouping=str(header["MPGROUP"]),
             barycentric=_read_mapping(header, BARYCENTRIC_SCHEME) or {},
-            version_missing={
-                str(k): [int(f) for f in v]
-                for k, v in json.loads(header.get("MPVMISS", "{}")).items()
-            },
+            version_missing={str(k): [int(f) for f in v] for k, v in json.loads(header.get("MPVMISS", "{}")).items()},
         )
         return cs, _read_meta(header), Provenance.from_header(header)
 

@@ -111,11 +111,7 @@ class FrameMeta:
         if self.arc_kind is not None:
             _check_choice("arc_kind", self.arc_kind, ARC_KINDS)
         for pair in self.targets:
-            if (
-                not isinstance(pair, tuple)
-                or len(pair) != 2
-                or not all(isinstance(part, str) for part in pair)
-            ):
+            if not isinstance(pair, tuple) or len(pair) != 2 or not all(isinstance(part, str) for part in pair):
                 raise ValueError(f"targets must be (telescope, target) string pairs, got {pair!r}")
 
     @property

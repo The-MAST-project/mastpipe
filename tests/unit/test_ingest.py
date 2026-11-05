@@ -188,10 +188,7 @@ def test_frame_meta_records_the_timezone_used(tmp_path: Path, highspec_map: Head
 
     raw = load_header_map("highspec")
     raw["fields"]["mid_time"] = {**raw["fields"]["mid_time"], "timezone": "Asia/Jerusalem"}
-    local = {
-        ref.meta.source: ref.meta
-        for ref in scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw))
-    }
+    local = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw))}
     assert local["frame.fits"].mid_time == "2026-09-09T08:35:54"
     assert local["frame.fits"].timezone == "Asia/Jerusalem"
     assert local["offset.fits"].timezone == "utc"
@@ -199,9 +196,7 @@ def test_frame_meta_records_the_timezone_used(tmp_path: Path, highspec_map: Head
     # a manifest mid_time is taken as given, in UTC
     manifest = tmp_path / "frames.csv"
     write_manifest(manifest, [{"source": "frame.fits", "mid_time": "2026-09-09T12:00:00"}])
-    (ref,) = scan_folder(
-        tmp_path, "highspec", highspec_map, pattern="frame.fits", manifest=manifest
-    )
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map, pattern="frame.fits", manifest=manifest)
     assert ref.meta.mid_time == "2026-09-09T12:00:00" and ref.meta.timezone == "utc"
 
 
@@ -470,17 +465,13 @@ def test_instrument_gate_skips_other_instruments(nested: Path, highspec_map: Hea
     assert "highspec/acquisition-0001/exposure-001.fits" in sources  # INSTRUME = 'Highspec'
     assert "highspec/acquisition-0002/exposure-002.fits" in sources  # no INSTRUME
     assert len(refs) == 3
-    assert skipped == [
-        ("deepspec/acquisition-0001/exposure-001.fits", "instrument 'deepspec' is not 'highspec'")
-    ]
+    assert skipped == [("deepspec/acquisition-0001/exposure-001.fits", "instrument 'deepspec' is not 'highspec'")]
     assert all("instrument" not in ref.meta.unresolved for ref in refs)
     # without a list the other instrument's frames are still left out
     assert len(scan_folder(nested, "highspec", highspec_map)) == 3
 
 
-def test_manifest_matches_relative_path_glob_and_unique_name(
-    nested: Path, highspec_map: HeaderMap, tmp_path: Path
-):
+def test_manifest_matches_relative_path_glob_and_unique_name(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
     refs = scan_folder(nested, "highspec", highspec_map)
     path = tmp_path / "manifest.csv"
     write_manifest(

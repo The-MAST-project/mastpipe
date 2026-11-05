@@ -58,9 +58,7 @@ def test_layout_tables_parse_and_validate():
     assert survey.y_nominal.is_monotonic_increasing
     assert survey.loc[survey.role != "arc", "telescope"].notna().all()
     assert survey.loc[survey.role == "arc", "trace"].tolist() == [0, 11, 22, 33, 44]
-    assert sorted(set(survey.loc[survey.role != "arc", "telescope"])) == [
-        unit_name(i) for i in range(1, 21)
-    ]
+    assert sorted(set(survey.loc[survey.role != "arc", "telescope"])) == [unit_name(i) for i in range(1, 21)]
 
 
 def test_unknown_layout_preset():
@@ -152,9 +150,7 @@ def test_grating_block_with_foreign_name_is_rejected(tmp_path, monkeypatch):
     shutil.copytree(registry.instrument_dir("highspec"), copy)
     text = (copy / "gratings" / "Mg.yaml").read_text(encoding="utf-8")
     (copy / "gratings" / "Mg.yaml").unlink()
-    (copy / "gratings" / "mgb518.yaml").write_text(
-        text.replace("name: Mg", "name: mgb518"), encoding="utf-8"
-    )
+    (copy / "gratings" / "mgb518.yaml").write_text(text.replace("name: Mg", "name: mgb518"), encoding="utf-8")
     monkeypatch.setattr(registry, "instrument_dir", lambda name: copy)
     with pytest.raises(ValueError, match="GRATING_NAMES|Mg"):
         registry.load_instrument("highspec")

@@ -132,12 +132,7 @@ def _latest_master(calib_dir: Path, effective: EffectiveConfig, kind: str) -> Pa
         stamp = path.name[len(prefix) : -len(suffix)].split("_")[0]
         if stamp == NO_TIME:
             undated.append(path)
-        elif (
-            stamp.isascii()
-            and len(stamp) == 15
-            and stamp[8] == "T"
-            and stamp.replace("T", "").isdigit()
-        ):
+        elif stamp.isascii() and len(stamp) == 15 and stamp[8] == "T" and stamp.replace("T", "").isdigit():
             dated.append((stamp, path))
     if dated:
         return max(dated, key=lambda item: (item[0], item[1].name))[1]
@@ -155,9 +150,7 @@ def _master_name(kind: str, master: MasterCalib) -> str:
 
 def _frame_ref(full_arc: Path, instrument: str):
     pattern = glob.escape(full_arc.name)
-    refs = scan_folder(
-        full_arc.parent, instrument, load_header_map(instrument), pattern=pattern, recursive=False
-    )
+    refs = scan_folder(full_arc.parent, instrument, load_header_map(instrument), pattern=pattern, recursive=False)
     if not refs:
         raise ValueError(f"{full_arc}: no image HDU to reduce")
     return refs[0]
@@ -256,16 +249,12 @@ def _arc_lines(
         if source == "arc_full":
             trace_params = trace_params.model_copy(update={"collapse": "percentile"})
         assert trace_frame is not None
-        matched = match_layout(
-            find_traces(trace_frame.data, trace_params), layout, params.trace.layout_tolerance
-        )
+        matched = match_layout(find_traces(trace_frame.data, trace_params), layout, params.trace.layout_tolerance)
         traceset = layout_indexed(matched)
     if len(traceset) == 0:
         raise ValueError(f"{ref.meta.source}: no trace found on the {source.replace('_', ' ')}")
     dropped = f", {len(traceset.extra)} extra dropped" if traceset.extra else ""
-    steps.append(
-        f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing{dropped})"
-    )
+    steps.append(f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing{dropped})")
 
     spectra = extract_aperture(arc, traceset, params.extract)
     spectra = continuum_subtract_all(spectra, params.extract)
@@ -302,9 +291,7 @@ def _template(effective: EffectiveConfig, atlas_dir: Path | None):
         flux = remove_pedestal(spectrum["flux"].to_numpy(dtype=float))
         conv, fwhm = convolve_to_resolving_power(wave, flux, R)
         wavecal = effective.params.wavecal
-        usable = flag_usable_lines(
-            wave, conv, catalogue, fwhm, wavecal.max_shift_fwhm, wavecal.min_snr_atlas
-        )
+        usable = flag_usable_lines(wave, conv, catalogue, fwhm, wavecal.max_shift_fwhm, wavecal.min_snr_atlas)
         return wave, conv, usable
     table = load_line_table(effective.instrument, effective.configuration)
     catalogue = pd.DataFrame({"wavelength": table["wavelength_nm"], "logI": table["logI"]})
@@ -349,9 +336,7 @@ def _write_candidates(path: Path, template: pd.DataFrame, measured: pd.DataFrame
 # ----------------------------------------------------------------------- the reference
 
 
-def _provenance(
-    effective: EffectiveConfig, lines: ArcLines, steps: list[str], layout: str | None = None
-) -> Provenance:
+def _provenance(effective: EffectiveConfig, lines: ArcLines, steps: list[str], layout: str | None = None) -> Provenance:
     return Provenance(
         pipeline_version=__version__,
         config_hash=config_hash(effective),
@@ -403,9 +388,7 @@ def _solve_and_package(
     )
 
 
-def _write_reference_product(
-    out_dir: Path, ref: ReferenceSolution, prov: Provenance, write: bool, camera: str
-) -> Path:
+def _write_reference_product(out_dir: Path, ref: ReferenceSolution, prov: Provenance, write: bool, camera: str) -> Path:
     """The reference at ``out_dir/calib/<identifier>_wref.fits``, registered in the
     :class:`~mastpipe.pipeline.callib.CalibLibrary` of that folder under ``camera``, with
     ``fiber_agreement.csv`` next to it; only the path when ``write`` is false."""
@@ -465,9 +448,7 @@ def run_identify(
     lines = _arc_lines(full_arc, effective, load_layout(instrument, layout), out_dir)
     positions = {int(t.index): k for k, t in enumerate(lines.traceset.traces)}
     if trace not in positions:
-        raise ValueError(
-            f"anchor trace {trace} is not among the matched traces {sorted(positions)}"
-        )
+        raise ValueError(f"anchor trace {trace} is not among the matched traces {sorted(positions)}")
     at = positions[trace]
 
     if not anchors:
@@ -491,9 +472,7 @@ def run_identify(
     start = anchor_model(list(anchors), geom, int(lines.frame.shape[1]))
     ref = _solve_and_package(lines, effective, layout, start, trace)
     pairs = ", ".join(f"{wl:.4f} nm at {px:.2f} px" for wl, px in anchors)
-    prov = _provenance(
-        effective, lines, [f"wavecal from anchors on trace {trace}: {pairs}"], layout=layout
-    )
+    prov = _provenance(effective, lines, [f"wavecal from anchors on trace {trace}: {pairs}"], layout=layout)
     return ref, _write_reference_product(out_dir, ref, prov, write_reference, effective.camera)
 
 
@@ -525,9 +504,7 @@ def run_solve(
         )
     lines = _arc_lines(full_arc, effective, load_layout(effective.instrument, layout), out_dir)
     ref = _solve_and_package(lines, effective, layout, previous, 0)
-    prov = _provenance(
-        effective, lines, [f"wavecal seeded by reference {previous.identifier}"], layout=layout
-    )
+    prov = _provenance(effective, lines, [f"wavecal seeded by reference {previous.identifier}"], layout=layout)
     prov.reference_id = previous.identifier
     prov.reference_hash = previous.hash or None
     _write_reference_product(out_dir, ref, prov, True, effective.camera)
@@ -634,9 +611,7 @@ def identify_command(args: argparse.Namespace) -> int:
     camera = args.camera
     if camera is None:
         if len(instrument.cameras) != 1:
-            raise SystemExit(
-                f"{args.instrument} has cameras {sorted(instrument.cameras)}; pass --camera"
-            )
+            raise SystemExit(f"{args.instrument} has cameras {sorted(instrument.cameras)}; pass --camera")
         camera = next(iter(instrument.cameras))
     layout = args.layout or instrument.default_layout
     overrides = [parse_override(text) for text in args.set]

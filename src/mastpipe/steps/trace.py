@@ -101,9 +101,7 @@ def _statistic_factor(statistic: str, percentile: float) -> float:
     raise ValueError(f"collapse must be one of {COLLAPSE_STATISTICS}, got {statistic!r}")
 
 
-def _collapse(
-    block: np.ndarray, statistic: str = "median", percentile: float = 90.0
-) -> tuple[np.ndarray, float]:
+def _collapse(block: np.ndarray, statistic: str = "median", percentile: float = 90.0) -> tuple[np.ndarray, float]:
     """``block`` collapsed along x by ``statistic`` (the median, the mean or the
     ``percentile`` of each row) and the noise of that statistic.
 
@@ -142,9 +140,7 @@ def _odd(window: int) -> int:
 # --------------------------------------------------------------------------- trace finding
 
 
-def _centroid(
-    profile: np.ndarray, noise: float, y_predicted: float, halfwidth: int, threshold_sigma: float
-) -> float | None:
+def _centroid(profile: np.ndarray, noise: float, y_predicted: float, halfwidth: int, threshold_sigma: float) -> float | None:
     """Flux-weighted centroid of the pixels above ``threshold_sigma · noise`` within
     ``±halfwidth`` rows of ``y_predicted``; ``None`` when fewer than two pixels qualify
     or the brightest one sits on the window's edge (the trace is not in the window)."""
@@ -300,9 +296,7 @@ def find_traces(image: np.ndarray, params: TraceParams) -> TraceSet:
 # -------------------------------------------------------------------------- comb matching
 
 
-def comb_shift(
-    a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1, width: float | None = None
-) -> float:
+def comb_shift(a: np.ndarray, b: np.ndarray, max_shift: float, step: float = 0.1, width: float | None = None) -> float:
     """The shift ``s`` in ``[-max_shift, max_shift]`` for which ``a + s`` best overlaps ``b``.
 
     Every pairwise difference ``b_j - a_i`` within range is laid down as a Gaussian of
@@ -517,14 +511,11 @@ def classify_arc(
     noises: dict[int, float] = {}
     for trace in traceset:
         spectrum, n_rows = _aperture_sum(data, trace, halfwidth, frame.mask)
-        levels[trace.index] = float(
-            np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest"))
-        )
+        levels[trace.index] = float(np.mean(median_filter(spectrum, size=SPIKE_FILTER, mode="nearest")))
         noises[trace.index] = pixel_sigma * np.sqrt(n_rows) / np.sqrt(nx)
     brightest = max(levels.values(), default=0.0)
     flags = {
-        index: bool(level > max(lit_sigma * noises[index], lit_fraction * brightest))
-        for index, level in levels.items()
+        index: bool(level > max(lit_sigma * noises[index], lit_fraction * brightest)) for index, level in levels.items()
     }
 
     matched = [trace for trace in traceset if trace.role is not None]
@@ -532,29 +523,20 @@ def classify_arc(
     targets = [trace for trace in matched if trace.role in ("science", "sky")]
     if matched and all(flags[trace.index] for trace in matched):
         kind = "full"
-    elif (
-        arcs
-        and all(flags[trace.index] for trace in arcs)
-        and not any(flags[trace.index] for trace in targets)
-    ):
+    elif arcs and all(flags[trace.index] for trace in arcs) and not any(flags[trace.index] for trace in targets):
         kind = "calfiber"
     else:
         kind = "unknown"
     return kind, flags
 
 
-def relative_throughput(
-    flat: Frame | None, traceset: TraceSet, halfwidth: float
-) -> dict[int, float]:
+def relative_throughput(flat: Frame | None, traceset: TraceSet, halfwidth: float) -> dict[int, float]:
     """Integrated flat flux of every trace (aperture sum over all columns) divided by the
     median over traces, keyed by trace index; ``{}`` without a flat or without traces.
     ``ValueError`` when the median flux is not positive."""
     if flat is None or len(traceset) == 0:
         return {}
-    totals = {
-        trace.index: float(_aperture_sum(flat.data, trace, halfwidth, flat.mask)[0].sum())
-        for trace in traceset
-    }
+    totals = {trace.index: float(_aperture_sum(flat.data, trace, halfwidth, flat.mask)[0].sum()) for trace in traceset}
     scale = float(np.median(list(totals.values())))
     if not scale > 0:
         raise ValueError("the flat carries no flux on the traces; cannot normalise throughput")

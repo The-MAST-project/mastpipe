@@ -102,9 +102,7 @@ def _result(shift: float, stretch: float, n_lines: int, rms: float, params: Drif
     }
 
 
-def fit_fiber_drift(
-    x_obs: np.ndarray, reference: WavelengthSolution, params: DriftParams
-) -> dict[str, Any]:
+def fit_fiber_drift(x_obs: np.ndarray, reference: WavelengthSolution, params: DriftParams) -> dict[str, Any]:
     """The shift and stretch of one fiber's measured lines against its reference solution.
 
     ``x_obs`` are the measured line columns of the fiber on a calibration-fiber arc and the
@@ -237,9 +235,7 @@ def fit_drift(
         scatter = float(np.sqrt(np.mean(about_model**2)))
     else:
         scatter = float("nan")
-    n_pix = next(
-        (solution.n_pix for solution in reference.solutions.values()), int(traceset.shape[1])
-    )
+    n_pix = next((solution.n_pix for solution in reference.solutions.values()), int(traceset.shape[1]))
     return DriftModel(
         arc_checksums=(arc_meta.checksum,),
         arc_mid_time=arc_meta.mid_time or "",

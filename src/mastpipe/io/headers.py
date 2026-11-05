@@ -250,10 +250,7 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         raise ValueError(f"header map field {name!r}: missing_values must be a list")
     reference = spec.get("reference", "start")
     if reference not in TIME_REFERENCES:
-        raise ValueError(
-            f"header map field {name!r}: reference must be one of {TIME_REFERENCES}, "
-            f"got {reference!r}"
-        )
+        raise ValueError(f"header map field {name!r}: reference must be one of {TIME_REFERENCES}, got {reference!r}")
     try:
         timezone = check_timezone(spec.get("timezone", UTC))
     except ValueError as error:
@@ -291,9 +288,7 @@ def _parse_rule(index: int, rule: Any, fields: Mapping[str, FieldSpec]) -> Rule:
         if name not in fields:
             raise ValueError(f"{label}: unknown field {name!r}")
         if not isinstance(condition, Mapping) or not condition:
-            raise ValueError(
-                f"{label}: condition on {name!r} must be a mapping of operator -> value"
-            )
+            raise ValueError(f"{label}: condition on {name!r} must be a mapping of operator -> value")
         for op, value in condition.items():
             if op not in OPERATORS:
                 raise ValueError(f"{label}: operator must be one of {OPERATORS}, got {op!r}")
@@ -322,9 +317,7 @@ def _resolve_field(spec: FieldSpec, header: Mapping[str, Any], filename: str) ->
     return None
 
 
-def _resolve_per_unit(
-    spec: FieldSpec, template: str, header: Mapping[str, Any]
-) -> tuple[tuple[str, Any], ...] | None:
+def _resolve_per_unit(spec: FieldSpec, template: str, header: Mapping[str, Any]) -> tuple[tuple[str, Any], ...] | None:
     """``(unit name, value)`` for every unit whose expanded ``template`` keyword is present;
     ``None`` when none is."""
     pairs: list[tuple[str, Any]] = []

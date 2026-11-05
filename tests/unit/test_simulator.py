@@ -122,9 +122,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert header["EXPOSURE"] == pytest.approx(300.0) and header["SHUTTER"] == "open"
     # the header stamps the exposure start; the truth table records the mid-time
     science_row = frames.loc[frames.file == science.name].iloc[0]
-    assert pd.Timestamp(header["DATE-OBS"]) == pd.Timestamp(science_row.mid_time) - pd.Timedelta(
-        seconds=150
-    )
+    assert pd.Timestamp(header["DATE-OBS"]) == pd.Timestamp(science_row.mid_time) - pd.Timedelta(seconds=150)
     assert header["GRATING"] == "Mg"
     assert fits.getheader(frame_path(out_dir, truth, "arc"))["LAMP"] == "thar"
     assert fits.getheader(frame_path(out_dir, truth, "flat"))["LAMP"] == "flat"
@@ -142,9 +140,7 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert set(by_file) == set(frames.file)
     for row in frames.itertuples():
         meta = by_file[row.file].meta
-        assert meta.exposure_type == (
-            "light" if row.exposure_type == "science" else row.exposure_type
-        )
+        assert meta.exposure_type == ("light" if row.exposure_type == "science" else row.exposure_type)
         assert meta.classification_rule == "header"
         assert meta.mid_time == row.mid_time
         assert meta.configuration == "Mg" and meta.fiber_preset is None
@@ -289,31 +285,19 @@ def test_drift_interpolates_in_time(sim_night):
     assert (shifts.iloc[:full] == 0.0).all()  # before the full arc: the start value
     assert (frames.stretch == 0.0).all()
     # the law is linear in time from the full arc's mid-time to the last frame's
-    seconds = (
-        pd.to_datetime(frames.mid_time) - pd.Timestamp(frames.mid_time.iloc[full])
-    ).dt.total_seconds()
+    seconds = (pd.to_datetime(frames.mid_time) - pd.Timestamp(frames.mid_time.iloc[full])).dt.total_seconds()
     expected = 0.6 * np.clip(seconds, 0.0, None) / seconds.iloc[-1]
     np.testing.assert_allclose(shifts, expected, atol=1e-9)
 
     # and the lines on the cal arcs really sit at the truth pixel plus the recorded shift
     fiber = int(np.where(truth.layout.role == "arc")[0][0])
-    brightest = int(
-        np.argmax(
-            np.where(
-                np.isin(truth.line_pixels[fiber], on_chip(truth, fiber)), truth.line_logI, -np.inf
-            )
-        )
-    )
+    brightest = int(np.argmax(np.where(np.isin(truth.line_pixels[fiber], on_chip(truth, fiber)), truth.line_logI, -np.inf)))
     x_true = truth.line_pixels[fiber, brightest]
     for i in cal:
-        spectrum = aperture_spectrum(
-            cropped(out_dir / frames.file.iloc[i], truth), truth.trace_coeffs[fiber]
-        )
+        spectrum = aperture_spectrum(cropped(out_dir / frames.file.iloc[i], truth), truth.trace_coeffs[fiber])
         shift = truth.trace_shifts(frames.file.iloc[i])[fiber]  # the frame's shift at this row
         assert centroid(spectrum, x_true) == pytest.approx(x_true + shift, abs=0.1)
-    spectrum = aperture_spectrum(
-        cropped(out_dir / frames.file.iloc[full], truth), truth.trace_coeffs[fiber]
-    )
+    spectrum = aperture_spectrum(cropped(out_dir / frames.file.iloc[full], truth), truth.trace_coeffs[fiber])
     assert centroid(spectrum, x_true) == pytest.approx(x_true, abs=0.1)
 
 
@@ -329,9 +313,7 @@ def test_flat_traces_follow_truth(sim_night):
             weights = data[rows, xi] - level
             assert (weights * rows).sum() / weights.sum() == pytest.approx(yi, abs=0.1)
     # the per-fiber throughput shows in the integrated flat flux
-    integrated = np.array(
-        [aperture_spectrum(data - level, truth.trace_coeffs[i]).sum() for i in range(45)]
-    )
+    integrated = np.array([aperture_spectrum(data - level, truth.trace_coeffs[i]).sum() for i in range(45)])
     ratio = integrated / np.median(integrated)
     expected = truth.throughput / np.median(truth.throughput)
     np.testing.assert_allclose(ratio, expected, rtol=0.03)
@@ -339,22 +321,16 @@ def test_flat_traces_follow_truth(sim_night):
 
 def test_no_cal_arcs_and_determinism(tmp_path, highspec_effective, survey_layout, mg_lines):
     kwargs = dict(seed=3, n_bias=1, n_dark=1, n_flat=1, n_full_arc=1, n_cal_arc=2, n_science=3)
-    first = simulate_night(
-        highspec_effective, survey_layout, mg_lines, tmp_path / "a", no_cal_arcs=True, **kwargs
-    )
+    first = simulate_night(highspec_effective, survey_layout, mg_lines, tmp_path / "a", no_cal_arcs=True, **kwargs)
     assert first.frames.arc_kind.tolist().count("calfiber") == 0
     assert first.frames.arc_kind.tolist().count("full") == 1
     assert (first.frames.exposure_type == "science").sum() == 3
     assert (first.frames.exposure_type == "background").sum() == 1
-    second = simulate_night(
-        highspec_effective, survey_layout, mg_lines, tmp_path / "b", no_cal_arcs=True, **kwargs
-    )
+    second = simulate_night(highspec_effective, survey_layout, mg_lines, tmp_path / "b", no_cal_arcs=True, **kwargs)
     pd.testing.assert_frame_equal(first.frames, second.frames)
     np.testing.assert_array_equal(first.trace_coeffs, second.trace_coeffs)
     name = first.frames.file[first.frames.exposure_type == "science"].iloc[-1]
-    np.testing.assert_array_equal(
-        fits.getdata(tmp_path / "a" / name), fits.getdata(tmp_path / "b" / name)
-    )
+    np.testing.assert_array_equal(fits.getdata(tmp_path / "a" / name), fits.getdata(tmp_path / "b" / name))
     # a different seed changes the noise
     third = simulate_night(
         highspec_effective,
@@ -364,9 +340,7 @@ def test_no_cal_arcs_and_determinism(tmp_path, highspec_effective, survey_layout
         no_cal_arcs=True,
         **{**kwargs, "seed": 4},
     )
-    assert not np.array_equal(
-        fits.getdata(tmp_path / "a" / name), fits.getdata(tmp_path / "c" / name)
-    )
+    assert not np.array_equal(fits.getdata(tmp_path / "a" / name), fits.getdata(tmp_path / "c" / name))
     assert not np.array_equal(first.throughput, third.throughput)
 
 
@@ -377,9 +351,7 @@ def test_lab3_layout_simulates_arc_fibers_only(sim_night_lab3):
     assert truth.trace_coeffs.shape == (3, 3)
     assert "FIBPRE" not in fits.getheader(frame_path(out_dir, truth, "science"))
     full = cropped(out_dir / truth.frames.file[truth.frames.arc_kind == "full"].iloc[0], truth)
-    level = background_level(
-        truth, out_dir / truth.frames.file[truth.frames.arc_kind == "full"].iloc[0]
-    )
+    level = background_level(truth, out_dir / truth.frames.file[truth.frames.arc_kind == "full"].iloc[0])
     for i in range(3):
         assert aperture_spectrum(full, truth.trace_coeffs[i]).max() > level * 9 + 5000.0
     # the quadratic curvature term is within the brief's range
@@ -425,9 +397,7 @@ def test_simulated_traces_have_distinct_dispersions(sim_night, highspec_effectiv
     assert spread.max() <= 4 * jitter and spread.min() > 0.1
 
 
-def test_per_trace_dispersion_shows_on_the_full_arc(
-    tmp_path, highspec_effective, survey_layout, mg_lines
-):
+def test_per_trace_dispersion_shows_on_the_full_arc(tmp_path, highspec_effective, survey_layout, mg_lines):
     """With a large jitter the brightest line sits on each arc fiber's own truth pixel, and
     the arc fibers' pixels differ by much more than the centroid's error."""
     out_dir = tmp_path / "night"
@@ -450,14 +420,10 @@ def test_per_trace_dispersion_shows_on_the_full_arc(
     x_true = truth.line_pixels[arc_rows, line]
     assert np.ptp(x_true) > 1.0
     for i, x in zip(arc_rows, x_true, strict=True):
-        assert centroid(aperture_spectrum(full, truth.trace_coeffs[i]), x) == pytest.approx(
-            x, abs=0.1
-        )
+        assert centroid(aperture_spectrum(full, truth.trace_coeffs[i]), x) == pytest.approx(x, abs=0.1)
 
 
-def test_drift_varies_linearly_with_trace_row(
-    tmp_path, highspec_effective, survey_layout, mg_lines
-):
+def test_drift_varies_linearly_with_trace_row(tmp_path, highspec_effective, survey_layout, mg_lines):
     """The drift at trace ``i`` is the frame's shift plus ``gradient_px (y_i - ny/2) / ny``;
     the gradient ramps in time like the shift, from zero at the full arc to
     ``drift_gradient_px`` at the last frame."""
@@ -478,9 +444,7 @@ def test_drift_varies_linearly_with_trace_row(
     assert truth.drift_gradient_px == 3.0
     frames = truth.frames
     full = frames.index[frames.arc_kind == "full"][0]
-    np.testing.assert_allclose(
-        frames.gradient_px, 3.0 * frames.shift_px / frames.shift_px.iloc[-1], atol=1e-12
-    )
+    np.testing.assert_allclose(frames.gradient_px, 3.0 * frames.shift_px / frames.shift_px.iloc[-1], atol=1e-12)
     assert frames.gradient_px.iloc[full] == 0.0 and frames.gradient_px.iloc[-1] == 3.0
     cal = frames.loc[frames.arc_kind == "calfiber"].iloc[0]
     ny = truth.extras["shape"][0]
@@ -491,17 +455,14 @@ def test_drift_varies_linearly_with_trace_row(
     line = brightest_line(truth)
     arc_rows = np.flatnonzero(truth.layout.role == "arc")
     measured = [
-        centroid(aperture_spectrum(data, truth.trace_coeffs[i]), truth.line_pixels[i, line])
-        - truth.line_pixels[i, line]
+        centroid(aperture_spectrum(data, truth.trace_coeffs[i]), truth.line_pixels[i, line]) - truth.line_pixels[i, line]
         for i in arc_rows
     ]
     np.testing.assert_allclose(measured, shifts[arc_rows], atol=0.1)
     assert measured[-1] - measured[0] > 1.0  # the bottom and top arc fibers drift apart
 
 
-def test_swapped_fibers_swap_their_spectra_not_the_truth(
-    tmp_path, highspec_effective, survey_layout, mg_lines
-):
+def test_swapped_fibers_swap_their_spectra_not_the_truth(tmp_path, highspec_effective, survey_layout, mg_lines):
     """``swap_fibers=(a, b)`` (layout trace ids) lights fiber ``a`` with fiber ``b``'s
     spectrum and vice versa; the truth keeps every trace's own map, so the truth comparison
     flags exactly those two. On a layout whose ids are not its row positions the ids, not
@@ -510,15 +471,11 @@ def test_swapped_fibers_swap_their_spectra_not_the_truth(
     kwargs["dispersion_jitter_px"] = 3.0
     plain = simulate_night(highspec_effective, survey_layout, mg_lines, tmp_path / "a", **kwargs)
     out_dir = tmp_path / "b"
-    swapped = simulate_night(
-        highspec_effective, survey_layout, mg_lines, out_dir, swap_fibers=(1, 3), **kwargs
-    )
+    swapped = simulate_night(highspec_effective, survey_layout, mg_lines, out_dir, swap_fibers=(1, 3), **kwargs)
     np.testing.assert_array_equal(swapped.line_pixels, plain.line_pixels)
     np.testing.assert_array_equal(swapped.x_c_per_trace, plain.x_c_per_trace)
     assert swapped.extras["swap_fibers"] == [1, 3] and plain.extras["swap_fibers"] is None
-    full = cropped(
-        out_dir / swapped.frames.file[swapped.frames.arc_kind == "full"].iloc[0], swapped
-    )
+    full = cropped(out_dir / swapped.frames.file[swapped.frames.arc_kind == "full"].iloc[0], swapped)
     line = brightest_line(swapped)
     lit_as = {1: 3, 3: 1, 2: 2, 4: 4}
     for trace, source in lit_as.items():
@@ -537,17 +494,11 @@ def test_swapped_fibers_swap_their_spectra_not_the_truth(
         )
     # ids that are not row positions: the same two fibers swapped by id give the same frames
     renumbered = survey_layout.assign(trace=survey_layout["trace"] + 100)
-    by_id = simulate_night(
-        highspec_effective, renumbered, mg_lines, tmp_path / "d", swap_fibers=(101, 103), **kwargs
-    )
+    by_id = simulate_night(highspec_effective, renumbered, mg_lines, tmp_path / "d", swap_fibers=(101, 103), **kwargs)
     assert by_id.row_of(103) == 3 and swapped.row_of(3) == 3
     with pytest.raises(KeyError):
         by_id.row_of(3)
     for name in by_id.frames.file:
-        np.testing.assert_array_equal(
-            fits.getdata(tmp_path / "d" / name), fits.getdata(out_dir / name), err_msg=name
-        )
+        np.testing.assert_array_equal(fits.getdata(tmp_path / "d" / name), fits.getdata(out_dir / name), err_msg=name)
     with pytest.raises(ValueError, match="swap_fibers"):
-        simulate_night(
-            highspec_effective, renumbered, mg_lines, tmp_path / "e", swap_fibers=(1, 3), **kwargs
-        )
+        simulate_night(highspec_effective, renumbered, mg_lines, tmp_path / "e", swap_fibers=(1, 3), **kwargs)

@@ -123,9 +123,7 @@ def test_no_candidates_gives_reference_status():
     stale = [arc(-20.0 * 60.0)]
     assert pair_arcs(exposure, stale, reference(), DriftParams()) == []
     # an exposure without a mid-time cannot be paired
-    no_time = FrameMeta(
-        instrument="highspec", camera="main", exposure_type="science", configuration="Mg"
-    )
+    no_time = FrameMeta(instrument="highspec", camera="main", exposure_type="science", configuration="Mg")
     assert pair_arcs(no_time, [arc(-10.0)], reference(), DriftParams()) == []
 
 

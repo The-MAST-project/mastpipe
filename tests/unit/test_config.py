@@ -49,9 +49,7 @@ def make_detector(**overrides) -> DetectorConfig:
     return DetectorConfig(**fields)
 
 
-def make_instrument(
-    block_params=None, instrument_params=None, layout_params=None
-) -> InstrumentConfig:
+def make_instrument(block_params=None, instrument_params=None, layout_params=None) -> InstrumentConfig:
     if block_params is None:
         block_params = {"trace": {"trace_halfwidth": 4}}
     return InstrumentConfig(
@@ -137,9 +135,7 @@ def test_build_effective_layers_layout_params_between_block_and_overrides():
     assert survey.params.trace.trace_halfwidth == 4 and survey.params.extract.halfwidth == 4.0
     assert survey.layers == ["instrument:toy", "configuration:g518", "layout:survey45"]
     # an override still wins over the preset block
-    forced = build_effective(
-        inst, "g518", "main", overrides=[{"trace": {"trace_halfwidth": 5}}], layout="survey45"
-    )
+    forced = build_effective(inst, "g518", "main", overrides=[{"trace": {"trace_halfwidth": 5}}], layout="survey45")
     assert forced.params.trace.trace_halfwidth == 5 and forced.params.extract.halfwidth == 4.0
     assert config_hash(survey) != config_hash(plain) and config_hash(lab) == config_hash(plain)
     with pytest.raises(KeyError, match="layout"):

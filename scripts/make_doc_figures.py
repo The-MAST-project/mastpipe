@@ -43,9 +43,7 @@ def main() -> int:
 
         # 1. the anchor panels, as identify draws them without anchors
         out = Path(tmp) / "out"
-        _, png = run_identify(
-            full_arc, effective, "survey45", out, anchors=None, write_reference=False
-        )
+        _, png = run_identify(full_arc, effective, "survey45", out, anchors=None, write_reference=False)
         (STATIC / "anchor_panels.png").write_bytes(Path(png).read_bytes())
 
         # 2. a simulated science frame: 45 traces, dispersion along x
@@ -55,9 +53,7 @@ def main() -> int:
         ax.imshow(data, origin="lower", cmap="gray", vmin=lo, vmax=hi, aspect="auto")
         ax.set_xlabel("column (dispersion)")
         ax.set_ylabel("row (fibers)")
-        ax.set_title(
-            "Simulated HighSpec science frame, survey layout: 20 science, 20 sky, 5 dark arc traces"
-        )
+        ax.set_title("Simulated HighSpec science frame, survey layout: 20 science, 20 sky, 5 dark arc traces")
         fig.tight_layout()
         fig.savefig(STATIC / "simulated_frame.png")
         plt.close(fig)

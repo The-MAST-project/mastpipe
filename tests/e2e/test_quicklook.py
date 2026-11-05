@@ -72,9 +72,7 @@ def truth_anchors(truth, cat_wl) -> list[tuple[float, float]]:
     usable = np.isin(truth.lines_nm, cat_wl)
     bright = usable & truth.lines_on_chip & (truth.line_logI > ANCHOR_LOG_INTENSITY)
     first, last = np.flatnonzero(bright)[[0, -1]]
-    return [
-        (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
-    ]
+    return [(float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)]
 
 
 def science_files(truth) -> list[str]:
@@ -112,8 +110,7 @@ def map_errors(out_dir: Path, night) -> dict[str, dict[int, float]]:
     for path in spec_products(out_dir):
         es, _, _ = read_spectra(path)
         errors[es.meta.source] = {
-            s.fiber: map_error_in_dispersions(s.wavelength, night, s.fiber, es.meta.source)
-            for s in es.spectra
+            s.fiber: map_error_in_dispersions(s.wavelength, night, s.fiber, es.meta.source) for s in es.spectra
         }
     return errors
 
@@ -155,9 +152,7 @@ def nominal_run(night, out_dir) -> RunSummary:
 @pytest.fixture(scope="module")
 def identified(nominal_run, night, out_dir) -> SimpleNamespace:
     """The reference made by ``identify`` from truth anchors, into the same output folder."""
-    ref, path = run_identify(
-        night.full_arc, night.effective, "survey45", out_dir, anchors=night.anchors, anchor_trace=0
-    )
+    ref, path = run_identify(night.full_arc, night.effective, "survey45", out_dir, anchors=night.anchors, anchor_trace=0)
     _, prov = read_reference(path, lambda instrument, configuration: night.geom)
     return SimpleNamespace(ref=ref, path=path, prov=prov)
 
@@ -228,10 +223,7 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
     sources = science_files(truth)
     # the nominal products were reduced again, now against the reference and its arcs
     assert sorted(summary.reduced_again) == sorted(sources)
-    assert any(
-        night.full_arc.name in item and identified.ref.identifier in item
-        for item in summary.skipped
-    )
+    assert any(night.full_arc.name in item and identified.ref.identifier in item for item in summary.skipped)
     products = spec_products(out_dir)
     assert len(products) == N_SCIENCE
     checksums = {name: file_checksum(night.dir / name) for name in night.cal_arcs}
@@ -251,15 +243,11 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
                 continue
             science_traces += 1
             assert spectrum.wavelength is not None
-            error = map_error_in_dispersions(
-                spectrum.wavelength, night, spectrum.fiber, es.meta.source
-            )
+            error = map_error_in_dispersions(spectrum.wavelength, night, spectrum.fiber, es.meta.source)
             assert error < MAX_MAP_ERROR_DISP, (es.meta.source, spectrum.fiber, error)
             assert "skysub" in spectrum.versions
             assert spectrum.sky is not None
-            assert np.isfinite(
-                spectrum.versions["skysub"].flux[~spectrum.versions["skysub"].mask]
-            ).all()
+            assert np.isfinite(spectrum.versions["skysub"].flux[~spectrum.versions["skysub"].mask]).all()
         # QC lists the drift shift that was used and the per-fiber numbers
         qc = read_qc(out_dir / "qa" / path.with_suffix(".json").name)
         assert qc.stage == "science"
@@ -281,9 +269,7 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
             assert cs.target == target and meta.source == es.meta.source
             assert {"raw", "skysub"} <= set(cs.versions)
             assert comb_prov.wavelength_status == "transferred"
-            assert len(cs.contributors) == sum(
-                1 for s in es.spectra if s.role == "science" and s.target == target
-            )
+            assert len(cs.contributors) == sum(1 for s in es.spectra if s.role == "science" and s.target == target)
             assert cs.excluded.empty
     assert science_traces == N_SCIENCE * len(night.truth.layout.query("role == 'science'"))
     # each drift arc has its QC file with the fitted drift
@@ -295,9 +281,7 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
         assert len(values["per_fiber"]) == len(night.truth.layout.query("role == 'arc'"))
 
 
-def test_quicklook_without_drift_arcs_gives_reference_status(
-    tmp_path, night, survey_layout, mg_lines, identified
-):
+def test_quicklook_without_drift_arcs_gives_reference_status(tmp_path, night, survey_layout, mg_lines, identified):
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     summary = run_quicklook(folder, tmp_path / "out", options())
     assert summary.failed == []
@@ -314,9 +298,7 @@ def test_quicklook_without_drift_arcs_gives_reference_status(
         assert all(s is None for s in qc.values["drift_shift_px"])
 
 
-def test_quicklook_idempotent_then_reduced_again(
-    tmp_path, night, survey_layout, mg_lines, identified
-):
+def test_quicklook_idempotent_then_reduced_again(tmp_path, night, survey_layout, mg_lines, identified):
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     out = tmp_path / "out"
     first = run_quicklook(folder, out, options(SHORT_AGE))
@@ -336,9 +318,7 @@ def test_quicklook_idempotent_then_reduced_again(
     shutil.copy(night.dir / arc, folder / arc)
     third = run_quicklook(folder, out, options(SHORT_AGE))
     assert third.failed == []
-    t_arc = pd.Timestamp(
-        night.truth.frames.loc[night.truth.frames["file"] == arc, "mid_time"].iloc[0]
-    )
+    t_arc = pd.Timestamp(night.truth.frames.loc[night.truth.frames["file"] == arc, "mid_time"].iloc[0])
     statuses = {}
     for path in spec_products(out):
         es, prov, _ = read_spectra(path)
@@ -417,10 +397,7 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
         patch.setattr(registry, "instrument_dir", lambda name: copy)
         edited = run_quicklook(folder, out, options())
         assert edited.failed == [] and sorted(edited.reduced_again) == sources
-        assert all(
-            read_spectra(path)[1].layout_hash == layout_hash("highspec", "survey45")
-            for path in spec_products(out)
-        )
+        assert all(read_spectra(path)[1].layout_hash == layout_hash("highspec", "survey45") for path in spec_products(out))
     assert sorted(run_quicklook(folder, out, options()).reduced_again) == sources
 
     # (d) the reference re-solved under the same identifier, with another hash
@@ -469,23 +446,17 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     assert set(restacked) == set(masters)
     assert all(restacked[name] != rebuilt[name] for name in masters)
     assert {path.name for path in mean.products} >= set(masters)
-    assert all(
-        read_master(out / "calib" / name)[0].provenance["method"] == "mean" for name in masters
-    )
+    assert all(read_master(out / "calib" / name)[0].provenance["method"] == "mean" for name in masters)
     new = {read_spectra(path)[1].masters_hash for path in spec_products(out)}
     assert len(new) == 1 and new != hashes
 
 
-def test_quicklook_interpolate_blends_the_two_arcs(
-    tmp_path, transferred_run, identified, night, out_dir
-):
+def test_quicklook_interpolate_blends_the_two_arcs(tmp_path, transferred_run, identified, night, out_dir):
     """Under ``interpolate`` a science frame between the two drift arcs carries both: the
     product's DRIFT table reads back as one blended model with both checksums and the
     QC lists the two weights. The run shares the module library but writes elsewhere."""
     out = tmp_path / "interp"
-    summary = run_quicklook(
-        night.dir, out, options(time_policy="interpolate", library=out_dir / "calib")
-    )
+    summary = run_quicklook(night.dir, out, options(time_policy="interpolate", library=out_dir / "calib"))
     assert summary.failed == []
     truth = night.truth
     arcs = truth.frames.loc[truth.frames["arc_kind"] == "calfiber"]
@@ -511,9 +482,7 @@ def test_quicklook_interpolate_blends_the_two_arcs(
             assert len(drift.per_fiber) == len(truth.layout.query("role == 'arc'"))
             for spectrum in es.spectra:
                 if spectrum.role == "science":
-                    error = map_error_in_dispersions(
-                        spectrum.wavelength, night, spectrum.fiber, es.meta.source
-                    )
+                    error = map_error_in_dispersions(spectrum.wavelength, night, spectrum.fiber, es.meta.source)
                     assert error < MAX_MAP_ERROR_DISP
         else:
             assert len(prov.drift_arcs) == 1 and qc.values["drift_weights"] == [1.0]
@@ -598,9 +567,7 @@ def test_swapped_fibers_are_detected(tmp_path, night, survey_layout, mg_lines):
         assert wrong == set(SWAPPED), per_fiber
 
 
-def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
-    tmp_path, transferred_run, identified, night, out_dir
-):
+def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(tmp_path, transferred_run, identified, night, out_dir):
     """A night whose flat lacks one fiber's light, reduced against the reference of the
     complete night: the traces are keyed by the layout's trace id, so every other fiber
     keeps its own solution (wavelengths match the truth) and the missing fiber is simply
@@ -608,9 +575,7 @@ def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
     truth = night.truth
     folder = tmp_path / "night"
     folder.mkdir()
-    copy_frames(
-        night.dir, truth, folder, ["bias", "dark", "flat", "background", "science"], ["calfiber"]
-    )
+    copy_frames(night.dir, truth, folder, ["bias", "dark", "flat", "background", "science"], ["calfiber"])
     coeffs = truth.trace_coeffs[DROPPED_FIBER]
     x = np.arange(int(truth.extras["n_pix"]))
 
@@ -641,9 +606,7 @@ def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
         for spectrum in es.spectra:
             assert (spectrum.role, spectrum.telescope) == rows[spectrum.fiber]
             assert spectrum.wavelength is not None
-            error = map_error_in_dispersions(
-                spectrum.wavelength, night, spectrum.fiber, es.meta.source
-            )
+            error = map_error_in_dispersions(spectrum.wavelength, night, spectrum.fiber, es.meta.source)
             assert error < MAX_MAP_ERROR_DISP, (es.meta.source, spectrum.fiber, error)
         qc = read_qc(out / "qa" / path.with_suffix(".json").name)
         assert qc.values["wavelength_skipped"] == []
@@ -671,18 +634,17 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
         rows = np.arange(-5, 6)
         profile = 15000.0 * np.exp(-0.5 * (rows / sigma) ** 2)
         centre = int(round(EXTRA_ROW)) + y_min
-        data[centre - 5 : centre + 6, x_min : data.shape[1] - x_min] += profile[:, None].astype(
-            data.dtype
-        )
+        data[centre - 5 : centre + 6, x_min : data.shape[1] - x_min] += profile[:, None].astype(data.dtype)
 
     edit_flats(folder, truth, ridge)
     sources = science_files(truth)
     plain = run_quicklook(folder, tmp_path / "out_light", RunOptions("highspec"))
     assert plain.failed == [] and spec_products(tmp_path / "out_light") == []
     for source in sources:
-        assert any(
-            item.startswith(source) and "content:no_signal" in item for item in plain.skipped
-        ), (source, plain.skipped)
+        assert any(item.startswith(source) and "content:no_signal" in item for item in plain.skipped), (
+            source,
+            plain.skipped,
+        )
 
     manifest = tmp_path / "manifest.csv"
     rows = ["source,exposure_type", *(f"{source},science" for source in sources)]
@@ -706,9 +668,7 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
     assert "match no row of layout lab3" in log and f"y = {EXTRA_ROW:.1f}" in log
 
 
-def test_reference_on_another_pixel_grid_is_refused(
-    tmp_path, night, survey_layout, mg_lines, identified
-):
+def test_reference_on_another_pixel_grid_is_refused(tmp_path, night, survey_layout, mg_lines, identified):
     """A reference solved on another detector crop names itself and the frame width in the
     recorded failure instead of breaking inside the product writer."""
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
@@ -790,9 +750,7 @@ def test_unknown_frames_are_skipped_with_reason(tmp_path):
     )
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,exposure_type\nweird.fits,unknown\n", encoding="utf-8", newline="")
-    summary = run_quicklook(
-        folder, tmp_path / "out", RunOptions("highspec", configuration="Mg", manifest=manifest)
-    )
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg", manifest=manifest))
     assert any("junk.fits" in item and "rule:4" in item for item in summary.skipped)
     assert any("weird.fits" in item and "manifest" in item for item in summary.skipped)
     assert not any("sci.fits" in item for item in summary.skipped)
@@ -811,9 +769,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     folder = tmp_path / "night"
     folder.mkdir()
     truth = night.truth
-    keep = truth.frames.loc[
-        truth.frames["exposure_type"].isin(["bias", "dark", "flat", "background"])
-    ]
+    keep = truth.frames.loc[truth.frames["exposure_type"].isin(["bias", "dark", "flat", "background"])]
     for name in keep["file"]:
         shutil.copy(night.dir / name, folder / name)
     good = science_files(truth)[:2]
@@ -836,9 +792,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
     assert produced == set(good)
     # the stub frame's product (its 300 s start at 23:00 gives a mid-time of 23:02:30)
-    assert not list(
-        (tmp_path / "out" / "spec").glob("highspec_Mg_main_20261001T230230_*_spec.fits")
-    )
+    assert not list((tmp_path / "out" / "spec").glob("highspec_Mg_main_20261001T230230_*_spec.fits"))
 
     with pytest.raises(ValueError, match="shape"):
         run_quicklook(folder, tmp_path / "out2", options(on_error="raise"))
@@ -851,10 +805,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     folder = tmp_path / "night"
     shutil.copytree(night.dir, folder)
     truth = night.truth
-    bias, flat = (
-        str(truth.frames.loc[truth.frames["exposure_type"] == kind, "file"].iloc[0])
-        for kind in ("bias", "flat")
-    )
+    bias, flat = (str(truth.frames.loc[truth.frames["exposure_type"] == kind, "file"].iloc[0]) for kind in ("bias", "flat"))
     # a bias cut down to a stub, with the cards of a real one
     header = fits.getheader(night.dir / bias)
     stub = fits.PrimaryHDU(np.full((20, 30), 600, dtype=np.uint16), header)
@@ -876,9 +827,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     assert failed["sim_arc_bad.fits"] == "unreadable FITS file"
     assert len(spec_products(out)) == N_SCIENCE
     # the masters were stacked from the good frames only
-    n_bias, n_flat = (
-        int((truth.frames["exposure_type"] == kind).sum()) for kind in ("bias", "flat")
-    )
+    n_bias, n_flat = (int((truth.frames["exposure_type"] == kind).sum()) for kind in ("bias", "flat"))
     for kind, n in (("bias", n_bias), ("flat", n_flat)):
         _, prov = read_master(next((out / "calib").glob(f"*_{kind}.fits")))
         assert len(prov.inputs) == n, kind

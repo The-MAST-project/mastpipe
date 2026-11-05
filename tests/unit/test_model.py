@@ -180,10 +180,7 @@ def test_exposure_spectra_statuses():
 
 
 def test_reference_identifier_format():
-    assert (
-        make_identifier("highspec", "Mg", "lab3", "2026-09-09T12:34:56")
-        == "highspec_Mg_lab3_20260909T123456"
-    )
+    assert make_identifier("highspec", "Mg", "lab3", "2026-09-09T12:34:56") == "highspec_Mg_lab3_20260909T123456"
 
 
 def make_per_fiber(**overrides) -> pd.DataFrame:
@@ -242,12 +239,8 @@ def test_tables_require_named_columns():
         WavelengthSolution(lines=lines.drop(columns="species"), **solution_fields)
 
     wavelength = np.linspace(517.0, 519.0, 6)
-    contributors = pd.DataFrame(
-        {"fiber": [1], "telescope": ["mast01"], "source": ["a.fits"], "weight": [1.0]}
-    )
-    excluded = pd.DataFrame(
-        {"fiber": [3], "telescope": ["mast02"], "source": ["a.fits"], "reason": ["low snr"]}
-    )
+    contributors = pd.DataFrame({"fiber": [1], "telescope": ["mast01"], "source": ["a.fits"], "weight": [1.0]})
+    excluded = pd.DataFrame({"fiber": [3], "telescope": ["mast02"], "source": ["a.fits"], "reason": ["low snr"]})
     combined_fields = {
         "target": "star",
         "wavelength": wavelength,
@@ -258,13 +251,9 @@ def test_tables_require_named_columns():
     combined = CombinedSpectrum(contributors=contributors, excluded=excluded, **combined_fields)
     assert set(combined.versions) == {"raw", "skysub"}
     with pytest.raises(ValueError, match="contributors"):
-        CombinedSpectrum(
-            contributors=contributors.drop(columns="weight"), excluded=excluded, **combined_fields
-        )
+        CombinedSpectrum(contributors=contributors.drop(columns="weight"), excluded=excluded, **combined_fields)
     with pytest.raises(ValueError, match="excluded"):
-        CombinedSpectrum(
-            contributors=contributors, excluded=excluded.drop(columns="reason"), **combined_fields
-        )
+        CombinedSpectrum(contributors=contributors, excluded=excluded.drop(columns="reason"), **combined_fields)
     with pytest.raises(ValueError, match="banana"):
         CombinedSpectrum(
             contributors=contributors,
