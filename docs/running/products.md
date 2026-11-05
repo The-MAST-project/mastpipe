@@ -27,7 +27,7 @@ out/
 ```
 
 Every product, the QC files and `calib/index.json` are written to a temporary
-`<name>.tmp-<pid>` next to the target and moved into place when complete, so an
+`<name>.tmp-<pid>-<random>` next to the target and moved into place when complete, so an
 interrupted run never leaves a partial file. `calib/index.lock` is the lock that
 lets several runs (a quick-look and an `identify`) share one `calib/` folder
 without losing each other's index entries; leave it in place.

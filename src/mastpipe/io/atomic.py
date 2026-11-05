@@ -14,6 +14,7 @@ import errno
 import os
 import sys
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -31,15 +32,17 @@ _BUSY = frozenset({errno.EACCES}) if sys.platform == "win32" else frozenset({err
 def atomic_write(path: Path | str) -> Iterator[Path]:
     """Yield a temporary path next to ``path``; on normal exit move it onto ``path``.
 
-    The temporary is ``<name>.tmp-<pid>`` in the same folder (so the move is a rename on
-    one file system); the folder is created when missing. When the block raises, the
+    The temporary is ``<name>.tmp-<pid>-<random>`` in the same folder (so the move is a
+    rename on one file system), unique per call, so overlapping writes to one target -- from
+    two threads of one process as well as from two processes -- never share a temporary;
+    the last to finish wins. The folder is created when missing. When the block raises, the
     temporary is removed, ``path`` is left as it was and the error propagates. The writer
     must have closed the temporary before the block ends (Windows refuses to replace a
     file that is open).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:12]}")
     try:
         yield tmp
         os.replace(tmp, path)

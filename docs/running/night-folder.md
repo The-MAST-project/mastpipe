@@ -225,6 +225,6 @@ a night is simply absent from its products.
 ## Leftovers of an interrupted run
 
 Every product, master, reference, index and QC file is written under a
-temporary name in its own folder (`<name>.tmp-<pid>`) and moved into place in
+temporary name in its own folder (`<name>.tmp-<pid>-<random>`) and moved into place in
 one step, so a reader never sees a partial file. A run that is killed may
 leave such a temporary behind; it is never read and is safe to delete.

@@ -37,6 +37,18 @@ def test_atomic_write_leaves_no_partial_file(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["product.fits"]
 
 
+def test_overlapping_writes_to_one_target_do_not_share_a_temporary(tmp_path):
+    # Two writers in one process (same pid, e.g. two threads) overlap on one target: each
+    # must get its own temporary, so each publishes its own contents and neither move fails.
+    target = tmp_path / "index.json"
+    with atomic_write(target) as first, atomic_write(target) as second:
+        assert first != second
+        first.write_text("first\n", encoding="utf-8")
+        second.write_text("second\n", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "first\n"  # the outer block finished last
+    assert [p.name for p in tmp_path.iterdir()] == ["index.json"]
+
+
 def test_lock_times_out_with_a_message(tmp_path):
     with (
         locked(tmp_path / "index.lock"),
