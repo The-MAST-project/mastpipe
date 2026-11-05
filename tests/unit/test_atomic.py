@@ -38,9 +38,12 @@ def test_atomic_write_leaves_no_partial_file(tmp_path):
 
 
 def test_lock_times_out_with_a_message(tmp_path):
-    with locked(tmp_path / "index.lock"), pytest.raises(TimeoutError, match="index.lock"):
-        with locked(tmp_path / "index.lock", timeout_s=0.2):
-            pass
+    with (
+        locked(tmp_path / "index.lock"),
+        pytest.raises(TimeoutError, match="index.lock"),
+        locked(tmp_path / "index.lock", timeout_s=0.2),
+    ):
+        pass
     # released on exit: it can be taken again, and the lock file stays
     with locked(tmp_path / "index.lock", timeout_s=0.2):
         pass

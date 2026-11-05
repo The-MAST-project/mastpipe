@@ -125,10 +125,7 @@ def _collapse(block: np.ndarray, statistic: str = "median", percentile: float = 
     row_sigma = MAD_TO_SIGMA * deviation
     row_sigma = row_sigma[np.isfinite(row_sigma)]
     n_columns = block.shape[1]
-    if row_sigma.size == 0 or n_columns == 0:
-        noise = 0.0
-    else:
-        noise = float(factor * np.median(row_sigma) / np.sqrt(n_columns))
+    noise = 0.0 if row_sigma.size == 0 or n_columns == 0 else float(factor * np.median(row_sigma) / np.sqrt(n_columns))
     return np.nan_to_num(profile, nan=0.0), noise
 
 

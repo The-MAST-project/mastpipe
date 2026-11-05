@@ -326,10 +326,8 @@ def _mid_time(value: Any, exposure_time: Any, reference: str, timezone: str = UT
         stamp = to_utc(text, timezone)
     except ValueError:
         return text, False, None
-    if is_explicit(text):
-        zone = UTC
-    else:
-        zone = ASSUMED_UTC if timezone == ASSUME_UTC else timezone
+    assumed = ASSUMED_UTC if timezone == ASSUME_UTC else timezone
+    zone = UTC if is_explicit(text) else assumed
     if reference == "mid":
         return utc_iso(stamp), True, zone
     if exposure_time is None:

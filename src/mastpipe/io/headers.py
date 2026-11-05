@@ -45,6 +45,7 @@ Raw keyword names live only in the YAML files; this module never names one.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -119,10 +120,8 @@ class FieldSpec:
         if self.lower and isinstance(value, str):
             value = value.lower()
         if self.map is not None:
-            try:
+            with contextlib.suppress(TypeError):  # unhashable value: nothing to map
                 value = self.map.get(value, value)
-            except TypeError:  # unhashable value: nothing to map
-                pass
         return value
 
 
@@ -261,7 +260,7 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         type=type_name,
         lower=bool(spec.get("lower", False)),
         map=dict(mapping) if mapping is not None else None,
-        default=spec["default"] if "default" in spec else _NO_DEFAULT,
+        default=spec.get("default", _NO_DEFAULT),
         filename_regex=regex,
         missing_values=tuple(missing),
         reference=str(reference),

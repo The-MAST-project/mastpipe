@@ -189,10 +189,7 @@ def _arc_lines(
     out_dir = Path(out_dir)
     params = effective.params
     detector = effective.detector
-    if isinstance(full_arc, FrameRef):
-        ref = full_arc
-    else:
-        ref = _frame_ref(Path(full_arc), effective.instrument)
+    ref = full_arc if isinstance(full_arc, FrameRef) else _frame_ref(Path(full_arc), effective.instrument)
     frame = load_frame(ref, detector)
     shape = (int(frame.shape[0]), int(frame.shape[1]))
 
