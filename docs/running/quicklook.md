@@ -48,8 +48,9 @@ Per camera and grating found in the folder:
 : The grating of frames whose header does not name it (no `GRATING` card and
   no grating alias in the file name). The control software writes no such card
   today, so a night from the site needs this option; without it those frames
-  are not reduced and the run fails with the list of valid names. A frame that
-  names its grating keeps it.
+  are not reduced and the run fails with the list of the instrument's
+  configurations. A frame that names its grating keeps it; one that does not
+  takes this one, and its products, masters and library entries are named by it.
 
 `--manifest file.csv`
 : Metadata overrides by relative path, glob pattern or file name; see

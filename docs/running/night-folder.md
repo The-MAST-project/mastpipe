@@ -100,7 +100,8 @@ source not stated". It is resolved in three ways, in order:
    (`content:no_signal`). The rule is written in the frame's QC and in the
    product's provenance.
 3. **By the manifest**, which always wins: a frame whose manifest row sets
-   `exposure_type` is never `light`.
+   `exposure_type` takes that type; a row may set it to `light`, and the frame
+   is then resolved from its content as above.
 
 Content cannot tell a flat from a science frame (both are continua), and a
 lamp-off background with a little ambient light in it may resolve as `science`.
@@ -189,11 +190,12 @@ Rows apply in order, so a later row wins over an earlier one for the frames
 both name. A row that matches no frame is listed under *skipped*, never
 dropped silently.
 
-Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`,
+Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `light`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
 every telescope; the older `target` column is still read that way),
-`exposure_time`, `mid_time` (taken as the mid-exposure time, in UTC),
+`exposure_time`, `mid_time` (taken as the mid-exposure time; a stamp with an
+explicit offset is honoured and converted to UTC, a naive one is UTC),
 `binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,
 `camera`, `instrument`, `classification_rule`.
 

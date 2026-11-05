@@ -23,8 +23,10 @@ mastpipe identify night/arc_full.fits --out out --instrument highspec --configur
 #   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
-Masters already in `out/calib` (bias, background, flat) are applied; traces
-come from the flat master when there is one, otherwise from the arc itself.
+The masters of the calibration library (`--library`, default `out/calib`)
+that match the arc's camera, binning, readout and temperature (the flat its
+configuration too) are applied, the nearest in time; traces come from the flat
+master when there is one, otherwise from the arc itself.
 
 `identify` and `solve` use the instrument's default layout (`lab3` for
 HighSpec) unless told otherwise: for a survey full arc pass `--layout survey45`.

@@ -12,7 +12,8 @@ first six hex digits of the input file's SHA-256 (for a master, its first input
 frame's), so two exposures with the same mid-time never share a name (`nosum`
 on a trace set built from a library flat, which has no input frame), and
 `kind` one of `bias`, `dark`,
-`background`, `flat`, `traces`, `spec`, `comb_<target>`. Reference solutions
+`background`, `flat`, `traces`, `spec`, `comb_<target>`. A frame whose header
+names no grating takes the configuration given with `--configuration`. Reference solutions
 are `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being
 the full arc's mid-time; the name without `_wref.fits` is the **reference
 identifier** quoted in every product that used it.
@@ -30,6 +31,18 @@ Every product, the QC files and `calib/index.json` are written to a temporary
 interrupted run never leaves a partial file. `calib/index.lock` is the lock that
 lets several runs (a quick-look and an `identify`) share one `calib/` folder
 without losing each other's index entries; leave it in place.
+
+## Output folders of an earlier version
+
+Product names gained the checksum segment and the grating's new name
+(`Mg`, not `mgb518`), so a product written by Plan 1 is never found at its new
+path. It is not reduced again in place: a new file is written beside it, and
+the old `spec/` and `qa/` files stay, so a glob over the folder sees both.
+`quicklook` warns once per run when `spec/` holds product names without the
+checksum segment. Use a fresh `--out` for such a folder, or clear its `spec/`
+and `qa/` folders first. The calibration library in `calib/` may be kept: its
+old entries stay in the index but never match (their readout is keyed
+`…/unknown`), and the masters are rebuilt beside them.
 
 ## Looking inside
 

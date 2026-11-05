@@ -22,10 +22,14 @@ troubleshooting
 pip install "git+<repository>"
 # once per grating and fiber layout: the first reference solution from a full arc
 mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg --stored-anchors
-# every night
-mastpipe quicklook night/ --out out --instrument highspec
+# every night, from the site's folder (the control software names no grating)
+mastpipe quicklook <night>/highspec --out out --instrument highspec --configuration Mg --layout survey45
 mastpipe show out/spec/highspec_Mg_main_20261001T221500_3f9a1c_spec.fits
 ```
+
+A laboratory or simulated night needs neither `--configuration` nor `--layout`
+only when its headers (or file names) name the grating and the default `lab3`
+layout applies; otherwise give both, or a manifest.
 
 Three words carry most of the meaning:
 

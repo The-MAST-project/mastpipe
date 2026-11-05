@@ -83,6 +83,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
@@ -1368,6 +1369,29 @@ def _run_group(
         _per_frame(group, ref, _science_frame)
 
 
+EARLIER_PRODUCT = re.compile(r"_(?:\d{8}T\d{6}|notime)_(?:spec|comb_[A-Za-z0-9_-]*)\.fits$")
+"""A science or combined product name without the checksum segment after the stamp (an
+earlier version's naming); :func:`~mastpipe.io.products.product_name` always puts a six
+character checksum or ``nosum`` there."""
+
+
+def _warn_earlier_products(spec_dir: Path) -> None:
+    """Warn once when ``spec_dir`` holds products named by an earlier version: they are
+    never found at their new names, so the run writes new files beside them."""
+    if not spec_dir.is_dir():
+        return
+    earlier = sorted(path.name for path in spec_dir.iterdir() if EARLIER_PRODUCT.search(path.name))
+    if earlier:
+        log.warning(
+            "%s holds %d product file(s) written by an earlier mastpipe version (no checksum in the "
+            "name, e.g. %s); they are not replaced and the new products are written beside them: "
+            "use a fresh --out, or clear its spec and qa folders",
+            spec_dir,
+            len(earlier),
+            earlier[0],
+        )
+
+
 def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOptions) -> RunSummary:
     """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring)."""
     night_dir, out_dir = Path(night_dir), Path(out_dir)
@@ -1382,6 +1406,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
     summary = RunSummary()
     try:
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
+        _warn_earlier_products(out_dir / SPEC_FOLDER)
         instrument = load_instrument(options.instrument)
         manifest = read_manifest(options.manifest) if options.manifest is not None else None
         unreadable: list[Path] = []

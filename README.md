@@ -213,9 +213,10 @@ mastpipe identify night/arc_full.fits --out out --instrument highspec --configur
 #   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
 
-Masters already in `out/calib` (`*_bias.fits`, `*_background.fits`,
-`*_flat.fits`) are applied; traces come from the flat master when there is
-one and from the arc itself otherwise. `fiber_agreement.csv` beside the
+The masters of the calibration library (`--library`, default `out/calib`) that
+match the arc's camera, binning, readout and temperature (the flat its
+configuration too) are applied, the nearest in time; traces come from the flat
+master when there is one and from the arc itself otherwise. `fiber_agreement.csv` beside the
 reference lists, per catalogue line, how far the independent per-fiber
 solutions disagree.
 
@@ -227,7 +228,8 @@ mastpipe solve night/arc_full.fits --out out --instrument highspec --configurati
 ```
 
 The seed is the latest reference of the configuration and layout in the
-calibration library (`--library`, default `out/calib`); the command exits with
+calibration library (`--library`, default `out/calib`), which also gives the
+masters as for `identify`; the command exits with
 status 2 and "run identify first" when there is none. The new reference does
 not replace the old one: each is valid from its own arc's time.
 
@@ -245,7 +247,7 @@ and science frames alike) is resolved into an arc or a science frame from its
 content, and a manifest's `exposure_type` overrides both. `--configuration` is
 required when no header card or file name names the grating (the control
 software writes none today); without it those frames are not reduced and the
-run fails with the list of valid names. The folder is reduced per camera and
+run fails with the list of the instrument's configurations. The folder is reduced per camera and
 configuration: masters are stacked
 into the library (a kind the night lacks is taken from it), traces are found on
 the flat master (or a full arc), full arcs are re-solved from the library's

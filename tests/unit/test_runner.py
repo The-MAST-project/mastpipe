@@ -232,6 +232,49 @@ def test_one_warning_per_run_when_frame_times_carry_no_zone(sim_night, tmp_path)
         assert count == (1 if name == "naive" else 0), name
 
 
+def test_one_warning_per_run_for_products_of_an_earlier_version(sim_night, tmp_path):
+    """Product names gained a checksum segment, so a product written by an earlier version
+    is never found at its new path: a new file is written beside it. The run log says so
+    once, naming the ``spec`` folder, however many such files there are, and not at all
+    when every product name carries the segment."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data, header = hdul[0].data.copy(), hdul[0].header.copy()
+    del header["GRATING"]  # the group then fails fast, after the check
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
+    warning = "written by an earlier mastpipe version"
+    for name, files in (
+        (
+            "old",
+            [
+                "highspec_Mg_main_20261001T180230_spec.fits",
+                "highspec_Mg_main_notime_spec.fits",
+                "highspec_Mg_main_20261001T180230_comb_target_a.fits",
+            ],
+        ),
+        (
+            "new",
+            [
+                "highspec_Mg_main_20261001T180230_a1b2c3_spec.fits",
+                "highspec_Mg_main_notime_nosum_spec.fits",
+                "highspec_Mg_main_20261001T180230_a1b2c3_comb_target_a.fits",
+            ],
+        ),
+    ):
+        out = tmp_path / f"out_{name}"
+        (out / "spec").mkdir(parents=True)
+        for file in files:
+            (out / "spec" / file).write_bytes(b"")
+        run_quicklook(folder, out, RunOptions("highspec"))
+        (log_file,) = (out / "logs").glob("*.log")
+        lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if warning in line]
+        assert len(lines) == (1 if name == "old" else 0), name
+        if lines:
+            assert "WARNING" in lines[0] and str(out / "spec") in lines[0] and "3 product" in lines[0]
+
+
 def test_one_warning_per_run_for_an_amplifier_without_its_noise(sim_night, tmp_path):
     """HighSpec lists gain and read noise for ``conventional`` and ``em``; frames naming
     another amplifier (here a misspelt one) take the camera's defaults, and the run log

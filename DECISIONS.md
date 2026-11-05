@@ -359,7 +359,36 @@ designer made, and from the rulings made while the plan was executed.
   configuration**: `find_by_inputs` compares kind, camera, input checksums and
   `calib_hash` (the `calib` parameters and the detector), so a changed stacking method
   rebuilds the master and moves the science key. Equal input checksums already imply the
-  binning and readout, and a bias shared across gratings is physically right.
+  binning and readout. Since frames that name no grating take the run's
+  `--configuration`, the same frames may be reduced under two configurations; stacked
+  from the same frames under the same parameters they give the same master (a flat also
+  needs the same masters applied, which reuse checks), so ignoring the configuration is
+  benign — the reused master merely keeps the name of the configuration it was first
+  written under.
+- **Frames that name no grating take the run's `--configuration`** before grouping: their
+  products, masters and library entries are named and indexed by that grating (`Mg`),
+  not `noconf`, so a later night's library lookup and `identify` / `solve` find a site
+  night's masters (the control software writes no `GRATING` card today). This resolves
+  the Plan 1 deferred item on `noconf` masters.
+- **`identify` and `solve` choose masters as the runner does**: through
+  `CalibLibrary.find` on the arc's camera, binning, readout key, detector temperature and
+  mid-time (the flat on its configuration too), honouring `--library`, instead of the
+  latest file name in `OUT/calib`, which could hand an `image/conventional` arc an
+  `image/em` bias. A consequence: a master whose temperature is more than 2 K from the
+  arc's is not applied. The laboratory full arc (−50 °C) thus no longer takes the
+  laboratory bias (−40 °C); its background (no temperature) and flat still apply, and
+  the regression's numbers are unchanged (0.016 / 0.033 / 0.012 px, 23 / 25 / 20 lines).
+  `identify --library` also adds its reference to that library, as `solve` does.
+- **A layout's hash ignores line endings**: `layout_hash` reads CRLF as LF and
+  `.gitattributes` keeps CSV files LF, so a Windows checkout does not change the
+  idempotence key and reduce every product again.
+- **Plan 1 output folders are not migrated**: product names changed, so old products are
+  never found or replaced, only left beside the new ones; the upgrade notes ask for a
+  fresh `--out` or cleared `spec/` and `qa/` folders, and `quicklook` warns once per run
+  when `spec/` holds old-style names. The calibration library may be kept: its old
+  entries never match.
+- **The missing-configuration message lists the instrument's configurations**, not every
+  fleet grating name: `Future` or `Ca` would be refused by `build_effective` anyway.
 - **The master variances propagate exactly**: a frame of exposure `t` calibrated with a
   background of exposure `t_bkg` is `raw − (1 − s)·bias − s·background` with
   `s = t / t_bkg` and carries `(1 − s)²·V_bias + s²·V_background`; with a dark, `s = t /

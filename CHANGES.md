@@ -12,15 +12,32 @@
   - `FrameMeta.target` is replaced by `FrameMeta.targets`, a mapping of telescope to
     target (`"*"` for every fiber);
   - product names gain a six-character input-checksum segment after the time stamp
-    (`highspec_Mg_main_20261001T221500_3f9a1c_spec.fits`);
+    (`highspec_Mg_main_20261001T221500_3f9a1c_spec.fits`) and the new configuration
+    name, so a Plan 1 product is never found at its new path: it is not reduced again
+    in place, a new file is written beside it and the old `spec/` and `qa/` files remain
+    (a glob over the folder then sees both). Use a fresh `--out` for a Plan 1 output
+    folder, or clear its `spec/` and `qa/` folders first; the calibration library
+    (`calib/`) may be kept, since its old entries (keyed `…/unknown` for the readout)
+    stay in the index but never match, and the masters are rebuilt beside them.
+    `quicklook` warns once per run when `spec/` holds products named the old way;
+  - products, masters and library entries of a night whose frames name no grating
+    (no `GRATING` card, no laboratory file-name alias), run with `--configuration Mg`,
+    are now named and indexed `Mg`, not `noconf`, so a later night, `identify` and
+    `solve` find that night's masters;
+  - `identify` and `solve` take their masters from the calibration library (`--library`,
+    `OUT/calib` by default) by camera, binning, readout, temperature and time, the flat
+    by configuration too, as `quicklook` does, rather than the latest file of the
+    folder; a master no longer in the index, or of another readout or temperature, is
+    not used;
   - `SimTruth.science_flux` and `sky_flux` are per trace (`(n_traces, n_pix)`), as are
     `line_pixels`;
   - the configuration hash and the masters' calibration hash change, and the idempotence
-    key gains parts: after upgrading, existing masters are rebuilt and every product is
-    reduced again once;
+    key gains parts: after upgrading, existing masters are rebuilt, and a product written
+    under the new names is reduced again once when its key changes;
   - `tzdata` is a new runtime dependency (the IANA zones on Windows);
   - `quicklook` needs `--configuration` when no header card or file name names the
-    grating (no silent default; the run fails with the list of valid names);
+    grating (no silent default; the run fails with the list of the instrument's
+    configurations);
   - the `FIBPRE` card is no longer read (in MAST a fiber preset is a stage position, not
     a fiber layout): a survey night that relied on `FIBPRE` now needs `--layout
     survey45` (or a manifest's `fiber_preset`).
@@ -51,20 +68,24 @@
 - Targets per fiber: a header-map field kind `per_unit` (`OBJ{nn}`, one card per
   telescope unit), a manifest column `targets` (`mast01=HD 1234;mast02=…`; the old
   `target` column is still read), and a single `OBJECT` as the fallback for every science
-  fiber; combination groups by target across fibers.
+  fiber (an empty or blank `OBJECT` names none); combination groups by target across
+  fibers.
 - Runner robustness: master building loads calibration frames one at a time, and a frame
   that cannot be read, is binned otherwise than the group's science frames, has another
   shape than the detector's (crop and orientation, scaled by binning:
-  `io.ingest.expected_shape`) or another readout is dropped and recorded as a failure
-  (exit status 2); the night is still reduced. A failing full-arc candidate is recorded
-  and skipped. Products, masters, references, indexes and QC files are written
+  `io.ingest.expected_shape`) is dropped and recorded as a failure (exit status 2); the
+  night is still reduced. A calibration frame of another readout (a full-arc trace
+  candidate included) is left out and recorded in `skipped`, not as a failure; a
+  science, `light` or arc frame of another binning or readout fails. A failing full-arc
+  candidate is recorded and skipped. Products, masters, references, indexes and QC files are written
   atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>` temporary moved into place),
   and the calibration library's index is read and updated under a lock on `index.lock`
   (`io.atomic.locked`).
 - Idempotence: a science product's key covers the frame's checksum, the configuration
   hash (time policy and every override included), the reference solution's hash
   (`MPWREFH`), the drift arcs' checksums, the layout preset and its file's hash
-  (`MPLAYH`), the masters' checksums (`MPMKH`) and the time zone (`MPTZ`). A master the
+  (`MPLAYH`, computed with CRLF read as LF, and `.gitattributes` keeps the CSV files LF),
+  the masters' checksums (`MPMKH`) and the time zone (`MPTZ`). A master the
   library already holds from the same frames, stacking parameters and detector
   (`calib_hash`) is reused instead of rebuilt; `--force` rebuilds.
 - Fibers are keyed by the layout's `trace` column, not by the row position, so a layout
