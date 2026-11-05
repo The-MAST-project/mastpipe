@@ -20,7 +20,10 @@
     reduced again once;
   - `tzdata` is a new runtime dependency (the IANA zones on Windows);
   - `quicklook` needs `--configuration` when no header card or file name names the
-    grating (no silent default; the run fails with the list of valid names).
+    grating (no silent default; the run fails with the list of valid names);
+  - the `FIBPRE` card is no longer read (in MAST a fiber preset is a stage position, not
+    a fiber layout): a survey night that relied on `FIBPRE` now needs `--layout
+    survey45` (or a manifest's `fiber_preset`).
 - Fleet vocabulary: `mastpipe.vocab` mirrors `MAST_common`'s grating, disperser,
   instrument and unit names and is what the code uses; a `fleet` CI job checks
   `MAST_common` out as a sibling (paired branch, else `master`) and a test fails when the
@@ -73,8 +76,10 @@
   prove the comparisons are sensitive: an end-to-end swap test and a drift fit against a
   2 px y-gradient. `simulate_night(site_layout=True)` writes a night in the site's shape
   (`highspec/acquisition-NNNN/exposure-NNN.fits`, `seq.txt`, the cards the control
-  software writes, `IMAGETYP = 'light'` for arcs and science frames, no grating card),
-  which quick-look reduces with `--configuration Mg` and no manifest; the laboratory
+  software writes, `IMAGETYP = 'light'` for arcs, science frames and the background, no
+  grating or fiber-preset card), which quick-look reduces with `--configuration Mg
+  --layout survey45` and no manifest (without `FIBPRE` nothing else selects the survey
+  layout; the background, which content cannot type, is skipped); the laboratory
   regression's manifest types only what content cannot (the flat and the background).
 - Numerics: the master variances enter the calibrated frame's variance with exact
   propagation (the bias correlated through both subtractions); lines flagged saturated

@@ -367,8 +367,8 @@ designer made, and from the rulings made while the plan was executed.
   `V_dark / t_dark²`, with `t_dark` carried by the master). The bias enters both subtractions, so its variance is
   correlated and must not be counted twice.
 - **Frames of another readout than their group are dropped per frame**: the readout key
-  is `READMODE`/`OUTPTAMP` (`image/em`), the group follows its science frames' most
-  common key, and a calibration or science frame with another key is recorded as a
+  is `READMODE`/`OUTPTAMP` (`image/em`), the group follows the most common key among its
+  science and not-yet-resolved `light` frames (as for the binning), and a calibration or science frame with another key is recorded as a
   failure, since `build_master` refuses mixed amplifiers and would otherwise fail the
   whole group. A night mixing frames with and without those cards loses the uncarded
   ones when the group's key is known.

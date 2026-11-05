@@ -57,8 +57,9 @@ library in `out/calib`, matched on camera, binning, readout (the readout mode
 and the output amplifier, e.g. `image/em`) and temperature. Dark and
 background frames are stacked per exposure time.
 
-A group follows the binning and readout of its science frames (the most common
-among them). A calibration or science frame binned or read out otherwise is
+A group follows the binning and readout of its science frames and of its
+not-yet-resolved `light` frames (the most common among them; all its frames when
+it has neither). A calibration or science frame binned or read out otherwise is
 dropped and recorded as a failure with the reason. A night that mixes frames
 with and without the `READMODE` and `OUTPTAMP` cards therefore loses the
 frames without them (their readout is `unknown/unknown`) whenever the group's

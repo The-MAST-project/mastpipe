@@ -39,7 +39,20 @@ classifies, plus `truth.npz` and `truth.json`:
 - `swap_fibers=(a, b)` exchanges what two fibers carry on every frame while the
   truth keeps the unswapped assignment: a pipeline that keys fibers correctly
   then disagrees with the truth on exactly those two, which is how the
-  end-to-end test proves the truth comparison can see a fiber-identity bug.
+  end-to-end test proves the truth comparison can see a fiber-identity bug;
+- `site_layout=True` writes the night the way the control software (`MAST_spec`)
+  files it: frame `k` (from 1) is `highspec/acquisition-<kkkk>/exposure-001.fits`,
+  one acquisition folder per frame, with a `seq.txt` in the night folder and in
+  `highspec/`, and the headers carry the site's cards only: `IMAGETYP` (`bias`,
+  `dark` and `flat` as themselves, `light` for the arcs, the science frames and
+  the background), `EXPOSURE`, `EXPREQ`, `FRAME` and `DATE` (both the exposure
+  start, with milliseconds), `CCD-TEMP`, `HBIN`, `VBIN`, `READMODE`, `OUTPTAMP`,
+  `INSTRUME = 'Highspec'` and `PROGRAM = 'MAST'`; no grating, lamp, target,
+  fiber-preset, shutter or `DATE-OBS` card. The pixels are those of the same
+  seed's default night, and the truth table's `file` is the relative path. Such a
+  night reduces with `--configuration Mg --layout survey45` and no manifest: the
+  runner resolves the `light` frames from their content, and the lamp-off
+  background, which content cannot type, is skipped.
 
 `SimTruth` records the trace polynomials, the nominal and the per-fiber
 dispersion solutions, every line's pixel per fiber with an on-chip mask, the
