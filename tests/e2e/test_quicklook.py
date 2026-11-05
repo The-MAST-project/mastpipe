@@ -838,10 +838,10 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     assert main(argv + ["--layout", "survey45"]) == 2
 
 
-def test_quicklook_drops_a_bias_of_another_amplifier(tmp_path, night):
+def test_quicklook_skips_a_bias_of_another_amplifier(tmp_path, night):
     """One bias read through the electron-multiplying amplifier among conventional ones is
-    recorded in ``failed`` with both readout keys and left out of the bias master; the
-    night still reduces."""
+    recorded in ``skipped`` with both readout keys and left out of the bias master; it is
+    not a failure, so the night reduces and exits 0."""
     folder = tmp_path / "night"
     shutil.copytree(night.dir, folder)
     truth = night.truth
@@ -853,12 +853,13 @@ def test_quicklook_drops_a_bias_of_another_amplifier(tmp_path, night):
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    failed = dict(summary.failed)
-    assert list(failed) == [em_bias]
-    assert "image/em" in failed[em_bias] and "image/conventional" in failed[em_bias]
+    assert summary.failed == []
+    assert f"{em_bias}: readout image/em is not the group's image/conventional" in summary.skipped
     _, prov = read_master(next((out / "calib").glob("*_bias.fits")))
     assert em_checksum not in prov.inputs and len(prov.inputs) == len(biases) - 1
     assert len(spec_products(out)) == N_SCIENCE
+    argv = ["quicklook", str(folder), "--out", str(tmp_path / "cli"), "--instrument", "highspec"]
+    assert main([*argv, "--layout", "survey45"]) == 0
 
 
 def test_quicklook_drops_a_science_frame_of_another_amplifier(tmp_path, night):
@@ -879,6 +880,47 @@ def test_quicklook_drops_a_science_frame_of_another_amplifier(tmp_path, night):
     assert "image/em" in failed[em_frame] and "image/conventional" in failed[em_frame]
     produced = {read_spectra(p)[0].meta.source for p in spec_products(out)}
     assert produced == set(science[1:])
+
+
+def test_quicklook_fails_a_science_frame_of_another_binning(tmp_path, night):
+    """A science frame binned unlike its group is recorded in ``failed`` with both binnings
+    and gets no product, as a frame of another readout is; the others are reduced."""
+    folder = tmp_path / "night"
+    shutil.copytree(night.dir, folder)
+    science = science_files(night.truth)
+    binned = science[0]
+    with fits.open(folder / binned, mode="update") as hdul:
+        hdul[0].header["HBIN"] = 2
+
+    summary = run_quicklook(folder, tmp_path / "out", options())
+    failed = dict(summary.failed)
+    assert list(failed) == [binned]
+    assert "binning 2x1 is not the group's 1x1" in failed[binned]
+    produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
+    assert produced == set(science[1:])
+
+
+def test_quicklook_skips_a_full_arc_of_another_amplifier_among_the_trace_candidates(tmp_path, night):
+    """A night without a flat finds its traces on a full arc. A second full arc read
+    through another amplifier is a calibration candidate of another readout: it is
+    recorded once in ``skipped``, not ``failed``, and the traces come from the good arc."""
+    folder = tmp_path / "night"
+    folder.mkdir()
+    truth = night.truth
+    copy_frames(night.dir, truth, folder, ["bias", "dark", "background", "arc", "science"])
+    with fits.open(night.full_arc) as hdul:
+        data, header = hdul[0].data.copy(), hdul[0].header.copy()
+    header["OUTPTAMP"] = "Electron Multiplying"
+    fits.PrimaryHDU(data, header).writeto(folder / "sim_arc_full_em.fits")
+
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options())
+    assert summary.failed == []
+    reason = "sim_arc_full_em.fits: readout image/em is not the group's image/conventional"
+    assert [item for item in summary.skipped if item.startswith("sim_arc_full_em.fits")] == [reason]
+    _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
+    assert prov.inputs == [file_checksum(night.full_arc)]
+    assert len(spec_products(out)) == N_SCIENCE
 
 
 def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, night):

@@ -59,10 +59,14 @@ background frames are stacked per exposure time.
 
 A group follows the binning and readout of its science frames and of its
 not-yet-resolved `light` frames (the most common among them; all its frames when
-it has neither). A calibration or science frame binned or read out otherwise is
-dropped and recorded as a failure with the reason. A night that mixes frames
-with and without the `READMODE` and `OUTPTAMP` cards therefore loses the
-frames without them (their readout is `unknown/unknown`) whenever the group's
+it has neither). A calibration frame (bias, dark, background, flat, or a full
+arc that is a trace candidate) read out otherwise is left out and listed under
+*skipped* with the reason (`readout image/em is not the group's
+image/conventional`); it belongs to another set and does not change the exit
+status. A calibration frame binned otherwise, and a science, `light` or arc
+frame binned or read out otherwise, is dropped and recorded as a failure with
+the reason. A night that mixes frames with and without the `READMODE` and
+`OUTPTAMP` cards therefore loses the frames without them (their readout is `unknown/unknown`) whenever the group's
 own readout is known; give such frames their readout through the manifest
 (`readout_mode`, `amplifier`) to keep them.
 

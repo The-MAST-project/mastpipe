@@ -17,7 +17,9 @@ products, masters and library entries carry that name), and reduces every
    overwritten; ``options.force`` rebuilds. The frames are loaded one at a time: one that
    cannot be read, is not binned as the group's science frames (the
    most common binning among them) or has another shape than the detector's (after crop
-   and orientation) is recorded in ``failed`` and left out. A kind the night lacks, or
+   and orientation) is recorded in ``failed`` and left out; one read out otherwise than the
+   group (another readout mode or amplifier) is recorded in ``skipped`` and left out,
+   while a science, ``light`` or arc frame of another binning or readout fails. A kind the night lacks, or
    none of whose frames survive, is taken from the library when it holds one that
    applies;
 
@@ -454,29 +456,52 @@ def _unlisted_amplifiers(refs: Iterable[FrameRef], instrument: InstrumentConfig)
     return sorted(unlisted)
 
 
-def _check_readout(group: _Group, ref: FrameRef) -> None:
-    """``ValueError`` when ``ref`` was not read out as the group (another readout mode or
-    output amplifier: :attr:`~mastpipe.core.model.FrameMeta.readout_key`)."""
+def _readout_mismatch(group: _Group, ref: FrameRef) -> str | None:
+    """Why ``ref`` was not read out as the group (another readout mode or output amplifier:
+    :attr:`~mastpipe.core.model.FrameMeta.readout_key`); ``None`` when it was."""
     if ref.meta.readout_key != group.readout_key:
-        raise ValueError(f"readout {ref.meta.readout_key} is not the group's {group.readout_key}")
+        return f"readout {ref.meta.readout_key} is not the group's {group.readout_key}"
+    return None
+
+
+def _check_readout(group: _Group, ref: FrameRef) -> None:
+    """``ValueError`` when ``ref`` was not read out as the group (:func:`_readout_mismatch`):
+    for science, ``light`` and arc frames, which fail."""
+    reason = _readout_mismatch(group, ref)
+    if reason is not None:
+        raise ValueError(reason)
+
+
+def _same_readout(group: _Group, refs: list[FrameRef]) -> list[FrameRef]:
+    """The calibration frames of ``refs`` read out as the group; each other one is recorded
+    in ``skipped`` with :func:`_readout_mismatch`'s reason, not as a failure (a calibration
+    frame of another readout belongs to another set, not to a broken one)."""
+    kept = []
+    for ref in refs:
+        reason = _readout_mismatch(group, ref)
+        if reason is None:
+            kept.append(ref)
+        else:
+            _skip(group, ref.meta.source, reason)
+    return kept
 
 
 def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list[Frame]:
     """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
     ``calibrate``, calibrated as a flat is: background subtracted when
     ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
-    load or calibrate, whose binning is not ``group.binning``, whose readout key is not
-    ``group.readout_key`` (:func:`_check_readout`) or whose loaded shape is not
+    load or calibrate, whose binning is not ``group.binning`` or whose loaded shape is not
     the detector's at that binning (:func:`~mastpipe.io.ingest.expected_shape`) is dropped
     under the error policy of :func:`_per_frame`: recorded in ``failed`` with the reason,
-    or raised under ``on_error='raise'``."""
+    or raised under ``on_error='raise'``. A frame whose readout key is not
+    ``group.readout_key`` is left out first and recorded in ``skipped``
+    (:func:`_same_readout`)."""
     detector = group.effective.detector
     shape = expected_shape(detector, group.binning)
     frames: list[Frame] = []
 
     def use(group: _Group, ref: FrameRef) -> None:
         _check_binning(group, ref)
-        _check_readout(group, ref)
         frame = load_frame(ref, detector)
         if frame.data.shape != shape:
             raise ValueError(f"shape {frame.data.shape} is not the detector's {shape}")
@@ -487,7 +512,7 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
             frame = calibrate_frame(frame, calib, subtract_background=subtract, saturation=detector.saturation)
         frames.append(frame)
 
-    for ref in refs:
+    for ref in _same_readout(group, refs):
         _per_frame(group, ref, use)
     return frames
 
@@ -631,10 +656,11 @@ def _resolve_light(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     """Stage 1b: every ``light`` frame, in time order and under the error policy, calibrated
     with the group's masters (no cosmic-ray flagging) and classified from its content: moved
     into ``by_type["arc"]`` or ``by_type["science"]`` with its ``classification_rule``, or
-    skipped with its reason; a frame not read out as the group fails (:func:`_check_readout`).
-    ``by_type`` loses its ``light`` entry."""
+    skipped with its reason; a frame not binned or read out as the group fails
+    (:func:`_check_binning`, :func:`_check_readout`). ``by_type`` loses its ``light`` entry."""
 
     def resolve(group: _Group, ref: FrameRef) -> None:
+        _check_binning(group, ref)
         _check_readout(group, ref)
         frame, _ = _calibrated(group, ref)
         kind, rule = classify_light(frame, group.params.classify)
@@ -659,19 +685,24 @@ def _content_steps(meta: FrameMeta) -> list[str]:
 
 def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]:
     """Calibrated arcs that may serve as the trace source, the one lighting the most traces
-    first: the arcs the header calls full, else the arcs of unknown kind. Each candidate
-    runs under the error policy of :func:`_per_frame`: one not binned or read out as the
-    group or that cannot be calibrated is recorded in ``failed`` and removed from
-    ``arc_refs``, so that the arc stage does not record it again; the others still
-    compete."""
+    first: the arcs the header calls full, else the arcs of unknown kind. A candidate not
+    read out as the group is a calibration frame of another readout: recorded in
+    ``skipped`` (:func:`_same_readout`) and removed from ``arc_refs``. Each other candidate
+    runs under the error policy of :func:`_per_frame`: one not binned as the group or that
+    cannot be calibrated is recorded in ``failed`` and removed from ``arc_refs``; either
+    way the arc stage does not record it again, and the others still compete."""
     known = [ref for ref in arc_refs if ref.meta.arc_kind == "full"]
     candidates = known or [ref for ref in arc_refs if ref.meta.arc_kind is None]
     trace_params = group.params.trace.model_copy(update={"collapse": "percentile"})
     scored: list[tuple[int, int, Frame]] = []
+    same = _same_readout(group, candidates)
+    for ref in candidates:
+        if ref not in same:
+            arc_refs.remove(ref)
+    candidates = same
 
     def score(group: _Group, ref: FrameRef, n: int) -> None:
         _check_binning(group, ref)
-        _check_readout(group, ref)
         frame, _ = _calibrated(group, ref)
         scored.append((len(find_traces(frame.data, trace_params)), -n, frame))
 
@@ -794,6 +825,7 @@ def _arcs(group: _Group, arc_refs: list[FrameRef]) -> None:
 
 
 def _arc(group: _Group, ref: FrameRef) -> None:
+    _check_binning(group, ref)
     _check_readout(group, ref)
     meta = ref.meta
     kind = meta.arc_kind
@@ -1089,8 +1121,10 @@ def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
 
 def _science_frame(group: _Group, ref: FrameRef) -> None:
     """Stage 4 for one science frame: wavelengths by the time policy, sky, products, QC.
-    A frame not read out as the group (:func:`_check_readout`) fails rather than being
-    calibrated with masters and noise of another amplifier."""
+    A frame not binned or read out as the group (:func:`_check_binning`,
+    :func:`_check_readout`) fails rather than being calibrated with masters and noise of
+    another binning or amplifier."""
+    _check_binning(group, ref)
     _check_readout(group, ref)
     meta, params = ref.meta, group.params
     reference = _reference_for(group, meta.mid_time)

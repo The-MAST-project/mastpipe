@@ -335,7 +335,7 @@ def usable_group(on_error: str = "continue") -> SimpleNamespace:
         binning=(1, 1),
         readout_key="unknown/unknown",
         options=SimpleNamespace(on_error=on_error),
-        summary=SimpleNamespace(failed=[]),
+        summary=SimpleNamespace(failed=[], skipped=[]),
     )
 
 
@@ -375,9 +375,11 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
         _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
 
 
-def test_usable_frames_drops_a_frame_of_another_readout(tmp_path):
-    """A frame read through another amplifier than the group's is recorded in ``failed``
-    with both readout keys and left out of the master, rather than failing the stack."""
+def test_usable_frames_skips_a_frame_of_another_readout(tmp_path):
+    """A calibration frame read through another amplifier than the group's is recorded in
+    ``skipped`` with both readout keys and left out of the master: it is not a failure
+    (it may belong to another group's night), and it does not fail the stack or raise
+    under ``on_error='raise'``."""
     refs = []
     for name, amplifier in (
         ("a.fits", "conventional"),
@@ -391,6 +393,9 @@ def test_usable_frames_drops_a_frame_of_another_readout(tmp_path):
     group.readout_key = "image/conventional"
     frames = _usable_frames(group, refs, calibrate=False)
     assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
-    failed = dict(group.summary.failed)
-    assert list(failed) == ["em.fits"]
-    assert "image/em" in failed["em.fits"] and "image/conventional" in failed["em.fits"]
+    assert group.summary.failed == []
+    assert group.summary.skipped == ["em.fits: readout image/em is not the group's image/conventional"]
+    group = usable_group("raise")
+    group.readout_key = "image/conventional"
+    assert [frame.meta.source for frame in _usable_frames(group, refs, calibrate=False)] == ["a.fits", "b.fits"]
+    assert len(group.summary.skipped) == 1
