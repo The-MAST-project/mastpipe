@@ -292,10 +292,13 @@ def test_variance_and_saturation_mask():
 
 
 def test_master_variance_enters_the_error_budget():
-    rng = np.random.default_rng(3)
-    bias_variance = rng.uniform(0.5, 2.0, SHAPE).astype(np.float32)
-    background_variance = rng.uniform(1.0, 3.0, SHAPE).astype(np.float32)
-    dark_rate_variance = rng.uniform(1e-4, 1e-3, SHAPE).astype(np.float32)
+    """Exact propagation: the bias array enters both subtractions, so its coefficient is
+    ``1 - s``; ``(1 - s)² Vb + s² Vg`` with a background, ``(1 - s)² Vb + s² Vd`` with a
+    dark (``s = t / t_dark``), ``Vb`` alone without a dark."""
+    vb = np.array([[1.0, 2.0, 0.5, 4.0, 1.5, 3.0]] * 4, dtype=np.float32)
+    vg = np.array([[2.0, 1.0, 3.0, 0.5, 2.5, 1.0]] * 4, dtype=np.float32)
+    vd = np.array([[6.0, 3.0, 9.0, 1.5, 7.5, 3.0]] * 4, dtype=np.float32)
+    t_dark = 300.0
     base = CalibrationSet(
         bias=np.full(SHAPE, 500.0, dtype=np.float32),
         dark_rate=0.1,
@@ -304,33 +307,34 @@ def test_master_variance_enters_the_error_budget():
         gain=2.0,
         read_noise=4.0,
         shape=SHAPE,
+        t_dark=t_dark,
     )
-    sci = frame(1000.0, "science", 12.0)
-    plain_bkg = calibrate_frame(sci, base, subtract_background=True)
-    plain_dark = calibrate_frame(sci, base, subtract_background=False)
-
-    # the same frame with a bias variance: on the dark path (dark_rate_variance unset) the
-    # variance is larger by exactly bias_variance, up to float32 rounding
-    with_bias = replace(base, bias_variance=bias_variance)
-    out = calibrate_frame(sci, with_bias, subtract_background=False)
-    assert np.allclose(out.variance - plain_dark.variance, bias_variance, rtol=0.0, atol=1e-4)
-    assert np.array_equal(out.data, plain_dark.data)
-
-    # background path: bias_variance + (t / t_bkg)^2 (background_variance + bias_variance)
     full = replace(
-        base,
-        bias_variance=bias_variance,
-        background_variance=background_variance,
-        dark_rate_variance=dark_rate_variance,
+        base, bias_variance=vb, background_variance=vg, dark_rate_variance=vd / t_dark**2
     )
-    scale = 12.0 / 6.0
-    out = calibrate_frame(sci, full, subtract_background=True)
-    expected = bias_variance + scale**2 * (background_variance + bias_variance)
-    assert np.allclose(out.variance - plain_bkg.variance, expected, rtol=0.0, atol=1e-4)
-    # dark path: bias_variance + t^2 dark_rate_variance
-    out = calibrate_frame(sci, full, subtract_background=False)
-    expected = bias_variance + 12.0**2 * dark_rate_variance
-    assert np.allclose(out.variance - plain_dark.variance, expected, rtol=0.0, atol=1e-4)
+
+    def added(t: float, subtract_background: bool, calib=full) -> np.ndarray:
+        sci = frame(1000.0, "science", t)
+        bare = replace(calib, bias_variance=None, background_variance=None)
+        bare = replace(bare, dark_rate_variance=None)
+        plain = calibrate_frame(sci, bare, subtract_background=subtract_background)
+        out = calibrate_frame(sci, calib, subtract_background=subtract_background)
+        assert np.array_equal(out.data, plain.data)
+        return out.variance.astype(np.float64) - plain.variance
+
+    # background path, s = 12 / 6 = 2: Vb + 4 Vg
+    np.testing.assert_allclose(added(12.0, True), vb + 4.0 * vg, rtol=0, atol=1e-4)
+    # s = 1: the bias cancels, only the background master's variance is left
+    np.testing.assert_allclose(added(6.0, True), vg, rtol=0, atol=1e-4)
+    # s = 0.5: Vb / 4 + Vg / 4
+    np.testing.assert_allclose(added(3.0, True), 0.25 * vb + 0.25 * vg, rtol=0, atol=1e-4)
+    # dark path, s = 150 / 300 = 0.5: Vb / 4 + Vd / 4
+    np.testing.assert_allclose(added(150.0, False), 0.25 * vb + 0.25 * vd, rtol=0, atol=1e-4)
+    # s = 1 on the dark path as well
+    np.testing.assert_allclose(added(300.0, False), vd, rtol=0, atol=1e-4)
+    # no dark (no t_dark): the bias variance alone
+    no_dark = replace(full, dark_rate=0.0, t_dark=None, dark_rate_variance=None)
+    np.testing.assert_allclose(added(150.0, False, no_dark), vb, rtol=0, atol=1e-4)
 
 
 def test_calibration_set_carries_the_master_variances():
@@ -345,12 +349,19 @@ def test_calibration_set_carries_the_master_variances():
     calib = build_calibration_set(bias, dark, bkg, DET)
     assert np.array_equal(calib.bias_variance, bias.variance)
     assert np.array_equal(calib.background_variance, bkg.variance)
-    assert np.allclose(calib.dark_rate_variance, (dark.variance + bias.variance) / 300.0**2)
+    assert calib.t_dark == pytest.approx(300.0)
+    np.testing.assert_allclose(calib.dark_rate_variance, dark.variance / 300.0**2, rtol=1e-6)
+    # the dark path end to end: (1 - s)² Vb + s² Vd with s = t / t_dark = 0.5
+    sci = frame(1000.0, "science", 150.0)
+    plain = calibrate_frame(sci, replace(calib, bias_variance=None, dark_rate_variance=None), False)
+    out = calibrate_frame(sci, calib, subtract_background=False)
+    expected = 0.25 * bias.variance + 0.25 * dark.variance
+    np.testing.assert_allclose(out.variance - plain.variance, expected, rtol=0, atol=1e-3)
 
     # a master without a variance (a library product that did not store one) counts as zero
     bare = replace(bias, variance=None)
     calib = build_calibration_set(bare, dark, None, DET)
     assert calib.bias_variance is None and calib.background_variance is None
-    assert np.allclose(calib.dark_rate_variance, dark.variance / 300.0**2)
+    np.testing.assert_allclose(calib.dark_rate_variance, dark.variance / 300.0**2, rtol=1e-6)
     no_dark_rate = build_calibration_set(bias, None, None, DET)
-    assert no_dark_rate.dark_rate_variance is None
+    assert no_dark_rate.dark_rate_variance is None and no_dark_rate.t_dark is None

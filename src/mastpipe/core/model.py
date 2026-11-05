@@ -165,9 +165,12 @@ class MasterCalib:
 class CalibrationSet:
     """The calibration inputs for one detector: masters, scaling times and noise model.
 
-    ``bias_variance``, ``background_variance`` and ``dark_rate_variance`` are the per-pixel
-    variances of the bias and background masters and of the dark rate (ADU², ADU² s⁻²);
-    ``None`` where unknown (no master, or a master read from a product that stored no
+    ``t_dark`` is the dark master's exposure time when ``dark_rate`` comes from one (``None``
+    otherwise). ``bias_variance`` and ``background_variance`` are the per-pixel variances
+    of the bias and background masters (ADU²) and ``dark_rate_variance`` the dark master's
+    own variance over ``t_dark²`` (ADU² s⁻², without the bias part: the bias enters the
+    calibrated frame through one array, so its terms are combined there); ``None`` where
+    unknown (no master, or a master read from a product that stored no
     variance), which counts as zero in the calibrated frame's error budget.
     """
 
@@ -178,6 +181,7 @@ class CalibrationSet:
     gain: float
     read_noise: float
     shape: tuple[int, int]
+    t_dark: float | None = None
     bias_variance: np.ndarray | None = None
     background_variance: np.ndarray | None = None
     dark_rate_variance: np.ndarray | None = None

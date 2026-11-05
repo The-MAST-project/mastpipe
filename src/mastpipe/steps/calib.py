@@ -12,11 +12,13 @@ and falls back to the dark current alone when there is no background,
 
 The variance of a calibrated pixel, in ADU², is ``max(signal_e, 0) / gain² + RN² / gain²``
 with ``signal_e = gain (raw - bias)`` the bias-subtracted signal in electrons and ``RN``
-the read noise in electrons, plus the variance of the subtracted masters:
-``var_bias + (t / t_bkg)² (var_bkg + var_bias)`` with a background, ``var_bias + t²
-var_dark_rate`` without (the masters' terms are added as independent, a conservative
-bound since the bias enters both). A master variance that is unknown counts as zero. The
-mask marks saturated pixels (in the raw frame or in any master) and non-finite values.
+the read noise in electrons, plus the variance of the subtracted masters. The bias array
+enters both subtractions, so its terms are correlated and combine before squaring: with
+``s = t / t_bkg`` the background path is ``raw - (1 - s) bias - s background`` and adds
+``(1 - s)² var_bias + s² var_bkg``; with ``s = t / t_dark`` the dark path is
+``raw - (1 - s) bias - s dark`` and adds ``(1 - s)² var_bias + s² var_dark``
+(``var_bias`` alone without a dark). A master variance that is unknown counts as zero.
+The mask marks saturated pixels (in the raw frame or in any master) and non-finite values.
 
 Everything here is pure: arrays, dataclasses and plain parameters in, dataclasses out.
 """
@@ -192,8 +194,10 @@ def build_calibration_set(
     ``t_background`` is the background master's ``exposure_time``. The gain and read noise
     come from ``detector``.
 
-    The masters' ``variance`` arrays become ``bias_variance`` and ``background_variance``,
-    and ``dark_rate_variance = (var_dark + var_bias) / t_dark²`` goes with a dark rate. A
+    The masters' ``variance`` arrays become ``bias_variance`` and ``background_variance``;
+    with a dark rate, ``t_dark`` is the dark's exposure time and ``dark_rate_variance =
+    var_dark / t_dark²`` (the bias part is added in :func:`calibrate_frame`, where it
+    correlates with the bias subtraction). A
     master without a variance (one read from a product that stored none) contributes
     zero; a variance no master provides stays ``None``. ``ValueError`` when no master is
     given at all.
@@ -204,14 +208,15 @@ def build_calibration_set(
     shape = tuple(int(n) for n in masters[0].data.shape)
     dark_rate: np.ndarray | float = 0.0
     dark_rate_variance: np.ndarray | None = None
+    dark_time: float | None = None
     if dark is not None and bias is not None:
         t_dark = dark.validity.get("exposure_time") or 0.0
         if t_dark > 0:
-            dark_rate = ((dark.data - bias.data) / float(t_dark)).astype(np.float32)
-            parts = [v for v in (dark.variance, bias.variance) if v is not None]
-            if parts:
-                total = np.sum([np.asarray(v, dtype=np.float64) for v in parts], axis=0)
-                dark_rate_variance = (total / float(t_dark) ** 2).astype(np.float32)
+            dark_time = float(t_dark)
+            dark_rate = ((dark.data - bias.data) / dark_time).astype(np.float32)
+            if dark.variance is not None:
+                variance = np.asarray(dark.variance, dtype=np.float64) / dark_time**2
+                dark_rate_variance = variance.astype(np.float32)
     t_background = None if background is None else background.validity.get("exposure_time")
     return CalibrationSet(
         bias=None if bias is None else bias.data,
@@ -221,6 +226,7 @@ def build_calibration_set(
         gain=detector.gain,
         read_noise=detector.read_noise,
         shape=shape,  # type: ignore[arg-type]
+        t_dark=dark_time,
         bias_variance=None if bias is None else bias.variance,
         background_variance=None if background is None else background.variance,
         dark_rate_variance=dark_rate_variance,
@@ -260,9 +266,10 @@ def calibrate_frame(
     (``ValueError`` when the set has no background with an exposure time); without it,
     ``raw - bias - dark_rate t``. A missing bias master subtracts nothing for that term.
     The variance is ``max(gain (raw - bias), 0) / gain² + RN² / gain²`` in ADU² plus the
-    calibration set's master variances, ``bias_variance + (t / t_bkg)² (background_variance
-    + bias_variance)`` with background subtraction and ``bias_variance + t²
-    dark_rate_variance`` without (each absent variance counting as zero); the mask
+    calibration set's master variances, ``(1 - s)² bias_variance + s² background_variance``
+    with background subtraction (``s = t / t_bkg``) and ``(1 - t / t_dark)² bias_variance +
+    t² dark_rate_variance`` without (``bias_variance`` alone when the set has no
+    ``t_dark``); each absent variance counts as zero; the mask
     marks pixels at or above ``saturation`` in the raw frame, the bias or the background
     master (when a level is given), non-finite output values and whatever ``frame.mask``
     already marks. The dark master is held as a rate, so a pixel saturated in it is not
@@ -307,18 +314,23 @@ def calibrate_frame(
 def _master_variance(
     calib: CalibrationSet, t: float, subtract_background: bool
 ) -> np.ndarray | float:
-    """The variance the subtracted masters add to a calibrated pixel, ADU²: ``var_bias +
-    (t / t_bkg)² (var_bkg + var_bias)`` with background subtraction, ``var_bias + t²
-    var_dark_rate`` without; an unknown variance counts as zero."""
+    """The variance the subtracted masters add to a calibrated pixel, ADU². The bias array
+    enters both subtractions, so with ``s = t / t_bkg`` (background) or ``s = t / t_dark``
+    (dark) its coefficient is ``1 - s``: ``(1 - s)² var_bias + s² var_bkg``, or ``(1 - s)²
+    var_bias + t² var_dark_rate`` (``t² var_dark_rate = s² var_dark``); ``var_bias`` alone
+    on the dark path without a dark. An unknown variance counts as zero."""
 
     def known(value: np.ndarray | None) -> np.ndarray | float:
-        return 0.0 if value is None else np.asarray(value, dtype=np.float32)
+        return 0.0 if value is None else np.asarray(value, dtype=np.float64)
 
     bias = known(calib.bias_variance)
     if subtract_background:
-        scale = t / float(calib.t_background)  # type: ignore[arg-type]
-        return bias + scale**2 * (known(calib.background_variance) + bias)
-    return bias + t**2 * known(calib.dark_rate_variance)
+        s = t / float(calib.t_background)  # type: ignore[arg-type]
+        return (1.0 - s) ** 2 * bias + s**2 * known(calib.background_variance)
+    if not calib.t_dark:
+        return bias
+    s = t / float(calib.t_dark)
+    return (1.0 - s) ** 2 * bias + t**2 * known(calib.dark_rate_variance)
 
 
 def _check_background(calib: CalibrationSet) -> None:
