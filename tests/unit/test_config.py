@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from mastpipe.config.loader import (
     build_effective,
+    calib_hash,
     config_hash,
     deep_merge,
     load_yaml,
@@ -188,6 +189,27 @@ def test_config_hash_stable_and_sensitive():
     # an override that restates the effective value does not change the hash
     same = config_hash(build_effective(inst, "g518", "main", overrides=[{"trace": {"x_bin": 25}}]))
     assert same == a
+
+
+def test_calib_hash_follows_stacking_parameters_and_detector_only():
+    inst = make_instrument()
+    plain = build_effective(inst, "g518", "main")
+    a = calib_hash(plain)
+    assert len(a) == 12 and int(a, 16) >= 0
+    assert calib_hash(build_effective(make_instrument(), "g518", "main")) == a
+    # the stacking parameters and the detector change it
+    mean = build_effective(inst, "g518", "main", overrides=[{"calib": {"stack_method": "mean"}}])
+    assert calib_hash(mean) != a
+    clip = build_effective(inst, "g518", "main", overrides=[{"calib": {"clip_sigma": 9.5}}])
+    assert calib_hash(clip) != a
+    other = make_instrument()
+    other = other.model_copy(update={"cameras": {"main": make_detector(gain=2.0)}})
+    assert calib_hash(build_effective(other, "g518", "main")) != a
+    # other steps change the configuration hash but not the masters'
+    drift = build_effective(inst, "g518", "main", overrides=[{"drift": {"time_policy": "nearest"}}])
+    assert config_hash(drift) != config_hash(plain) and calib_hash(drift) == a
+    trace = build_effective(inst, "g518", "main", overrides=[{"trace": {"x_bin": 10}}])
+    assert calib_hash(trace) == a
 
 
 def test_classify_params_layer_like_any_step():

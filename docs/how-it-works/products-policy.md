@@ -53,10 +53,12 @@ master reaches every product. Full arcs are idempotent through the reference
 that lists them as its source.
 
 Masters are idempotent through their inputs: the library records the
-checksums of the frames each master was stacked from, and a run whose frames
-are the same reuses the library's master instead of building and overwriting
-it (a flat only when it was calibrated with the same masters). `--force`
-rebuilds them.
+checksums of the frames each master was stacked from and a hash of the
+stacking parameters (`calib`) and the detector definition, and a run whose
+frames and stacking are the same reuses the library's master instead of
+building and overwriting it (a flat only when it was calibrated with the same
+masters). Other stacking parameters build the masters again; `--force`
+rebuilds them regardless.
 
 ## Names
 

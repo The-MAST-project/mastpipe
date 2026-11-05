@@ -10,9 +10,10 @@ reduces every ``(camera, configuration)`` group in turn:
    exposure time at a time, the largest batch serving the night), the flats calibrated
    and stacked, and every master is added to the calibration library (``out/calib`` or
    ``options.library``) — unless the library already holds one stacked from the same
-   frames (and, for the flat, calibrated with the same masters), which is reused rather
-   than rebuilt and overwritten; ``options.force`` rebuilds. The frames are loaded one at
-   a time: one that cannot be read, is not binned as the group's science frames (the
+   frames under the same stacking parameters and detector (``calib_hash``; and, for the
+   flat, calibrated with the same masters), which is reused rather than rebuilt and
+   overwritten; ``options.force`` rebuilds. The frames are loaded one at a time: one that
+   cannot be read, is not binned as the group's science frames (the
    most common binning among them) or has another shape than the detector's (after crop
    and orientation) is recorded in ``failed`` and left out. A kind the night lacks, or
    none of whose frames survive, is taken from the library when it holds one that
@@ -89,7 +90,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.__version__ import __version__
-from mastpipe.config.loader import build_effective, config_hash
+from mastpipe.config.loader import build_effective, calib_hash, config_hash
 from mastpipe.config.models import DriftParams, EffectiveConfig, InstrumentConfig, StepParams
 from mastpipe.core.model import (
     PER_FIBER_COLUMNS,
@@ -231,6 +232,8 @@ class _Group:
     """How the group's frame times were read (:func:`_timezone` of their metadata)."""
     layout_hash: str | None = None
     """:func:`~mastpipe.instruments.registry.layout_hash` of the group's preset."""
+    calib_hash: str | None = None
+    """:func:`~mastpipe.config.loader.calib_hash` of ``effective``: masters are reused under it."""
     masters: dict[str, tuple[MasterCalib, Path]] = field(default_factory=dict)
     masters_hash: str | None = None
     """:func:`_masters_hash` of ``masters``, set once they are chosen."""
@@ -470,13 +473,14 @@ def _masters_hash(masters: dict[str, tuple[MasterCalib, Path]]) -> str | None:
 def _library_master(
     group: _Group, kind: str, frames: list[Frame], calibrations: list[str]
 ) -> tuple[MasterCalib, Path] | None:
-    """The library's master of ``kind`` stacked from exactly ``frames`` (by checksum) with
-    exactly ``calibrations`` applied, to reuse instead of building it again; ``None``
-    under ``options.force`` or without one."""
+    """The library's master of ``kind`` stacked from exactly ``frames`` (by checksum) under
+    the group's ``calib_hash`` with exactly ``calibrations`` applied, to reuse instead of
+    building it again; ``None`` under ``options.force`` or without one."""
     if group.options.force:
         return None
     checksums = [frame.meta.checksum for frame in frames]
-    found = group.library.find_by_inputs(kind, checksums, group.effective.camera)
+    assert group.calib_hash is not None
+    found = group.library.find_by_inputs(kind, checksums, group.effective.camera, group.calib_hash)
     if found is None:
         return None
     stored = Provenance.from_header(fits.getheader(found[1])).calibrations
@@ -490,9 +494,10 @@ def _library_master(
 def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     """Stage 1: stack the night's masters into the library and build the calibration set.
     Every frame goes through :func:`_usable_frames`; a master the library already holds,
-    stacked from the same surviving frames (and, for the flat, calibrated with the same
-    masters, none of them built in this run), is reused rather than built and overwritten
-    unless ``options.force``; a kind none of whose frames survive is sought in the library.
+    stacked from the same surviving frames under the same ``calib_hash`` (and, for the
+    flat, calibrated with the same masters, none of them built in this run), is reused
+    rather than built and overwritten unless ``options.force``; a kind none of whose
+    frames survive is sought in the library.
     Sets ``group.masters`` and ``group.masters_hash``."""
     detector, params, library = group.effective.detector, group.params, group.library
     chosen: dict[str, tuple[MasterCalib, Path]] = {}
@@ -512,7 +517,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
                 master = build_master(frames, kind, params.calib)
                 steps = [f"stack {params.calib.stack_method} of {len(frames)} {kind} frames"]
                 prov = _master_provenance(group, frames, [], steps)
-                path = library.add(master, prov, frames[0].meta)
+                path = library.add(master, prov, frames[0].meta, group.calib_hash)
                 group.summary.products.append(path)
                 built = True
                 log.info(
@@ -561,9 +566,8 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         master = build_master(frames, "flat", params.calib)
         steps = calibration_steps(group.calib, float(frames[0].meta.exposure_time or 0.0), subtract)
         steps.append(f"stack {params.calib.stack_method} of {len(frames)} flat frames")
-        path = library.add(
-            master, _master_provenance(group, frames, applied, steps), frames[0].meta
-        )
+        prov = _master_provenance(group, frames, applied, steps)
+        path = library.add(master, prov, frames[0].meta, group.calib_hash)
         group.summary.products.append(path)
         chosen["flat"] = (master, path)
         log.info("master flat: %d of %d frames -> %s", len(frames), len(flats), path.name)
@@ -1294,6 +1298,7 @@ def _run_group(
         near_time=first.mid_time,
         timezone=_timezone(ref.meta for ref in refs),
         layout_hash=layout_hash(instrument.name, preset),
+        calib_hash=calib_hash(effective),
     )
     log.info(
         "group %s/%s: %s, layout %s, config %s",

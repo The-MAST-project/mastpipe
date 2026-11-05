@@ -61,6 +61,10 @@ def make_master(kind: str, mid_time: str, level: float, **kwargs) -> tuple[Maste
     return master, meta
 
 
+CALIB = "calib0123456"
+"""A calib hash for the reuse tests."""
+
+
 def make_provenance() -> Provenance:
     return Provenance("0.0.1", "cfg123", ["in1"], [])
 
@@ -125,33 +129,49 @@ def test_find_by_inputs_matches_sorted_checksums(tmp_path):
     library = CalibLibrary(tmp_path / "calib")
     master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
     prov = Provenance("0.0.1", "cfg123", ["c3", "c1", "c2"], [])
-    path = library.add(master, prov, meta)
+    path = library.add(master, prov, meta, CALIB)
     entry = library.list(kind="bias")[0]
     assert entry["inputs"] == ["c1", "c2", "c3"]
     assert entry["file_checksum"] == file_checksum(path)
+    assert entry["calib_hash"] == CALIB
 
     # the same frames in any order find it, read back with its path
-    found = library.find_by_inputs("bias", ["c2", "c3", "c1"], "main")
+    found = library.find_by_inputs("bias", ["c2", "c3", "c1"], "main", CALIB)
     assert found is not None
     back, found_path = found
     assert found_path == path and float(back.data[0, 0]) == 500.0
     # the index as written, seen by a fresh instance, finds it too
-    assert CalibLibrary(tmp_path / "calib").find_by_inputs("bias", ["c1", "c2", "c3"], "main")
+    assert CalibLibrary(tmp_path / "calib").find_by_inputs(
+        "bias", ["c1", "c2", "c3"], "main", CALIB
+    )
     # another set of frames, another kind or another camera does not
-    assert library.find_by_inputs("bias", ["c1", "c2"], "main") is None
-    assert library.find_by_inputs("bias", ["c1", "c2", "c3", "c4"], "main") is None
-    assert library.find_by_inputs("dark", ["c1", "c2", "c3"], "main") is None
-    assert library.find_by_inputs("bias", ["c1", "c2", "c3"], "other") is None
+    assert library.find_by_inputs("bias", ["c1", "c2"], "main", CALIB) is None
+    assert library.find_by_inputs("bias", ["c1", "c2", "c3", "c4"], "main", CALIB) is None
+    assert library.find_by_inputs("dark", ["c1", "c2", "c3"], "main", CALIB) is None
+    assert library.find_by_inputs("bias", ["c1", "c2", "c3"], "other", CALIB) is None
+    # the same frames stacked under other parameters or another detector do not
+    assert library.find_by_inputs("bias", ["c1", "c2", "c3"], "main", "calibfedcba98") is None
     # an empty set of frames never matches
-    assert library.find_by_inputs("bias", [], "main") is None
+    assert library.find_by_inputs("bias", [], "main", CALIB) is None
+
+
+def test_find_by_inputs_needs_a_recorded_calib_hash(tmp_path):
+    """An entry added without a calib hash (as a library written before it existed) is
+    never reused: the master is built again once."""
+    library = CalibLibrary(tmp_path / "calib")
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    library.add(master, Provenance("0.0.1", "cfg123", ["c1"], []), meta)
+    assert library.list(kind="bias")[0]["calib_hash"] is None
+    assert library.find_by_inputs("bias", ["c1"], "main", CALIB) is None
 
 
 def test_find_by_inputs_ignores_a_missing_file(tmp_path):
     library = CalibLibrary(tmp_path / "calib")
     master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
-    path = library.add(master, Provenance("0.0.1", "cfg123", ["c1"], []), meta)
+    path = library.add(master, Provenance("0.0.1", "cfg123", ["c1"], []), meta, CALIB)
+    assert library.find_by_inputs("bias", ["c1"], "main", CALIB) is not None
     path.rename(tmp_path / "moved.fits")
-    assert library.find_by_inputs("bias", ["c1"], "main") is None
+    assert library.find_by_inputs("bias", ["c1"], "main", CALIB) is None
 
 
 def test_callib_find_matches_keys_temperature_and_time(tmp_path):

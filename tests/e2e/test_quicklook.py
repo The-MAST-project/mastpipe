@@ -358,7 +358,8 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
 ):
     """Every part of the idempotence key reduces the night again when it changes: the time
     policy (in the configuration hash), the layout CSV, the reference under the same
-    identifier and the masters (rebuilt by ``force``); otherwise masters are reused."""
+    identifier and the masters (rebuilt by ``force`` or under other stacking parameters);
+    otherwise masters are reused."""
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     out = tmp_path / "out"
     first = run_quicklook(folder, out, options())
@@ -441,6 +442,21 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     assert last.failed == [] and last.reduced_again == []
     assert master_files(out) == rebuilt
     assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
+
+    # (f) other stacking parameters: the masters are built again (not reused under the
+    # old ones) and every science frame is reduced again with the new masters
+    hashes = {read_spectra(path)[1].masters_hash for path in spec_products(out)}
+    mean = run_quicklook(folder, out, options({"calib": {"stack_method": "mean"}}))
+    assert mean.failed == [] and sorted(mean.reduced_again) == sources
+    restacked = master_files(out)
+    assert set(restacked) == set(masters)
+    assert all(restacked[name] != rebuilt[name] for name in masters)
+    assert {path.name for path in mean.products} >= set(masters)
+    assert all(
+        read_master(out / "calib" / name)[0].provenance["method"] == "mean" for name in masters
+    )
+    new = {read_spectra(path)[1].masters_hash for path in spec_products(out)}
+    assert len(new) == 1 and new != hashes
 
 
 def test_quicklook_interpolate_blends_the_two_arcs(

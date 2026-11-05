@@ -76,7 +76,8 @@ included), the reference solution's hash, the sorted checksums of the drift
 arcs it would use, the layout preset and the hash of its CSV file, a hash of
 the masters used and the frame's time zone. A product whose key changed is
 reduced again. Masters the calibration library already holds, stacked from
-the same frames, are reused rather than rebuilt; `--force` rebuilds them. The case this is built for: the
+the same frames with the same `calib` parameters and detector, are reused
+rather than rebuilt; `--force` rebuilds them. The case this is built for: the
 first science frames of a night are reduced before any calibration-fiber arc
 exists and get status `reference`; when the night's first arc lands and the
 quick-look runs again, those frames are reduced once more and become

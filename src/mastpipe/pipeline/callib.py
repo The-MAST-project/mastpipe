@@ -122,15 +122,23 @@ class CalibLibrary:
 
     # --------------------------------------------------------------------------- masters
 
-    def add(self, master: MasterCalib, prov: Provenance, meta_for_name: Any) -> Path:
+    def add(
+        self,
+        master: MasterCalib,
+        prov: Provenance,
+        meta_for_name: Any,
+        calib_hash: str | None = None,
+    ) -> Path:
         """Write ``master`` as ``root/<product_name(meta_for_name, kind)>`` and index it.
 
         The entry records the master's validity (``camera``, ``binning``, ``readout_mode``,
         ``detector_temperature``, ``mid_time``, ``exposure_time``), the instrument and
         configuration of ``meta_for_name``, the number of frames, the sorted checksums of
         the frames it was stacked from (``inputs``, from ``prov.inputs``, which the file's
-        header carries too) and the checksum of the written file (``file_checksum``). A
-        master of the same file name replaces the earlier entry.
+        header carries too), the checksum of the written file (``file_checksum``) and
+        ``calib_hash`` (:func:`~mastpipe.config.loader.calib_hash` of the configuration it
+        was built under; ``None`` when not given, and such an entry is never reused by
+        :meth:`find_by_inputs`). A master of the same file name replaces the earlier entry.
         """
         name = product_name(meta_for_name, master.kind)
         path = self.root / name
@@ -151,6 +159,7 @@ class CalibLibrary:
             "n_frames": int(master.n_frames),
             "inputs": sorted(str(checksum) for checksum in prov.inputs),
             "file_checksum": file_checksum(path),
+            "calib_hash": calib_hash,
         }
         self._replace("path", name, entry)
         return path
@@ -219,14 +228,16 @@ class CalibLibrary:
         return read_master(path)[0], path
 
     def find_by_inputs(
-        self, kind: str, inputs: Sequence[str], camera: str
+        self, kind: str, inputs: Sequence[str], camera: str, calib_hash: str
     ) -> tuple[MasterCalib, Path] | None:
         """The master of ``kind`` and ``camera`` stacked from exactly the frames whose
-        checksums are ``inputs`` (in any order), read back, with its path; ``None`` when the
-        library holds none, when ``inputs`` is empty or when the indexed file is gone. An
-        entry indexed before inputs were recorded never matches. Reads this instance's view
-        of the index without the lock, like :meth:`find`: a master another process added
-        since may be missed (it is then built again, which is only slower).
+        checksums are ``inputs`` (in any order) under the same ``calib_hash`` (stacking
+        parameters and detector), read back, with its path; ``None`` when the library holds
+        none, when ``inputs`` is empty or when the indexed file is gone. An entry indexed
+        before inputs or the calib hash were recorded never matches (it is built again
+        once). Reads this instance's view of the index without the lock, like
+        :meth:`find`: a master another process added since may be missed (it is then built
+        again, which is only slower).
         """
         wanted = sorted(str(checksum) for checksum in inputs)
         if not wanted:
@@ -234,7 +245,7 @@ class CalibLibrary:
         for entry in reversed(self._entries):
             if entry.get("kind") != kind or entry.get("camera") != camera:
                 continue
-            if entry.get("inputs") != wanted:
+            if entry.get("inputs") != wanted or entry.get("calib_hash") != calib_hash:
                 continue
             path = self.root / str(entry["path"])
             if path.is_file():
