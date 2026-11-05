@@ -29,7 +29,8 @@ from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_master
 from mastpipe.steps.drift import apply_drift, fit_drift, fit_fiber_drift
 from mastpipe.steps.wavecal import build_reference, solve_full_arc
-from mastpipe.steps.wavemodel import GratingModel, anchor_model, model_from_solution
+from mastpipe.steps.wavemodel import anchor_model, model_from_solution
+from tests.conftest import truth_model
 
 N_PIX = 1000
 ANCHOR_LOG_INTENSITY = 2.0
@@ -257,18 +258,21 @@ def drift(cal_arc, reference, sim_full_arc) -> DriftModel:
 
 
 def test_fit_drift_on_simulated_cal_arc(cal_arc, drift, sim_full_arc):
-    truth_shift = float(cal_arc.row["shift_px"])
+    truth_shift = cal_arc.truth.trace_shifts(str(cal_arc.row["file"]))  # per trace
     truth_stretch = float(cal_arc.row["stretch"])
-    assert truth_shift > 0.1  # the law has moved the lines since the full arc
+    assert float(cal_arc.row["shift_px"]) > 0.1  # the law has moved the lines since the full arc
     per_fiber = drift.per_fiber.set_index("fiber")
     assert sorted(per_fiber.index) == sorted(cal_arc.fibers)
     assert per_fiber["usable"].all()
     assert (per_fiber["n_lines"] >= 15).all()
-    assert np.allclose(per_fiber["shift_px"], truth_shift, atol=MAX_SHIFT_ERROR_PX)
+    expected = truth_shift[per_fiber.index.to_numpy()]
+    assert np.allclose(per_fiber["shift_px"], expected, atol=MAX_SHIFT_ERROR_PX)
     assert np.allclose(per_fiber["stretch"], truth_stretch, atol=5e-5)
     for trace in sim_full_arc.traces.by_role("arc"):
         assert per_fiber.loc[trace.index, "y_center"] == pytest.approx(trace.y_center)
-        assert drift.shift_at(trace.y_center) == pytest.approx(truth_shift, abs=MAX_SHIFT_ERROR_PX)
+        assert drift.shift_at(trace.y_center) == pytest.approx(
+            truth_shift[trace.index], abs=MAX_SHIFT_ERROR_PX
+        )
     assert drift.scatter_px <= MAX_SHIFT_ERROR_PX
     assert drift.usable
     assert drift.arc_checksums == (cal_arc.meta.checksum,)
@@ -283,21 +287,21 @@ def test_apply_drift_matches_science_truth(cal_arc, drift, reference, sim_full_a
     science = frames.loc[frames["exposure_type"] == "science"]
     t_arc = pd.Timestamp(cal_arc.row["mid_time"])
     nearest = science.loc[(pd.to_datetime(science["mid_time"]) - t_arc).abs().idxmin()]
-    shift, stretch = float(nearest["shift_px"]), float(nearest["stretch"])
+    shifts, stretch = truth.trace_shifts(str(nearest["file"])), float(nearest["stretch"])
     geom = sim_full_arc.geom
     n_pix = sim_full_arc.n_pix
-    truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
 
     wavelengths, skipped = apply_drift(
         reference, [(drift, 1.0)], sim_full_arc.traces, geom, tolerance=3.0, n_pix=n_pix
     )
     assert set(wavelengths) == set(reference.solutions) and skipped == {}
     x = np.arange(n_pix, dtype=float)
-    lam_true = truth_model.wavelength(undrift_x(x, shift, stretch, n_pix))
-    dispersion = truth_model.dispersion(x)
     dips = np.array(truth.extras["absorption_nm"], dtype=float)
-    x_dips = drift_x(truth_model.pixel(dips), shift, stretch, n_pix)
     for trace in sim_full_arc.traces.by_role("science"):
+        model, shift = truth_model(truth, trace.index, geom, n_pix), shifts[trace.index]
+        lam_true = model.wavelength(undrift_x(x, shift, stretch, n_pix))
+        dispersion = model.dispersion(x)
+        x_dips = drift_x(model.pixel(dips), shift, stretch, n_pix)
         lam = wavelengths[trace.index]
         assert lam.shape == (n_pix,)
         assert np.max(np.abs(lam - lam_true) / dispersion) < MAX_TRANSFER_ERROR_DISP

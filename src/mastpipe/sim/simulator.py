@@ -13,14 +13,25 @@ adding half the exposure time. The simulation model:
 - trace ``i`` follows ``y = y_nominal + slope (x - n/2) + c (x - n/2)^2`` with a random
   curvature ``|c| <= 2e-6``, imaged with a Gaussian spatial profile of ``fwhm_px``;
 - flats are a quadratic blaze times a per-fiber throughput (0.8-1.2) on every trace;
+- every trace has its own grating solution ``(x_c_i, B_i)`` about the nominal one
+  ``(x_c, B)``: ``B_i = B (1 + 2 j v_i / n)`` and ``x_c_i`` puts the central wavelength at
+  column ``n/2 + j u_i``, with ``j = dispersion_jitter_px`` and ``u_i``, ``v_i`` drawn
+  uniformly in ``[-1, 1]``; the central column moves by at most ``j`` and the jitter of
+  ``B`` moves the chip edges by at most ``j`` more, so two fibers' maps differ by up to
+  ``4 j`` at the edges;
 - the **full arc** lights every trace with the catalogue lines at the exact
-  grating-equation pixel of the nominal solution ``(x_c, B)``, drifted like every other
-  frame by the law at its own time;
-- a **calibration-fiber arc** lights only the ``arc`` traces, its lines moved by
-  ``shift + stretch (x - n/2)`` where shift and stretch interpolate linearly in time from
-  ``drift_px[0]`` / ``drift_stretch[0]`` at the full arc's mid-time to ``drift_px[1]`` /
-  ``drift_stretch[1]`` at the last frame's mid-time (frames before the full arc carry the
+  grating-equation pixel of that trace's solution, drifted like every other frame by the
+  law at its own time;
+- a **calibration-fiber arc** lights only the ``arc`` traces, its lines on trace ``i``
+  moved by ``shift_i + stretch (x - n/2)`` with ``shift_i = shift + gradient (y_i - ny/2) /
+  ny`` (``y_i`` the trace's centre row, ``ny`` the detector rows), where shift, stretch and
+  gradient interpolate linearly in time from ``drift_px[0]`` / ``drift_stretch[0]`` / 0 at
+  the full arc's mid-time to ``drift_px[1]`` / ``drift_stretch[1]`` /
+  ``drift_gradient_px`` at the last frame's mid-time (frames before the full arc carry the
   start value, so with the default ``drift_px = (0.0, 0.6)`` the full arc is undrifted);
+- ``swap_fibers = (a, b)`` lights trace ``a`` with what trace ``b`` would carry (its
+  solution) and vice versa on every frame while the truth keeps each trace's own solution,
+  so that a pipeline keying fibers correctly disagrees with the truth on exactly those two;
 - science frames carry no arc light: science fibers show a flat continuum with Gaussian
   absorption dips at fixed wavelengths, sky fibers a faint continuum plus emission lines,
   both drifted by the same law at the frame's own time and scaled by the throughput, plus
@@ -30,13 +41,15 @@ adding half the exposure time. The simulation model:
 
 All truth coordinates (traces, line pixels, cosmic rays) are in the cropped and oriented
 frame that :func:`mastpipe.io.ingest.load_frame` returns, ``x`` the dispersion column.
+The per-trace jitter is drawn from its own stream (``default_rng([seed, 1])``), so the
+noise of a night does not depend on it.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -82,7 +95,15 @@ PROFILE_HALFWIDTH = 6
 ADU_MAX = 65535
 GAUSSIAN_FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 
-FRAME_COLUMNS = ("file", "exposure_type", "arc_kind", "mid_time", "shift_px", "stretch")
+FRAME_COLUMNS = (
+    "file",
+    "exposure_type",
+    "arc_kind",
+    "mid_time",
+    "shift_px",
+    "stretch",
+    "gradient_px",
+)
 IMAGE_TYPES = {
     "bias": "bias",
     "dark": "dark",
@@ -94,6 +115,8 @@ IMAGE_TYPES = {
 LAMPS = {"arc": "thar", "flat": "flat"}
 SHUTTER_CLOSED = ("bias", "dark")
 ON_CHIP_MARGIN_PX = 10
+JITTER_STREAM = 1
+"""Second entry of the seed of the per-trace dispersion jitter's own generator."""
 TRUTH_ARRAYS = (
     "trace_coeffs",
     "lines_nm",
@@ -104,8 +127,19 @@ TRUTH_ARRAYS = (
     "science_flux",
     "sky_flux",
     "sky_lines_nm",
+    "x_c_per_trace",
+    "B_per_trace",
 )
-TRUTH_SCALARS = ("x_c", "B", "bias_level", "dark_rate", "read_noise_e", "gain", "fwhm_px")
+TRUTH_SCALARS = (
+    "x_c",
+    "B",
+    "drift_gradient_px",
+    "bias_level",
+    "dark_rate",
+    "read_noise_e",
+    "gain",
+    "fwhm_px",
+)
 
 
 @dataclass(eq=False)
@@ -114,13 +148,18 @@ class SimTruth:
 
     ``layout`` is the fiber layout with a ``target`` column; ``trace_coeffs`` is
     ``(n_traces, 3)`` in ``numpy.polyval`` order, ``y(x)`` in cropped coordinates;
-    ``line_pixels`` is ``(n_traces, n_lines)``: the undrifted column of every catalogue line,
-    and ``lines_on_chip`` (``(n_lines,)``, bool) marks the lines whose nominal pixel lies
+    ``x_c`` and ``B`` are the nominal solution and ``x_c_per_trace`` / ``B_per_trace``
+    (``(n_traces,)``) every trace's own; ``line_pixels`` is ``(n_traces, n_lines)``: row
+    ``i`` the undrifted column of every catalogue line on trace ``i``, and
+    ``lines_on_chip`` (``(n_lines,)``, bool) marks the lines whose nominal pixel lies
     within ``[ON_CHIP_MARGIN_PX, n_pix - ON_CHIP_MARGIN_PX]``; ``science_flux`` and
-    ``sky_flux`` are the undrifted column spectra (ADU per column, throughput 1) of a
-    science and a sky fiber; ``frames`` has :data:`FRAME_COLUMNS`, one row per file in
-    time order, with the shift and stretch applied to that frame's content (the drift law
-    at its mid-time); ``extras`` holds JSON-native scalars and the cosmic-ray positions.
+    ``sky_flux`` (``(n_traces, n_pix)``) are the undrifted column spectra (ADU per column,
+    throughput 1) each trace would carry as a science and as a sky fiber; ``frames`` has
+    :data:`FRAME_COLUMNS`, one row per file in time order, with the shift, stretch and
+    gradient applied to that frame's content (the drift law at its mid-time; the shift at
+    trace ``i`` is :meth:`trace_shifts`); ``drift_gradient_px`` is the gradient at the end
+    of the law; ``extras`` holds JSON-native scalars and the cosmic-ray positions. All of
+    it describes the unswapped fibers, whatever ``extras["swap_fibers"]`` says.
     """
 
     layout: pd.DataFrame
@@ -135,6 +174,9 @@ class SimTruth:
     science_flux: np.ndarray
     sky_flux: np.ndarray
     sky_lines_nm: np.ndarray
+    x_c_per_trace: np.ndarray
+    B_per_trace: np.ndarray
+    drift_gradient_px: float
     bias_level: float
     dark_rate: float
     read_noise_e: float
@@ -144,18 +186,35 @@ class SimTruth:
     frames: pd.DataFrame
     extras: dict[str, Any]
 
+    def trace_shifts(self, file: str) -> np.ndarray:
+        """The shift (px) of every trace's content on frame ``file``: its ``shift_px`` plus
+        ``gradient_px (y_i - ny/2) / ny``, ``y_i`` the trace's centre row."""
+        row = self.frames.loc[self.frames["file"] == file].iloc[0]
+        ny, n_pix = self.extras["shape"]
+        y_center = np.array([np.polyval(c, n_pix / 2.0) for c in self.trace_coeffs])
+        return trace_shift(float(row["shift_px"]), float(row["gradient_px"]), y_center, ny)
+
+
+def trace_shift(shift: float, gradient: float, y_center: np.ndarray, ny: int) -> np.ndarray:
+    """The drift law across the detector: ``shift + gradient (y_center - ny/2) / ny``."""
+    return shift + gradient * (np.asarray(y_center, dtype=float) - ny / 2.0) / ny
+
 
 @dataclass(frozen=True)
 class _Scene:
-    """Everything fixed for the night: geometry, traces, throughputs and line positions."""
+    """Everything fixed for the night: geometry, traces, throughputs and line positions.
+
+    ``x_c`` and ``B`` are per trace (``(n_traces,)``), ``line_x`` and ``sky_x`` per trace
+    and line (``(n_traces, n_lines)``); ``nominal`` is the nominal ``(x_c, B)``."""
 
     layout: pd.DataFrame
     shape: tuple[int, int]
     coeffs: np.ndarray
     throughput: np.ndarray
     geometry: GratingGeometry
-    x_c: float
-    B: float
+    nominal: tuple[float, float]
+    x_c: np.ndarray
+    B: np.ndarray
     lines_nm: np.ndarray
     line_logI: np.ndarray
     line_x: np.ndarray
@@ -174,8 +233,24 @@ class _Scene:
         """Column flux that gives a peak pixel of 1 ADU on the trace centre."""
         return self.sigma_px * math.sqrt(2.0 * math.pi)
 
-    def wavelength_of(self, x: np.ndarray) -> np.ndarray:
-        return lambda_of_x(x, self.x_c, self.B, self.geometry.alpha_rad, self.geometry)
+    @property
+    def y_center(self) -> np.ndarray:
+        """Every trace's row at the central column."""
+        return np.array([np.polyval(c, self.n_pix / 2.0) for c in self.coeffs])
+
+    def wavelength_of(self, x: np.ndarray, rows: np.ndarray) -> np.ndarray:
+        """Wavelength at columns ``x`` (``(len(rows), n_pix)``) of the traces ``rows``."""
+        x_c, B = self.x_c[rows, None], self.B[rows, None]
+        return lambda_of_x(x, x_c, B, self.geometry.alpha_rad, self.geometry)
+
+    def swapped(self, pair: tuple[int, int] | None) -> _Scene:
+        """The scene with the solutions (and so the spectra) of traces ``pair`` exchanged."""
+        if pair is None:
+            return self
+        order = np.arange(len(self.x_c))
+        order[[pair[0], pair[1]]] = order[[pair[1], pair[0]]]
+        swap = {name: getattr(self, name)[order] for name in ("x_c", "B", "line_x", "sky_x")}
+        return replace(self, **swap)
 
 
 # --------------------------------------------------------------------------- frame geometry
@@ -225,29 +300,50 @@ def _assign_targets(layout: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def _per_trace_solutions(
+    x_c: float, B: float, n_pix: int, n_traces: int, jitter: float, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Every trace's ``(x_c_i, B_i)``: ``B_i = B (1 + 2 jitter v_i / n_pix)`` and the central
+    wavelength (at ``n_pix/2`` nominally) moved to ``n_pix/2 + jitter u_i``, with ``u_i``,
+    ``v_i`` uniform in ``[-1, 1]``."""
+    u, v = rng.uniform(-1.0, 1.0, size=(2, n_traces))
+    B_i = B * (1.0 + 2.0 * jitter * v / n_pix)
+    # x_c = n/2 - B tan(theta_center) for the nominal solution, so tan(theta_center) is fixed
+    tan_center = (n_pix / 2.0 - x_c) / B
+    return n_pix / 2.0 + jitter * u - B_i * tan_center, B_i
+
+
 def _build_scene(
     effective: EffectiveConfig,
     layout: pd.DataFrame,
     line_table: pd.DataFrame,
     rng: np.random.Generator,
+    jitter_rng: np.random.Generator,
+    dispersion_jitter_px: float,
 ) -> _Scene:
     shape = oriented_shape(effective.detector)
     n_pix = shape[1]
     geometry = grating_geometry(effective.geometry, effective.detector.pixel_size_um)
     x_c, B = nominal_solution(geometry, n_pix)
+    x_ci, B_i = _per_trace_solutions(x_c, B, n_pix, len(layout), dispersion_jitter_px, jitter_rng)
     lines_nm = line_table["wavelength_nm"].to_numpy(dtype=float)
+
+    def pixels(lam: np.ndarray) -> np.ndarray:
+        return np.asarray(grating_x(lam, x_ci[:, None], B_i[:, None], geometry.alpha_rad, geometry))
+
     return _Scene(
         layout=_assign_targets(layout),
         shape=shape,
         coeffs=_trace_coeffs(layout, n_pix, rng),
         throughput=rng.uniform(*THROUGHPUT_RANGE, size=len(layout)),
         geometry=geometry,
-        x_c=x_c,
-        B=B,
+        nominal=(x_c, B),
+        x_c=x_ci,
+        B=B_i,
         lines_nm=lines_nm,
         line_logI=line_table["logI"].to_numpy(dtype=float),
-        line_x=np.asarray(grating_x(lines_nm, x_c, B, geometry.alpha_rad, geometry)),
-        sky_x=np.asarray(grating_x(np.array(SKY_LINES_NM), x_c, B, geometry.alpha_rad, geometry)),
+        line_x=pixels(lines_nm),
+        sky_x=pixels(np.array(SKY_LINES_NM)),
     )
 
 
@@ -277,30 +373,39 @@ def _flat_spectrum(scene: _Scene) -> np.ndarray:
     return FLAT_PEAK_ADU * scene.column_factor * blaze
 
 
-def _arc_spectrum(scene: _Scene, shift: float, stretch: float) -> np.ndarray:
-    x = np.arange(scene.n_pix, dtype=float)
-    centres = drift_x(scene.line_x, shift, stretch, scene.n_pix)
-    peaks = ARC_PEAK_ADU * 10.0 ** (scene.line_logI - scene.line_logI.max())
-    return _gaussian_comb(x, centres, peaks * scene.column_factor, scene.sigma_px)
+# The spectra below are per trace: ``rows`` selects the traces, ``shifts`` (``(n_traces,)``)
+# is every trace's shift on the frame, and the result is ``(len(rows), n_pix)``.
 
 
-def _science_spectrum(scene: _Scene, shift: float, stretch: float) -> np.ndarray:
+def _arc_spectra(scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: float) -> np.ndarray:
     x = np.arange(scene.n_pix, dtype=float)
-    lam = scene.wavelength_of(undrift_x(x, shift, stretch, scene.n_pix))
+    centres = drift_x(scene.line_x[rows], shifts[rows, None], stretch, scene.n_pix)
+    peaks = ARC_PEAK_ADU * 10.0 ** (scene.line_logI - scene.line_logI.max()) * scene.column_factor
+    return np.array([_gaussian_comb(x, c, peaks, scene.sigma_px) for c in centres]).reshape(
+        -1, x.size
+    )
+
+
+def _science_spectra(
+    scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: float
+) -> np.ndarray:
+    x = np.arange(scene.n_pix, dtype=float)
+    lam = scene.wavelength_of(undrift_x(x, shifts[rows, None], stretch, scene.n_pix), rows)
     sigma_nm = ABSORPTION_FWHM_NM / GAUSSIAN_FWHM
-    dips = np.exp(-0.5 * ((lam[None, :] - np.array(ABSORPTION_NM)[:, None]) / sigma_nm) ** 2)
-    return SCIENCE_CONTINUUM_ADU * np.prod(1.0 - ABSORPTION_DEPTH * dips, axis=0)
+    dips = np.exp(-0.5 * ((lam[:, None, :] - np.array(ABSORPTION_NM)[:, None]) / sigma_nm) ** 2)
+    return SCIENCE_CONTINUUM_ADU * np.prod(1.0 - ABSORPTION_DEPTH * dips, axis=1)
 
 
-def _sky_spectrum(scene: _Scene, shift: float, stretch: float) -> np.ndarray:
+def _sky_spectra(scene: _Scene, rows: np.ndarray, shifts: np.ndarray, stretch: float) -> np.ndarray:
     x = np.arange(scene.n_pix, dtype=float)
-    centres = drift_x(scene.sky_x, shift, stretch, scene.n_pix)
-    peaks = np.full(centres.size, SKY_LINE_PEAK_ADU * scene.column_factor)
-    return SKY_CONTINUUM_ADU + _gaussian_comb(x, centres, peaks, scene.sigma_px)
+    centres = drift_x(scene.sky_x[rows], shifts[rows, None], stretch, scene.n_pix)
+    peaks = np.full(len(SKY_LINES_NM), SKY_LINE_PEAK_ADU * scene.column_factor)
+    lines = [_gaussian_comb(x, c, peaks, scene.sigma_px) for c in centres]
+    return SKY_CONTINUUM_ADU + np.array(lines).reshape(-1, x.size)
 
 
 def _fiber_fluxes(
-    scene: _Scene, exposure_type: str, arc_kind: str | None, shift: float, stretch: float
+    scene: _Scene, exposure_type: str, arc_kind: str | None, shifts: np.ndarray, stretch: float
 ) -> np.ndarray | None:
     """Column spectrum of every trace for one frame, ``None`` when no light reaches the chip."""
     roles = scene.layout["role"].to_numpy()
@@ -309,10 +414,11 @@ def _fiber_fluxes(
         fluxes[:] = _flat_spectrum(scene)
     elif exposure_type == "arc":
         lit = np.ones(len(roles), dtype=bool) if arc_kind == "full" else roles == "arc"
-        fluxes[lit] = _arc_spectrum(scene, shift, stretch)
+        fluxes[lit] = _arc_spectra(scene, np.flatnonzero(lit), shifts, stretch)
     elif exposure_type == "science":
-        fluxes[roles == "science"] = _science_spectrum(scene, shift, stretch)
-        fluxes[roles == "sky"] = _sky_spectrum(scene, shift, stretch)
+        for role, spectra in (("science", _science_spectra), ("sky", _sky_spectra)):
+            rows = np.flatnonzero(roles == role)
+            fluxes[rows] = spectra(scene, rows, shifts, stretch)
     else:
         return None
     return fluxes * scene.throughput[:, None]
@@ -364,14 +470,15 @@ def _build_frame(
     exposure_type: str,
     arc_kind: str | None,
     exposure: float,
-    shift: float,
+    shifts: np.ndarray,
     stretch: float,
     cosmic_rays: int,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, list[list[int]]]:
-    """A raw ``uint16`` frame and the cropped positions of its cosmic rays."""
+    """A raw ``uint16`` frame and the cropped positions of its cosmic rays; ``shifts`` holds
+    every trace's shift."""
     signal = np.full(scene.shape, DARK_RATE_ADU_S * exposure)
-    fluxes = _fiber_fluxes(scene, exposure_type, arc_kind, shift, stretch)
+    fluxes = _fiber_fluxes(scene, exposure_type, arc_kind, shifts, stretch)
     if fluxes is not None:
         signal += render_traces(scene.shape, scene.coeffs, fluxes, FWHM_PX)
     data = _read_out(embed(signal, detector), detector, rng)
@@ -490,6 +597,9 @@ def simulate_night(
     fiber_preset: str = "survey45",
     no_cal_arcs: bool = False,
     n_background: int = 1,
+    dispersion_jitter_px: float = 0.3,
+    drift_gradient_px: float = 0.05,
+    swap_fibers: tuple[int, int] | None = None,
 ) -> SimTruth:
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
@@ -500,14 +610,28 @@ def simulate_night(
     cadence sets each frame's mid-time (the truth table's ``mid_time``); the header's
     ``DATE-OBS`` is the exposure start, half the exposure time earlier, as the control
     software writes it. The drift law runs from the (first) full arc's mid-time to the
-    last frame's; without a full arc it runs from ``night_start``. Every random number
-    comes from ``numpy.random.default_rng(seed)``.
+    last frame's; without a full arc it runs from ``night_start``. ``dispersion_jitter_px``
+    sets the per-trace solutions, ``drift_gradient_px`` the shift difference between the
+    bottom and the top of the detector at the end of the drift law, and ``swap_fibers``
+    (two layout rows) exchanges what two traces carry while the truth stays unswapped (see
+    the module docstring). Every random number comes from ``numpy.random.default_rng(seed)``
+    except the per-trace jitter, which comes from ``default_rng([seed, JITTER_STREAM])``.
     """
+    if dispersion_jitter_px < 0:
+        raise ValueError(f"dispersion_jitter_px must be >= 0, got {dispersion_jitter_px}")
+    if swap_fibers is not None:
+        a, b = (int(k) for k in swap_fibers)
+        if a == b or not (0 <= a < len(layout) and 0 <= b < len(layout)):
+            raise ValueError(f"swap_fibers needs two different layout rows, got {swap_fibers}")
+        swap_fibers = (a, b)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
+    jitter_rng = np.random.default_rng([seed, JITTER_STREAM])
     detector = effective.detector
-    scene = _build_scene(effective, layout, line_table, rng)
+    scene = _build_scene(effective, layout, line_table, rng, jitter_rng, dispersion_jitter_px)
+    lit = scene.swapped(swap_fibers)
+    y_center = scene.y_center
     schedule = _schedule(
         n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science
     )
@@ -531,6 +655,8 @@ def simulate_night(
         seconds = k * cadence_min * 60.0
         shift = _drift_at(seconds, origin_seconds, end_seconds, drift_px)
         stretch = _drift_at(seconds, origin_seconds, end_seconds, drift_stretch)
+        gradient = _drift_at(seconds, origin_seconds, end_seconds, (0.0, drift_gradient_px))
+        shifts = trace_shift(shift, gradient, y_center, scene.shape[0])
         exposure = exposures[exposure_type]
         mid = start + timedelta(seconds=seconds)
         mid_time = mid.isoformat(timespec="seconds")
@@ -539,7 +665,7 @@ def simulate_night(
         counters[exposure_type] = index + 1
         name = f"sim_{exposure_type}_{index:02d}.fits"
         data, cosmic = _build_frame(
-            scene, detector, exposure_type, arc_kind, exposure, shift, stretch, cosmic_rays, rng
+            lit, detector, exposure_type, arc_kind, exposure, shifts, stretch, cosmic_rays, rng
         )
         target = science_object if exposure_type == "science" else exposure_type
         cards = _cards(
@@ -561,23 +687,32 @@ def simulate_night(
                 "mid_time": mid_time,
                 "shift_px": shift,
                 "stretch": stretch,
+                "gradient_px": gradient,
             }
         )
 
+    every_row = np.arange(len(scene.layout))
+    undrifted = np.zeros(len(scene.layout))
+    nominal_x = np.asarray(
+        grating_x(scene.lines_nm, *scene.nominal, scene.geometry.alpha_rad, scene.geometry)
+    )
     truth = SimTruth(
         layout=scene.layout,
         trace_coeffs=scene.coeffs,
-        x_c=scene.x_c,
-        B=scene.B,
+        x_c=scene.nominal[0],
+        B=scene.nominal[1],
         lines_nm=scene.lines_nm,
         line_logI=scene.line_logI,
-        line_pixels=np.tile(scene.line_x, (len(scene.layout), 1)),
-        lines_on_chip=(scene.line_x >= ON_CHIP_MARGIN_PX)
-        & (scene.line_x <= scene.n_pix - ON_CHIP_MARGIN_PX),
+        line_pixels=scene.line_x,
+        lines_on_chip=(nominal_x >= ON_CHIP_MARGIN_PX)
+        & (nominal_x <= scene.n_pix - ON_CHIP_MARGIN_PX),
         throughput=scene.throughput,
-        science_flux=_science_spectrum(scene, 0.0, 0.0),
-        sky_flux=_sky_spectrum(scene, 0.0, 0.0),
+        science_flux=_science_spectra(scene, every_row, undrifted, 0.0),
+        sky_flux=_sky_spectra(scene, every_row, undrifted, 0.0),
         sky_lines_nm=np.array(SKY_LINES_NM, dtype=float),
+        x_c_per_trace=scene.x_c,
+        B_per_trace=scene.B,
+        drift_gradient_px=float(drift_gradient_px),
         bias_level=BIAS_LEVEL_ADU,
         dark_rate=DARK_RATE_ADU_S,
         read_noise_e=detector.read_noise,
@@ -595,6 +730,8 @@ def simulate_night(
             "cadence_min": cadence_min,
             "drift_px": list(drift_px),
             "drift_stretch": list(drift_stretch),
+            "dispersion_jitter_px": dispersion_jitter_px,
+            "swap_fibers": None if swap_fibers is None else list(swap_fibers),
             "exposures": exposures,
             "absorption_nm": list(ABSORPTION_NM),
             "absorption_depth": ABSORPTION_DEPTH,

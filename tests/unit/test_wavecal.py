@@ -24,6 +24,7 @@ from mastpipe.steps.wavecal import (
     wavelength_map,
 )
 from mastpipe.steps.wavemodel import GratingModel, anchor_model, model_from_solution
+from tests.conftest import truth_model
 
 MIN_SOLVED = 43
 MAX_RMS_PX = 0.05
@@ -43,7 +44,6 @@ def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> SimpleNamespac
     truth = sim_full_arc.truth
     geom = sim_full_arc.geom
     cat_wl, cat_sp = catalogue_arrays(mg_lines, usable_only=True)
-    truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, sim_full_arc.n_pix, geom)
     return SimpleNamespace(
         truth=truth,
         geom=geom,
@@ -53,7 +53,7 @@ def arc(sim_full_arc, sim_arc_lines, sim_arc_fluxes, mg_lines) -> SimpleNamespac
         fluxes=sim_arc_fluxes,
         cat_wl=cat_wl,
         cat_sp=cat_sp,
-        truth_model=truth_model,
+        truth_model=lambda fiber: truth_model(truth, fiber, geom, sim_full_arc.n_pix),
         params=WavecalParams(),
     )
 
@@ -85,18 +85,18 @@ def x_obs_of(table: pd.DataFrame) -> np.ndarray:
 
 
 def map_error_in_dispersions(solution: WavelengthSolution, arc) -> float:
+    """Largest map error against the fiber's own truth model, in dispersions."""
     lam = wavelength_map(solution, arc.geom)
     x = np.arange(arc.n_pix)
-    return float(
-        np.max(np.abs(lam - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(x))
-    )
+    model = arc.truth_model(solution.fiber)
+    return float(np.max(np.abs(lam - model.wavelength(x)) / model.dispersion(x)))
 
 
 # ------------------------------------------------------------------- identify / shift
 
 
 def test_identify_lines_nearest_within_tolerance_and_unique(arc):
-    model = arc.truth_model
+    model = arc.truth_model(0)
     disp = model.dispersion(arc.n_pix / 2)
     cat_wl = np.array([515.0, 518.0, 518.0 + 2.5 * disp, 522.0])
     cat_sp = np.array(["Th I", "Ar II", "Ar I", "Th II"], dtype=object)
@@ -167,16 +167,15 @@ def test_solve_fiber_from_anchor_on_simulated_full_arc(arc, anchor):
     np.testing.assert_allclose(ident["dx_px"].to_numpy(), resid, atol=1e-5)
     # every identified wavelength is a catalogue line and sits at its truth pixel
     assert set(ident["wavelength"]) <= set(arc.cat_wl)
-    truth_px = arc.truth_model.pixel(ident["wavelength"].to_numpy())
+    truth_px = arc.truth_model(0).pixel(ident["wavelength"].to_numpy())
     assert np.max(np.abs(truth_px - ident["x"].to_numpy())) < 0.2
     # the fitted map agrees with the truth across the detector
     x = np.arange(arc.n_pix)
-    err = np.abs(model.wavelength(x) - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(
-        x
-    )
+    truth0 = arc.truth_model(0)
+    err = np.abs(model.wavelength(x) - truth0.wavelength(x)) / truth0.dispersion(x)
     assert err.max() < MAX_MAP_ERROR_DISP
-    assert model.x_c == pytest.approx(arc.truth.x_c, abs=0.5)
-    assert model.B == pytest.approx(arc.truth.B, rel=2e-3)
+    assert model.x_c == pytest.approx(arc.truth.x_c_per_trace[0], abs=0.5)
+    assert model.B == pytest.approx(arc.truth.B_per_trace[0], rel=2e-3)
 
 
 def test_solve_fiber_gives_up_below_min_lines(arc, anchor):

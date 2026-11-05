@@ -27,8 +27,9 @@ from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.sim.simulator import FWHM_PX, GAUSSIAN_FWHM, SimTruth, simulate_night
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.extract import continuum_subtract_all, extract_aperture
-from mastpipe.steps.geometry import grating_geometry
+from mastpipe.steps.geometry import GratingGeometry, grating_geometry
 from mastpipe.steps.lines import find_lines
+from mastpipe.steps.wavemodel import GratingModel
 
 ARC_STRIP_HALFWIDTH = 4
 """Rows on either side of a simulated trace (3 px FWHM image, 8.5 px pitch): the strip holds
@@ -92,6 +93,13 @@ def sim_night_lab3(
 
 
 # ------------------------------------------------------------ the calibrated full arc
+
+
+def truth_model(truth: SimTruth, fiber: int, geom: GratingGeometry, n_pix: int) -> GratingModel:
+    """The grating model the simulator drew trace ``fiber`` (its truth row, which is its
+    layout id on the shipped layouts) from: every trace has its own ``(x_c, B)``."""
+    x_c, B = truth.x_c_per_trace[fiber], truth.B_per_trace[fiber]
+    return GratingModel(float(x_c), float(B), geom.alpha_rad, None, n_pix, geom)
 
 
 def truth_traceset(truth: SimTruth, shape: tuple[int, int]) -> TraceSet:

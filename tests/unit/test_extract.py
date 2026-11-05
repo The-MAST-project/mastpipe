@@ -217,7 +217,7 @@ def test_extract_recovers_simulated_flux(night):
         assert spectrum.target == night.science.meta.target_for(trace.telescope)
         row = truth.layout.loc[truth.layout.trace == trace.index]
         assert spectrum.target == row.target.item()
-        expected = truth.throughput[trace.index] * truth.science_flux
+        expected = truth.throughput[trace.index] * truth.science_flux[trace.index]
         good = ~spectrum.mask
         assert good.mean() > 0.95
         ratios.append(float(np.median(spectrum.flux[good] / expected[good])))
@@ -233,7 +233,7 @@ def test_extract_recovers_simulated_flux(night):
     assert 0.8 < np.median(pulls) < 1.5
     # sky fibers carry the sky spectrum, not the science one
     sky = [s for s in spectra if s.role == "sky"][0]
-    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux)
+    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux[sky.fiber])
 
 
 def test_masked_pixel_masks_column():

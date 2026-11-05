@@ -21,21 +21,33 @@ classifies, plus `truth.npz` and `truth.json`:
 - bias, dark, flat and background frames with the detector's noise model;
 - one **full arc**: every trace lit, the line table's catalogue lines placed by
   the exact grating equation at the configured geometry, with per-fiber
-  throughput;
+  throughput; every fiber has its own small perturbation of the dispersion
+  solution (`dispersion_jitter_px`, 0.3 px by default: the central wavelength
+  moves by up to that much and the chip edges by up to that much again), so no
+  two fibers share a pixel-to-wavelength map;
 - **calibration-fiber arcs**: only the arc traces lit, the lines shifted and
   stretched by a linear drift law that is zero at the full arc and grows to the
-  configured end value at the last frame;
+  configured end value at the last frame; the shift also varies linearly with
+  the trace's row, by up to `drift_gradient_px` (0.05 px by default) between
+  the bottom and the top of the detector at the last frame;
 - **science frames**: a continuum with absorption dips in the science fibers,
   a continuum with emission lines in the sky fibers, no arc light, the same
   drift law, cosmic rays on single pixels;
 - a frame order in time (bias, dark, flat, full arc, background, then
   alternating arc and science groups at a cadence) so every science frame has
-  a calibration-fiber arc before it; `no_cal_arcs=True` writes none.
+  a calibration-fiber arc before it; `no_cal_arcs=True` writes none;
+- `swap_fibers=(a, b)` exchanges what two fibers carry on every frame while the
+  truth keeps the unswapped assignment: a pipeline that keys fibers correctly
+  then disagrees with the truth on exactly those two, which is how the
+  end-to-end test proves the truth comparison can see a fiber-identity bug.
 
-`SimTruth` records the trace polynomials, the dispersion solution, every
-line's pixel per fiber with an on-chip mask, the throughputs, the science and
-sky spectra, the noise constants, and a per-frame table with the drift at each
-frame's time. Everything is deterministic from a seed.
+`SimTruth` records the trace polynomials, the nominal and the per-fiber
+dispersion solutions, every line's pixel per fiber with an on-chip mask, the
+throughputs, the science and sky spectra per fiber, the noise constants, and a
+per-frame table with the drift (shift, stretch, row gradient) at each frame's
+time; `trace_shifts(file)` gives every fiber's shift on a frame. Compare a
+fiber's wavelengths with its own solution (`x_c_per_trace`, `B_per_trace`),
+not the nominal one. Everything is deterministic from a seed.
 
 ## How the tests use it
 
@@ -50,12 +62,14 @@ assertions:
   0.3 dispersions of truth; a reference-seeded re-solve equal to the first;
 - the drift fit recovering the planted shift to 0.05 px, the transfer landing
   drifted absorption dips within 0.3 dispersions;
-- sky lines removed to within 3σ; combination reducing the noise of four
+- sky lines removed to within 3σ plus the loss of linearly interpolating a
+  3 px line between two fibers' grids; combination reducing the noise of four
   copies by two;
 - the end-to-end quick-look: every science product `transferred`, wavelengths
   against truth, sky-subtracted versions present, one combined file per
   target, the idempotence and re-reduce behaviour, the `interpolate` blend;
-- a night with one fiber darkened: the other 44 keep their own solutions.
+- a night with one fiber darkened: the other 44 keep their own solutions;
+- a night with two fibers swapped: exactly those two fail the truth comparison.
 
 ## Tiers and markers
 

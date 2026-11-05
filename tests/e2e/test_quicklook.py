@@ -41,7 +41,7 @@ from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.combine import group_by_target
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import build_reference
-from mastpipe.steps.wavemodel import GratingModel
+from tests.conftest import truth_model
 
 pytestmark = pytest.mark.slow
 
@@ -94,10 +94,28 @@ def expected_arc_before(truth, source: str) -> str:
     return str(before.iloc[-1]["file"])
 
 
-def map_error_in_dispersions(lam: np.ndarray, night, shift: float, stretch: float) -> float:
+def map_error_in_dispersions(lam: np.ndarray, night, fiber: int, source: str) -> float:
+    """Largest ``|lam - lam_true|`` of fiber ``fiber`` on frame ``source``, in dispersions:
+    the truth is the fiber's own grating model, drifted by the frame's shift at its row."""
+    truth = night.truth
     x = np.arange(night.n_pix, dtype=float)
-    lam_true = night.truth_model.wavelength(undrift_x(x, shift, stretch, night.n_pix))
-    return float(np.max(np.abs(lam - lam_true) / night.truth_model.dispersion(x)))
+    model = truth_model(truth, fiber, night.geom, night.n_pix)
+    shift = truth.trace_shifts(source)[fiber]
+    stretch = float(truth.frames.loc[truth.frames["file"] == source, "stretch"].iloc[0])
+    lam_true = model.wavelength(undrift_x(x, shift, stretch, night.n_pix))
+    return float(np.max(np.abs(lam - lam_true) / model.dispersion(x)))
+
+
+def map_errors(out_dir: Path, night) -> dict[str, dict[int, float]]:
+    """Every product's map error per fiber against the truth: source -> fiber -> error."""
+    errors = {}
+    for path in spec_products(out_dir):
+        es, _, _ = read_spectra(path)
+        errors[es.meta.source] = {
+            s.fiber: map_error_in_dispersions(s.wavelength, night, s.fiber, es.meta.source)
+            for s in es.spectra
+        }
+    return errors
 
 
 # ------------------------------------------------------------------------------ fixtures
@@ -118,7 +136,6 @@ def night(sim_night, mg_lines) -> SimpleNamespace:
         geom=geom,
         n_pix=n_pix,
         anchors=truth_anchors(truth, cat_wl),
-        truth_model=GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom),
         full_arc=night_dir / str(full["file"]),
         cal_arcs=truth.frames.loc[truth.frames["arc_kind"] == "calfiber", "file"].tolist(),
     )
@@ -221,7 +238,6 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
     science_traces = 0
     for path in products:
         es, prov, drift = read_spectra(path)
-        row = truth.frames.loc[truth.frames["file"] == es.meta.source].iloc[0]
         assert es.wavelength_status == prov.wavelength_status == "transferred"
         assert prov.reference_id == identified.ref.identifier
         assert prov.reference_hash == identified.ref.hash
@@ -230,13 +246,14 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
         assert drift is not None and drift.usable
         assert drift.arc_checksums == (checksums[expected_arc],)
         assert drift.per_fiber["usable"].all()
-        shift, stretch = float(row["shift_px"]), float(row["stretch"])
         for spectrum in es.spectra:
             if spectrum.role != "science":
                 continue
             science_traces += 1
             assert spectrum.wavelength is not None
-            error = map_error_in_dispersions(spectrum.wavelength, night, shift, stretch)
+            error = map_error_in_dispersions(
+                spectrum.wavelength, night, spectrum.fiber, es.meta.source
+            )
             assert error < MAX_MAP_ERROR_DISP, (es.meta.source, spectrum.fiber, error)
             assert "skysub" in spectrum.versions
             assert spectrum.sky is not None
@@ -492,11 +509,10 @@ def test_quicklook_interpolate_blends_the_two_arcs(
             assert all(0.0 < w < 1.0 for w in weights)
             assert t_first < pd.Timestamp(drift.arc_mid_time) < t_last
             assert len(drift.per_fiber) == len(truth.layout.query("role == 'arc'"))
-            row = truth.frames.loc[truth.frames["file"] == es.meta.source].iloc[0]
             for spectrum in es.spectra:
                 if spectrum.role == "science":
                     error = map_error_in_dispersions(
-                        spectrum.wavelength, night, float(row["shift_px"]), float(row["stretch"])
+                        spectrum.wavelength, night, spectrum.fiber, es.meta.source
                     )
                     assert error < MAX_MAP_ERROR_DISP
         else:
@@ -531,6 +547,55 @@ def layout_rows(truth) -> dict[int, tuple[str, str | None]]:
             telescope = None
         rows[int(row["trace"])] = (str(row["role"]), telescope)
     return rows
+
+
+SWAPPED = (1, 3)
+"""Two science fibers (mast01, mast02) whose light the swapped night exchanges."""
+SWAP_JITTER_PX = 1.0
+"""Per-trace dispersion jitter of the swapped night. At the default 0.3 px the maps of
+fibers 1 and 3 differ by at most 0.43 px on the chip (seed 0) and the swap shows as a map
+error of 0.36 and 0.74 dispersions against 0.26 at most for the other fibers: detected, but
+0.06 above ``MAX_MAP_ERROR_DISP``. At 1 px the swapped fibers are off by 1.5 and 1.9
+dispersions and the other fibers stay at 0.26 at most, so the test does not hang on a
+few hundredths."""
+
+
+def test_swapped_fibers_are_detected(tmp_path, night, survey_layout, mg_lines):
+    """A night whose fibers 1 and 3 carry each other's spectra, its truth unswapped: the
+    pipeline keys fibers correctly, so its wavelengths are those of the light each trace
+    carries and the truth comparison fails for exactly the two swapped fibers. This is what
+    makes the end-to-end comparison sensitive to a fiber-identity bug. The identification
+    seeds every fiber but the anchored one by cross-correlation, so the jitter is exercised
+    there too."""
+    folder = tmp_path / "night"
+    truth = simulate_night(
+        night.effective,
+        survey_layout,
+        mg_lines,
+        folder,
+        seed=0,
+        n_bias=2,
+        n_dark=1,
+        n_flat=1,
+        n_cal_arc=1,
+        n_science=1,
+        dispersion_jitter_px=SWAP_JITTER_PX,
+        swap_fibers=SWAPPED,
+    )
+    swapped = SimpleNamespace(truth=truth, geom=night.geom, n_pix=night.n_pix)
+    out = tmp_path / "out"
+    full = folder / str(truth.frames.loc[truth.frames["arc_kind"] == "full", "file"].iloc[0])
+    cat_wl, _ = catalogue_arrays(mg_lines, usable_only=True)
+    anchors = truth_anchors(truth, cat_wl)  # fiber 0 is not swapped
+    run_identify(full, night.effective, "survey45", out, anchors=anchors, anchor_trace=0)
+    summary = run_quicklook(folder, out, options())
+    assert summary.failed == []
+    errors = map_errors(out, swapped)
+    assert len(errors) == 1
+    for per_fiber in errors.values():
+        assert len(per_fiber) == len(truth.layout)
+        wrong = {fiber for fiber, error in per_fiber.items() if error > MAX_MAP_ERROR_DISP}
+        assert wrong == set(SWAPPED), per_fiber
 
 
 def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
@@ -573,12 +638,12 @@ def test_quicklook_keys_fibers_by_layout_id_when_one_is_missing(
         assert es.wavelength_status == "transferred" and drift is not None
         assert prov.reference_id == identified.ref.identifier and prov.layout == "survey45"
         assert {s.fiber for s in es.spectra} == expected
-        row = truth.frames.loc[truth.frames["file"] == es.meta.source].iloc[0]
-        shift, stretch = float(row["shift_px"]), float(row["stretch"])
         for spectrum in es.spectra:
             assert (spectrum.role, spectrum.telescope) == rows[spectrum.fiber]
             assert spectrum.wavelength is not None
-            error = map_error_in_dispersions(spectrum.wavelength, night, shift, stretch)
+            error = map_error_in_dispersions(
+                spectrum.wavelength, night, spectrum.fiber, es.meta.source
+            )
             assert error < MAX_MAP_ERROR_DISP, (es.meta.source, spectrum.fiber, error)
         qc = read_qc(out / "qa" / path.with_suffix(".json").name)
         assert qc.values["wavelength_skipped"] == []

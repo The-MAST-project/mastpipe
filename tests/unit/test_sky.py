@@ -10,13 +10,12 @@ from mastpipe.config.models import CalibParams, ExtractParams, SkyParams
 from mastpipe.core.model import Frame, Spectrum, Trace, TraceSet
 from mastpipe.instruments.registry import load_header_map
 from mastpipe.io.ingest import load_frame, scan_folder
-from mastpipe.sim.simulator import undrift_x
+from mastpipe.sim.simulator import SKY_LINE_PEAK_ADU, undrift_x
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.extract import extract_aperture
 from mastpipe.steps.geometry import grating_geometry
-from mastpipe.steps.sky import subtract_sky, subtract_sky_all
-from mastpipe.steps.wavemodel import GratingModel
-from tests.conftest import truth_traceset
+from mastpipe.steps.sky import resample_sky, subtract_sky, subtract_sky_all
+from tests.conftest import ARC_SIGMA_PX, truth_model, truth_traceset
 
 N_PIX = 200
 LINE_PX = 80.0
@@ -25,6 +24,9 @@ LINE_PEAK = 300.0
 CONTINUUM = 50.0
 APERTURE_HALFWIDTH = 4.0
 """Rows on either side of a simulated trace (3 px FWHM image, 8.5 px pitch)."""
+LINEAR_RESAMPLING_LOSS = 1.0 - np.exp(-1.0 / (8.0 * ARC_SIGMA_PX**2))
+"""Largest fraction of a simulated line's peak that linear interpolation halfway between two
+samples misses (7.4 % for the 3 px FWHM profile)."""
 
 
 # ------------------------------------------------------------------------------- fixtures
@@ -80,11 +82,12 @@ def grid(offset_px: float = 0.0, dispersion: float = 0.01, origin: float = 515.0
 
 @pytest.fixture(scope="module")
 def night(sim_night, highspec_effective) -> SimpleNamespace:
-    """The first simulated science frame extracted, every fiber given its truth wavelengths.
+    """The first simulated science frame extracted, every fiber given its own truth
+    wavelengths (its own grating model and the drift at its row).
 
     ``spectra`` (one per trace, with the layout's roles and telescopes), ``traces``,
-    ``truth``, ``throughput`` (the truth throughput keyed by fiber), ``x_of`` (pixel of a
-    wavelength on this frame's drifted grid) and ``line_px`` (the sky lines' pixels).
+    ``truth``, ``throughput`` (the truth throughput keyed by fiber) and ``line_px`` (fiber
+    -> the sky lines' pixels on that fiber's drifted grid).
     """
     out_dir, truth = sim_night
     detector = highspec_effective.detector
@@ -100,25 +103,25 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
     traces = truth_traceset(truth, frame.shape)
     spectra = extract_aperture(frame, traces, ExtractParams(halfwidth=APERTURE_HALFWIDTH))
 
-    row = truth.frames.set_index("file").loc[frame.meta.source]
-    shift, stretch = float(row["shift_px"]), float(row["stretch"])
+    shifts = truth.trace_shifts(frame.meta.source)
+    stretch = float(truth.frames.set_index("file").loc[frame.meta.source, "stretch"])
     geom = grating_geometry(highspec_effective.geometry, detector.pixel_size_um)
     n_pix = frame.shape[1]
-    model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
     x = np.arange(n_pix, dtype=float)
-    wavelength = np.asarray(model.wavelength(undrift_x(x, shift, stretch, n_pix)), dtype=float)
+    line_px = {}
     for spectrum in spectra:
-        spectrum.wavelength = wavelength.copy()
-    increasing = wavelength[0] < wavelength[-1]
-    xp = wavelength if increasing else wavelength[::-1]
-    fp = x if increasing else x[::-1]
+        model = truth_model(truth, spectrum.fiber, geom, n_pix)
+        drifted = undrift_x(x, shifts[spectrum.fiber], stretch, n_pix)
+        wavelength = np.asarray(model.wavelength(drifted), dtype=float)
+        spectrum.wavelength = wavelength
+        order = np.argsort(wavelength)
+        line_px[spectrum.fiber] = np.interp(truth.sky_lines_nm, wavelength[order], x[order])
     return SimpleNamespace(
         truth=truth,
         traces=traces,
         spectra=spectra,
         throughput={i: float(t) for i, t in enumerate(truth.throughput)},
-        x_of=lambda nm: np.interp(nm, xp, fp),
-        line_px=np.interp(truth.sky_lines_nm, xp, fp),
+        line_px=line_px,
     )
 
 
@@ -377,15 +380,26 @@ def test_subtract_sky_removes_simulated_sky_lines(night):
     taken as the "science" and the sky fiber of the next telescope as its sky: both saw the
     same sky through different throughputs and with independent noise. Scaled by the truth
     throughput ratio, the subtraction leaves no line: the residual at each of the
-    ``sky_lines_nm`` is below 3 sigma of the propagated error, while the unsubtracted
-    "science" shows the lines at more than 10 sigma and an unscaled subtraction leaves a
-    residual above 3 sigma for at least one pair."""
+    ``sky_lines_nm`` is below 3 sigma of the propagated error plus the linear-resampling
+    loss, while the unsubtracted "science" shows the lines at more than 10 sigma and an
+    unscaled subtraction leaves a residual above that bound for at least one pair.
+
+    The loss: every fiber has its own dispersion, so the two grids differ by a fraction of
+    a pixel and the sky is linearly interpolated onto the science grid. Interpolating a
+    Gaussian line of sigma ``s`` px halfway between two samples gives
+    ``exp(-1 / (8 s^2))`` of its peak; with the simulator's 3 px FWHM (``s = 1.27``) that
+    misses up to ``LINEAR_RESAMPLING_LOSS`` = 7.4 % of the line's peak column flux
+    (``SKY_LINE_PEAK_ADU`` times the profile's column factor and the throughput), about
+    70 ADU against an error of about 50 ADU. The truth before the per-fiber dispersion
+    gave every fiber the same grid, so nothing was interpolated and 3 sigma held alone."""
     skies = [s for s in night.spectra if s.role == "sky"]
     assert len(skies) >= 2
-    at_lines = np.rint(night.line_px).astype(int)
-    assert np.all((at_lines > 2) & (at_lines < len(skies[0].pixel) - 2))
+    column_peak = SKY_LINE_PEAK_ADU * ARC_SIGMA_PX * np.sqrt(2.0 * np.pi)
     unscaled_fails = 0
     for science, sky in zip(skies, skies[1:], strict=False):
+        loss = LINEAR_RESAMPLING_LOSS * column_peak * night.throughput[science.fiber]
+        at_lines = np.rint(night.line_px[science.fiber]).astype(int)
+        assert np.all((at_lines > 2) & (at_lines < len(science.pixel) - 2))
         ratio = night.throughput[science.fiber] / night.throughput[sky.fiber]
         assert not (science.mask[at_lines].any() or sky.mask[at_lines].any())
         continuum = np.nanmedian(science.flux[~science.mask])
@@ -393,11 +407,11 @@ def test_subtract_sky_removes_simulated_sky_lines(night):
         out = subtract_sky(science, sky, ratio, SkyParams())
         skysub = out.versions["skysub"]
         assert not skysub.mask[at_lines].any()
-        assert np.all(np.abs(skysub.flux[at_lines]) < 3.0 * skysub.error[at_lines])
+        assert np.all(np.abs(skysub.flux[at_lines]) < 3.0 * skysub.error[at_lines] + loss)
         # the subtracted sky carries the lines
         assert np.all(out.sky[at_lines] > 10.0 * science.error[at_lines])
         plain = subtract_sky(science, sky, 1.0, SkyParams()).versions["skysub"]
-        if np.any(np.abs(plain.flux[at_lines]) > 3.0 * plain.error[at_lines]):
+        if np.any(np.abs(plain.flux[at_lines]) > 3.0 * plain.error[at_lines] + loss):
             unscaled_fails += 1
     assert unscaled_fails > 0
 
@@ -414,10 +428,12 @@ def test_subtract_sky_all_on_simulated_frame(night):
         sky_spectrum = next(s for s in night.spectra if s.fiber == sky.index)
         ratio = night.throughput[before.fiber] / night.throughput[sky.index]
         assert np.array_equal(after.flux, before.flux)
-        assert np.allclose(after.sky, ratio * sky_spectrum.flux, equal_nan=True)
+        # the sky fiber's own grid, resampled onto the science fiber's
+        expected = resample_sky(sky_spectrum, before.wavelength, ratio)[0]
+        assert np.allclose(after.sky, expected, equal_nan=True)
         skysub = after.versions["skysub"]
         good = ~skysub.mask
         assert np.allclose(skysub.flux[good], before.flux[good] - after.sky[good])
         # the science fiber had no sky: the subtraction digs the sky lines in
-        at_lines = np.rint(night.line_px).astype(int)
+        at_lines = np.rint(night.line_px[before.fiber]).astype(int)
         assert np.all(skysub.flux[at_lines] < -10.0 * skysub.error[at_lines])

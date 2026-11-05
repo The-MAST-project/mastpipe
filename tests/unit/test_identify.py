@@ -33,7 +33,7 @@ from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
 from mastpipe.steps.geometry import grating_geometry
 from mastpipe.steps.wavecal import wavelength_map
-from mastpipe.steps.wavemodel import GratingModel
+from tests.conftest import truth_model
 
 MIN_SOLVED = 43
 MAX_MAP_ERROR_DISP = 0.3
@@ -65,7 +65,6 @@ def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
     anchors = [
         (float(truth.lines_nm[i]), round(float(truth.line_pixels[0][i]), 1)) for i in (first, last)
     ]
-    truth_model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
     return SimpleNamespace(
         path=path,
         mid_time=str(row["mid_time"]),
@@ -73,7 +72,7 @@ def arc(sim_night, survey_effective, mg_lines) -> SimpleNamespace:
         anchors=anchors,
         geom=geom,
         n_pix=n_pix,
-        truth_model=truth_model,
+        truth_model=lambda fiber: truth_model(truth, fiber, geom, n_pix),
         cat_wl=cat_wl,
     )
 
@@ -115,11 +114,11 @@ def identified(arc, survey_effective, calib_dir) -> SimpleNamespace:
 
 
 def map_error_in_dispersions(solution, arc) -> float:
+    """Largest map error against the fiber's own truth model, in dispersions."""
     lam = wavelength_map(solution, arc.geom)
     x = np.arange(arc.n_pix)
-    return float(
-        np.max(np.abs(lam - arc.truth_model.wavelength(x)) / arc.truth_model.dispersion(x))
-    )
+    model = arc.truth_model(solution.fiber)
+    return float(np.max(np.abs(lam - model.wavelength(x)) / model.dispersion(x)))
 
 
 # ------------------------------------------------------------------------- anchor panels

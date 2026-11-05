@@ -92,12 +92,14 @@ def test_grating_model_matches_simulator_truth(sim_night, highspec_effective):
     _, truth = sim_night
     geom = grating_geometry(highspec_effective.geometry, highspec_effective.detector.pixel_size_um)
     n_pix = truth.science_flux.shape[-1]
-    model = GratingModel(truth.x_c, truth.B, geom.alpha_rad, None, n_pix, geom)
-    np.testing.assert_allclose(model.pixel(truth.lines_nm), truth.line_pixels[0], atol=1e-6)
     on = truth.lines_on_chip
-    np.testing.assert_allclose(
-        model.wavelength(truth.line_pixels[0][on]), truth.lines_nm[on], atol=1e-9
-    )
+    for fiber in (0, 17, 44):  # every trace has its own (x_c, B)
+        model = GratingModel(
+            truth.x_c_per_trace[fiber], truth.B_per_trace[fiber], geom.alpha_rad, None, n_pix, geom
+        )
+        pixels = truth.line_pixels[fiber]
+        np.testing.assert_allclose(model.pixel(truth.lines_nm), pixels, atol=1e-6)
+        np.testing.assert_allclose(model.wavelength(pixels[on]), truth.lines_nm[on], atol=1e-9)
 
 
 def test_with_params_and_dict_roundtrip(geom: GratingGeometry, nominal: GratingModel):
