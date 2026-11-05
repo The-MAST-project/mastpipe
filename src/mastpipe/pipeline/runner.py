@@ -448,11 +448,19 @@ def _check_binning(group: _Group, ref: FrameRef) -> None:
         raise ValueError(f"binning {x}x{y} is not the group's {gx}x{gy}")
 
 
+def _check_readout(group: _Group, ref: FrameRef) -> None:
+    """``ValueError`` when ``ref`` was not read out as the group (another readout mode or
+    output amplifier: :attr:`~mastpipe.core.model.FrameMeta.readout_key`)."""
+    if ref.meta.readout_key != group.readout_key:
+        raise ValueError(f"readout {ref.meta.readout_key} is not the group's {group.readout_key}")
+
+
 def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list[Frame]:
     """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
     ``calibrate``, calibrated as a flat is: background subtracted when
     ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
-    load or calibrate, whose binning is not ``group.binning`` or whose loaded shape is not
+    load or calibrate, whose binning is not ``group.binning``, whose readout key is not
+    ``group.readout_key`` (:func:`_check_readout`) or whose loaded shape is not
     the detector's at that binning (:func:`~mastpipe.io.ingest.expected_shape`) is dropped
     under the error policy of :func:`_per_frame`: recorded in ``failed`` with the reason,
     or raised under ``on_error='raise'``."""
@@ -462,6 +470,7 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
 
     def use(group: _Group, ref: FrameRef) -> None:
         _check_binning(group, ref)
+        _check_readout(group, ref)
         frame = load_frame(ref, detector)
         if frame.data.shape != shape:
             raise ValueError(f"shape {frame.data.shape} is not the detector's {shape}")
@@ -648,9 +657,10 @@ def _content_steps(meta: FrameMeta) -> list[str]:
 def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]:
     """Calibrated arcs that may serve as the trace source, the one lighting the most traces
     first: the arcs the header calls full, else the arcs of unknown kind. Each candidate
-    runs under the error policy of :func:`_per_frame`: one not binned as the group or that
-    cannot be calibrated is recorded in ``failed`` and removed from ``arc_refs``, so that
-    the arc stage does not record it again; the others still compete."""
+    runs under the error policy of :func:`_per_frame`: one not binned or read out as the
+    group or that cannot be calibrated is recorded in ``failed`` and removed from
+    ``arc_refs``, so that the arc stage does not record it again; the others still
+    compete."""
     known = [ref for ref in arc_refs if ref.meta.arc_kind == "full"]
     candidates = known or [ref for ref in arc_refs if ref.meta.arc_kind is None]
     trace_params = group.params.trace.model_copy(update={"collapse": "percentile"})
@@ -658,6 +668,7 @@ def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]
 
     def score(group: _Group, ref: FrameRef, n: int) -> None:
         _check_binning(group, ref)
+        _check_readout(group, ref)
         frame, _ = _calibrated(group, ref)
         scored.append((len(find_traces(frame.data, trace_params)), -n, frame))
 

@@ -886,6 +886,29 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     assert main(argv + ["--layout", "survey45"]) == 2
 
 
+def test_quicklook_drops_a_bias_of_another_amplifier(tmp_path, night):
+    """One bias read through the electron-multiplying amplifier among conventional ones is
+    recorded in ``failed`` with both readout keys and left out of the bias master; the
+    night still reduces."""
+    folder = tmp_path / "night"
+    shutil.copytree(night.dir, folder)
+    truth = night.truth
+    biases = truth.frames.loc[truth.frames["exposure_type"] == "bias", "file"]
+    em_bias = str(biases.iloc[0])
+    with fits.open(folder / em_bias, mode="update") as hdul:
+        hdul[0].header["OUTPTAMP"] = "Electron Multiplying"
+    em_checksum = file_checksum(folder / em_bias)
+
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, options())
+    failed = dict(summary.failed)
+    assert list(failed) == [em_bias]
+    assert "image/em" in failed[em_bias] and "image/conventional" in failed[em_bias]
+    _, prov = read_master(next((out / "calib").glob("*_bias.fits")))
+    assert em_checksum not in prov.inputs and len(prov.inputs) == len(biases) - 1
+    assert len(spec_products(out)) == N_SCIENCE
+
+
 def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, night):
     """A night without a flat finds its traces on a full arc. A second full arc binned 2x1
     is a candidate that cannot be calibrated: it is recorded once in ``failed`` and left

@@ -322,6 +322,7 @@ def usable_group(on_error: str = "continue") -> SimpleNamespace:
     return SimpleNamespace(
         effective=SimpleNamespace(detector=detector),
         binning=(1, 1),
+        readout_key="unknown/unknown",
         options=SimpleNamespace(on_error=on_error),
         summary=SimpleNamespace(failed=[]),
     )
@@ -363,3 +364,24 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
 
     with pytest.raises(ValueError, match="binning 2x1"):
         _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
+
+
+def test_usable_frames_drops_a_frame_of_another_readout(tmp_path):
+    """A frame read through another amplifier than the group's is recorded in ``failed``
+    with both readout keys and left out of the master, rather than failing the stack."""
+    refs = []
+    for name, amplifier in (
+        ("a.fits", "conventional"),
+        ("em.fits", "em"),
+        ("b.fits", "conventional"),
+    ):
+        fits.PrimaryHDU(np.full((8, 10), 600, dtype=np.uint16)).writeto(tmp_path / name)
+        meta = binned_ref(name, "bias", (1, 1), readout_mode="image", amplifier=amplifier).meta
+        refs.append(FrameRef(path=tmp_path / name, extension=0, meta=meta))
+    group = usable_group()
+    group.readout_key = "image/conventional"
+    frames = _usable_frames(group, refs, calibrate=False)
+    assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
+    failed = dict(group.summary.failed)
+    assert list(failed) == ["em.fits"]
+    assert "image/em" in failed["em.fits"] and "image/conventional" in failed["em.fits"]
