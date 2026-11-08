@@ -967,19 +967,31 @@ def read_combined(path: Path | str) -> tuple[CombinedSpectrum, FrameMeta, Proven
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, np.generic):
-        return value.item()
+    """``value`` as JSON-native data: numpy scalars and arrays converted, mappings and
+    sequences walked, and every non-finite float (NaN, ±inf, which JSON has no token for)
+    replaced by ``None``. ``TypeError`` for anything else."""
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        value = value.tolist()
+    elif isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_jsonable(item) for item in value]
     raise TypeError(f"QC value of type {type(value).__name__} is not JSON-serialisable")
 
 
 def write_qc(path: Path | str, report: QCReport) -> Path:
     """``{"stage": ..., "values": {...}}`` as JSON (``indent=1``, sorted keys, numpy scalars
-    and arrays converted), written atomically."""
+    and arrays converted, NaN and infinities written as ``null`` so the file is strict
+    JSON), written atomically."""
     path = Path(path)
-    payload = {"stage": report.stage, "values": report.values}
-    text = json.dumps(payload, indent=1, sort_keys=True, default=_jsonable)
+    payload = {"stage": report.stage, "values": _jsonable(report.values)}
+    text = json.dumps(payload, indent=1, sort_keys=True, allow_nan=False)
     with atomic_write(path) as tmp:
         tmp.write_text(text + "\n", encoding="utf-8")
     return path

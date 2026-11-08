@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 from astropy.io import fits
 
@@ -578,3 +579,30 @@ def test_manifest_targets_column(night: Path, highspec_map: HeaderMap, tmp_path:
         write_manifest(broken, [{"source": "b_science.fits", "targets": bad}])
         with pytest.raises(ValueError, match="targets"):
             apply_manifest(scan_folder(night, "highspec", highspec_map), read_manifest(broken))
+
+
+def test_manifest_overrides_clear_unresolved(tmp_path: Path):
+    """A field the manifest sets is no longer unresolved; the others stay listed. A
+    ``target`` cell (the legacy column) resolves ``targets``."""
+    meta = FrameMeta(
+        instrument="highspec",
+        camera="main",
+        exposure_type="light",
+        source="x.fits",
+        unresolved=("mid_time", "targets", "arc_kind", "configuration"),
+    )
+    ref = FrameRef(path=tmp_path / "x.fits", extension=0, meta=meta)
+    manifest = pd.DataFrame(
+        [{"source": "x.fits", "mid_time": "2026-10-01T18:00:00", "target": "HD 1", "arc_kind": "full"}],
+        dtype=str,
+    )
+    new = apply_manifest([ref], manifest)[0].meta
+    assert new.mid_time == "2026-10-01T18:00:00"
+    assert new.targets == (("*", "HD 1"),)
+    assert new.arc_kind == "full"
+    assert new.unresolved == ("configuration",)
+    assert ref.meta.unresolved == ("mid_time", "targets", "arc_kind", "configuration")
+
+    # a row that overrides nothing of the unresolved fields leaves the list as it is
+    other = pd.DataFrame([{"source": "x.fits", "exposure_time": "3"}], dtype=str)
+    assert apply_manifest([ref], other)[0].meta.unresolved == ref.meta.unresolved

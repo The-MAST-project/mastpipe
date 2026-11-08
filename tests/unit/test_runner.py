@@ -14,6 +14,7 @@ from astropy.io import fits
 from mastpipe.config.models import DriftParams
 from mastpipe.core.model import (
     PER_FIBER_COLUMNS,
+    CalibrationSet,
     DriftModel,
     FrameMeta,
     FrameRef,
@@ -26,6 +27,7 @@ from mastpipe.pipeline.runner import (
     _arc_weights,
     _arcs_for,
     _blend_drifts,
+    _calibrated,
     _group_binning,
     _group_readout,
     _usable_frames,
@@ -447,3 +449,49 @@ def test_usable_frames_skips_a_frame_of_another_readout(tmp_path):
     group.readout_key = "image/conventional"
     assert [frame.meta.source for frame in _usable_frames(group, refs, calibrate=False)] == ["a.fits", "b.fits"]
     assert len(group.summary.skipped) == 1
+
+
+def calibrating_group(t_background: float | None) -> SimpleNamespace:
+    """A group whose calibration set holds a bias and a background master, the latter
+    with ``t_background`` as its exposure time, and background subtraction switched on."""
+    group = usable_group()
+    group.effective.detector.saturation = 65000.0
+    group.params = SimpleNamespace(
+        calib=SimpleNamespace(subtract_background=True, flat_subtract_background=True, cosmic_sigma=8.0, cosmic_size=5)
+    )
+    group.calib = CalibrationSet(
+        bias=np.full((8, 10), 100.0, dtype=np.float32),
+        dark_rate=0.0,
+        background=np.full((8, 10), 130.0, dtype=np.float32),
+        t_background=t_background,
+        gain=1.0,
+        read_noise=5.0,
+        shape=(8, 10),
+    )
+    return group
+
+
+def test_background_master_without_exposure_time_is_not_subtracted(tmp_path):
+    """A background master whose inputs carried no exposure time cannot be scaled: the
+    frames fall back to the bias (dark) path instead of every frame failing with
+    'background subtraction requested ...'."""
+    fits.PrimaryHDU(np.full((8, 10), 600, dtype=np.uint16)).writeto(tmp_path / "flat.fits")
+    meta = binned_ref("flat.fits", "flat", (1, 1)).meta
+    meta = FrameMeta(**{**meta.__dict__, "exposure_time": 2.0})
+    ref = FrameRef(path=tmp_path / "flat.fits", extension=0, meta=meta)
+
+    group = calibrating_group(t_background=None)
+    frames = _usable_frames(group, [ref], calibrate=True)
+    assert [frame.meta.source for frame in frames] == ["flat.fits"]
+    assert group.summary.failed == []
+    assert np.allclose(frames[0].data, 500.0)  # bias only
+
+    frame, steps = _calibrated(group, ref)
+    assert steps == ["bias"]
+    assert np.allclose(frame.data, 500.0)
+
+    # with an exposure time the background is scaled and subtracted as before
+    group = calibrating_group(t_background=4.0)
+    frame, steps = _calibrated(group, ref)
+    assert steps[0] == "bias" and steps[1].startswith("background x 0.5")
+    assert np.allclose(frame.data, 500.0 - 30.0 * 0.5)

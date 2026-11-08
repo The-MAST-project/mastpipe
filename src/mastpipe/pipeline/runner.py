@@ -368,13 +368,15 @@ def _master_meta(group: _Group, master: MasterCalib) -> FrameMeta:
 
 def _calibrated(group: _Group, ref: FrameRef, cosmics: bool = False) -> tuple[Frame, list[str]]:
     """``ref`` loaded and calibrated with the group's masters (background subtracted when
-    ``params.calib.subtract_background`` and a background master exists), cosmic rays
-    flagged into the mask when ``cosmics``; with the steps applied."""
+    ``params.calib.subtract_background`` and the set has a background master with an
+    exposure time to scale it by, :attr:`~mastpipe.core.model.CalibrationSet.has_background`;
+    the bias/dark path otherwise), cosmic rays flagged into the mask when ``cosmics``; with
+    the steps applied."""
     detector, params = group.effective.detector, group.params
     calib = group.calib
     assert calib is not None
     frame = load_frame(ref, detector)
-    subtract = params.calib.subtract_background and calib.background is not None
+    subtract = params.calib.subtract_background and calib.has_background
     out = calibrate_frame(frame, calib, subtract_background=subtract, saturation=detector.saturation)
     steps = calibration_steps(calib, float(ref.meta.exposure_time or 0.0), subtract)
     if cosmics:
@@ -489,7 +491,8 @@ def _same_readout(group: _Group, refs: list[FrameRef]) -> list[FrameRef]:
 def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list[Frame]:
     """The frames of ``refs`` that can go into one master, loaded one at a time (and, when
     ``calibrate``, calibrated as a flat is: background subtracted when
-    ``params.calib.flat_subtract_background`` and the set has one). A frame that fails to
+    ``params.calib.flat_subtract_background`` and the set has a background with an
+    exposure time). A frame that fails to
     load or calibrate, whose binning is not ``group.binning`` or whose loaded shape is not
     the detector's at that binning (:func:`~mastpipe.io.ingest.expected_shape`) is dropped
     under the error policy of :func:`_per_frame`: recorded in ``failed`` with the reason,
@@ -508,7 +511,7 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
         if calibrate:
             calib = group.calib
             assert calib is not None
-            subtract = group.params.calib.flat_subtract_background and calib.background is not None
+            subtract = group.params.calib.flat_subtract_background and calib.has_background
             frame = calibrate_frame(frame, calib, subtract_background=subtract, saturation=detector.saturation)
         frames.append(frame)
 
@@ -623,7 +626,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     if found is not None:
         chosen["flat"] = found
     elif frames:
-        subtract = params.calib.flat_subtract_background and background is not None
+        subtract = params.calib.flat_subtract_background and group.calib.has_background
         master = build_master(frames, "flat", params.calib)
         steps = calibration_steps(group.calib, float(frames[0].meta.exposure_time or 0.0), subtract)
         steps.append(f"stack {params.calib.stack_method} of {len(frames)} flat frames")

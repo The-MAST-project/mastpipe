@@ -478,6 +478,31 @@ def test_relative_throughput_matches_truth(night, survey_traces):
     assert relative_throughput(None, survey_traces, APERTURE_HALFWIDTH) == {}
 
 
+def test_relative_throughput_and_classify_arc_honour_the_trace_aperture():
+    """A trace whose layout sets ``aperture`` is summed over that halfwidth, as
+    :func:`extract_aperture` extracts it; a trace without one takes the halfwidth given."""
+    shape = (40, 100)
+    flat = np.zeros(shape)
+    flat[5:16, :] = 10.0  # 11 lit rows about y = 10: every aperture up to 5 is inside
+    flat[25:36, :] = 10.0  # the same about y = 30
+    wide = replace(make_trace(0, 10.0, 50.0), role="science", layout_index=0)  # aperture None -> 2
+    narrow = replace(make_trace(1, 30.0, 50.0), role="sky", layout_index=1, aperture=1.0)
+    traceset = TraceSet(traces=[wide, narrow], shape=shape)
+
+    relative = relative_throughput(toy_frame(flat, "flat"), traceset, 2.0)
+    # 5 rows against 3 rows, over their median 4
+    assert relative == pytest.approx({0: 5.0 / 4.0, 1: 3.0 / 4.0})
+
+    # the lit test: light 3 rows wide on the narrow trace is all inside its aperture,
+    # the same light on the wide trace is diluted by its empty outer rows but still lit
+    rng = np.random.default_rng(3)
+    arc = rng.normal(0.0, 1.0, size=shape)
+    arc[29:32, :] += 50.0
+    arc[9:12, :] += 50.0
+    kind, flags = classify_arc(toy_frame(arc), traceset, 2.0)
+    assert kind == "full" and flags == {0: True, 1: True}
+
+
 # ---------------------------------------------------------------------------- trace_source
 
 

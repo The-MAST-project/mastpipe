@@ -747,6 +747,37 @@ def test_qc_json_roundtrip(tmp_path):
     }
 
 
+def test_qc_json_never_contains_nan(tmp_path):
+    """NaN and infinities are not JSON: they are written as null, nested values and numpy
+    arrays included, so a strict parser reads the file."""
+    report = QCReport(
+        stage="drift",
+        values={
+            "scatter_px": float("nan"),
+            "worst": np.float64(np.inf),
+            "per_fiber": [{"fiber": 0, "rms_px": np.nan}, {"fiber": 1, "rms_px": 0.1}],
+            "shifts": np.array([1.0, np.nan]),
+            "nested": {"deep": (np.float32("nan"), 2.0)},
+        },
+    )
+    path = tmp_path / "drift.json"
+    write_qc(path, report)
+    text = path.read_text(encoding="utf-8")
+
+    def strict(constant: str):
+        raise AssertionError(f"non-JSON constant {constant} in {path.name}")
+
+    payload = json.loads(text, parse_constant=strict)
+    assert payload["values"] == {
+        "scatter_px": None,
+        "worst": None,
+        "per_fiber": [{"fiber": 0, "rms_px": None}, {"fiber": 1, "rms_px": 0.1}],
+        "shifts": [1.0, None],
+        "nested": {"deep": [None, 2.0]},
+    }
+    assert read_qc(path).values["scatter_px"] is None
+
+
 # ------------------------------------------------------------------------ no raw keywords
 
 
