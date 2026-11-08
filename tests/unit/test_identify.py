@@ -370,10 +370,28 @@ def test_arc_lines_lists_only_applied_masters_and_takes_injected_traces(
     lines2 = _arc_lines(arc, no_subtract, lab3_layout, tmp_path, masters=masters, traceset=lines.traceset)
     assert lines2.calibrations == [f"bias:{bias.validity['mid_time']}"]
     assert lines2.steps[0] == "bias"
-    assert lines2.steps[1].startswith("background night background present but not subtracted")
+    assert lines2.steps[1] == (
+        "background night background present but not subtracted (calib.subtract_background off): saturation mask only"
+    )
     assert lines2.steps[2] == "traces given (3 found, 0 missing)"
     assert lines2.traceset is lines.traceset
     assert not (tmp_path / "calib").exists()
+
+    # a background master without an exposure time cannot be scaled, so it is not applied
+    # either; with subtraction on that is the reason given, with it off the switch is
+    unscalable = replace(
+        background, validity={key: value for key, value in background.validity.items() if key != "exposure_time"}
+    )
+    bare = {"bias": bias, "background": unscalable}
+    lines3 = _arc_lines(arc, highspec_effective, lab3_layout, tmp_path, masters=bare, traceset=lines.traceset)
+    assert lines3.calibrations == [f"bias:{bias.validity['mid_time']}"]
+    assert lines3.steps[1] == (
+        "background night background present but not subtracted (no exposure time to scale it by): saturation mask only"
+    )
+    lines4 = _arc_lines(arc, no_subtract, lab3_layout, tmp_path, masters=bare, traceset=lines.traceset)
+    assert lines4.steps[1] == (
+        "background night background present but not subtracted (calib.subtract_background off): saturation mask only"
+    )
 
 
 def test_arc_lines_passes_the_calibrated_mask_to_find_lines(

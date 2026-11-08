@@ -249,7 +249,11 @@ def _arc_lines(
         if subtract_background:
             calibrations.append(background[1])
         else:
-            why = "calib.subtract_background off" if calib.has_background else "no exposure time to scale it by"
+            why = (
+                "calib.subtract_background off"
+                if not params.calib.subtract_background
+                else "no exposure time to scale it by"
+            )
             steps.append(f"background {background[1]} present but not subtracted ({why}): saturation mask only")
 
     if traceset is not None:

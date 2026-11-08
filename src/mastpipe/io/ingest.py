@@ -411,10 +411,11 @@ def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: 
     folder, ``**`` crosses folders); else a bare file name matches the one file of that
     name, and ``ValueError`` names the candidates when several files have it. When the
     row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
-    rows win), and a field a row sets is removed from the frame's ``unresolved`` (a
-    ``target`` cell resolves ``targets``); a row matching no ref is appended to ``unmatched`` as
-    ``"manifest row {index}: {source}"`` when it is a list. Overriding ``exposure_type``
-    records ``"manifest"`` as the classification rule unless the row sets one.
+    rows win). A field a row sets is removed from the frame's ``unresolved``, and a
+    ``target`` cell resolves ``targets``. A row matching no ref is appended to
+    ``unmatched`` as ``"manifest row {index}: {source}"`` when it is a list. Overriding
+    ``exposure_type`` records ``"manifest"`` as the classification rule unless the row
+    sets one.
     ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
     :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
     """

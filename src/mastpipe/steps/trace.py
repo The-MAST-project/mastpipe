@@ -483,9 +483,10 @@ def classify_arc(
     The frame first loses a per-column running median along y over
     ``LIT_BASELINE_HALFWIDTHS · ceil(halfwidth)`` rows (made odd), which removes a residual
     background and the smooth wings of neighbouring fibers. A trace's level is then the
-    mean along x of its aperture-summed spectrum (rows within the trace's layout
-    ``aperture``, else ``halfwidth``, of the trace: the rows extraction sums;
-    single-column spikes removed by a running median of :data:`SPIKE_FILTER` columns); it
+    mean along x of its aperture-summed spectrum: the sum over the rows within the trace's
+    layout ``aperture``, or within ``halfwidth`` when it has none, which are the rows
+    extraction sums, with single-column spikes removed by a running median of
+    :data:`SPIKE_FILTER` columns. It
     is lit when that level exceeds both ``lit_sigma`` times the noise of the mean (the
     baseline-subtracted frame's robust pixel sigma scaled by the aperture's row count and
     the column count) and ``lit_fraction`` times the brightest trace's level, so that a
@@ -531,9 +532,10 @@ def classify_arc(
 
 
 def relative_throughput(flat: Frame | None, traceset: TraceSet, halfwidth: float) -> dict[int, float]:
-    """Integrated flat flux of every trace (aperture sum over all columns, within the
-    trace's layout ``aperture``, else ``halfwidth``: the rows extraction sums) divided by
-    the median over traces, keyed by trace index; ``{}`` without a flat or without traces.
+    """Integrated flat flux of every trace divided by the median over traces, keyed by
+    trace index; ``{}`` without a flat or without traces. A trace's flux is its sum over
+    all columns of the rows within its layout ``aperture``, or within ``halfwidth`` when
+    it has none, which are the rows extraction sums.
     ``ValueError`` when the median flux is not positive."""
     if flat is None or len(traceset) == 0:
         return {}
