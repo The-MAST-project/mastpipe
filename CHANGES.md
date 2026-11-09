@@ -2,6 +2,19 @@
 
 ## 0.0.1 (unreleased)
 
+- Review fixes (2026-11-08):
+  - a background master whose inputs carried no exposure time no longer fails every
+    frame of the group with "background subtraction requested ..."; the frames take the
+    bias/dark path and `identify` / `solve` record why the background was not subtracted
+    (`CalibrationSet.has_background`);
+  - QC JSON files are strict JSON: NaN and infinities (a drift fiber without lines, say)
+    are written as `null`, not the bare `NaN` token;
+  - a manifest row that sets a field removes it from the frame's `unresolved` list, so
+    product headers no longer report a manifest-supplied `mid_time`, `targets` or
+    `arc_kind` as unknown;
+  - the relative throughput and the arc lit-test sum each trace over its layout
+    `aperture` when the layout sets one, the rows extraction sums, instead of the global
+    `extract.halfwidth`.
 - **Plan 1.5, hardening at the boundaries — upgrade notes.** These changes break
   compatibility with Plan 1 outputs and invocations:
   - the Mg b grating is `Mg` (the `MAST_common` name), no longer `mgb518`; `Halpha` and

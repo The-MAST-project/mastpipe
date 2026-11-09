@@ -195,6 +195,13 @@ class CalibrationSet:
     background_variance: np.ndarray | None = None
     dark_rate_variance: np.ndarray | None = None
 
+    @property
+    def has_background(self) -> bool:
+        """Whether a background can be subtracted: a background master with a positive
+        ``t_background`` to scale it by. A master stacked from frames without an exposure
+        time has none, and the frames then take the bias (dark) path."""
+        return self.background is not None and self.t_background is not None and self.t_background > 0
+
 
 @dataclass(eq=False)
 class Trace:

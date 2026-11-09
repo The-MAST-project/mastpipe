@@ -195,8 +195,9 @@ def _arc_lines(
     camera, binning and readout key, the flat its configuration too, nearest the arc's
     mid-time (:func:`_library_masters`); the arc's amplifier is then checked against the
     camera's ``readouts`` table (:func:`_warn_unlisted_amplifier`). The bias and background calibrate the
-    frame, the background only when ``params.calib.subtract_background`` is on (otherwise it
-    serves the saturation mask alone, which the steps record and ``calibrations`` does not);
+    frame, the background only when ``params.calib.subtract_background`` is on and the
+    master has an exposure time to scale it by (otherwise it serves the saturation mask
+    alone, which the steps record and ``calibrations`` does not);
     without them the frame only gains its variance and mask; the gain and read noise are
     those of the arc frame's amplifier (:meth:`~mastpipe.config.models.DetectorConfig.noise`).
     ``traceset`` is used as given (a runner's night traces); otherwise the traces are found
@@ -241,17 +242,19 @@ def _arc_lines(
         bias_variance=None if bias is None else bias[0].variance,
         background_variance=None if background is None else background[0].variance,
     )
-    subtract_background = background is not None and params.calib.subtract_background
+    subtract_background = calib.has_background and params.calib.subtract_background
     arc = calibrate_frame(frame, calib, subtract_background, saturation=detector.saturation)
     steps = calibration_steps(calib, float(frame.meta.exposure_time or 0.0), subtract_background)
     if background is not None:
         if subtract_background:
             calibrations.append(background[1])
         else:
-            steps.append(
-                f"background {background[1]} present but not subtracted "
-                "(calib.subtract_background off): saturation mask only"
+            why = (
+                "calib.subtract_background off"
+                if not params.calib.subtract_background
+                else "no exposure time to scale it by"
             )
+            steps.append(f"background {background[1]} present but not subtracted ({why}): saturation mask only")
 
     if traceset is not None:
         source = "given"

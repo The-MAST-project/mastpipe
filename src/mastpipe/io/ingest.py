@@ -411,9 +411,11 @@ def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: 
     folder, ``**`` crosses folders); else a bare file name matches the one file of that
     name, and ``ValueError`` names the candidates when several files have it. When the
     row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
-    rows win); a row matching no ref is appended to ``unmatched`` as
-    ``"manifest row {index}: {source}"`` when it is a list. Overriding ``exposure_type``
-    records ``"manifest"`` as the classification rule unless the row sets one.
+    rows win). A field a row sets is removed from the frame's ``unresolved``, and a
+    ``target`` cell resolves ``targets``. A row matching no ref is appended to
+    ``unmatched`` as ``"manifest row {index}: {source}"`` when it is a list. Overriding
+    ``exposure_type`` records ``"manifest"`` as the classification rule unless the row
+    sets one.
     ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
     :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
     """
@@ -432,7 +434,8 @@ def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: 
         meta = ref.meta
         for matched, extension, values in rows:
             if _applies(ref, matched, extension):
-                meta = dataclasses.replace(meta, **values)
+                unresolved = tuple(name for name in meta.unresolved if name not in values)
+                meta = dataclasses.replace(meta, **values, unresolved=unresolved)
         out.append(dataclasses.replace(ref, meta=meta) if meta is not ref.meta else ref)
     return out
 
