@@ -279,14 +279,15 @@ The night folder is scanned with its subfolders (the control software files
 each acquisition in a folder of its own); every `*.fits`, `*.fit` or
 `*.fits.fz` file (any case) is read, names starting with `.` are ignored, and a
 frame is known by its path relative to the night folder. A frame whose
-`INSTRUME` names another instrument is skipped with that reason.
+`INSTRUME` names another instrument is skipped with that reason (once per file).
 
 A **manifest** (`--manifest`) is a CSV keyed by `source` (optional `extension`)
 whose non-empty cells override any metadata field. A `source` is a relative
 path (`highspec/acquisition-0001/exposure-001.fits`), a glob pattern on it
 (`highspec/acquisition-0001/*.fits`; `*` stays within a folder, `**` crosses
 folders) or a bare file name that only one frame has (two or more is an error);
-a row matching no frame is reported among the skipped. The fields are: `exposure_type`
+a `\` is read as `/`. A row matching no frame is reported among the skipped, and
+a row naming a file that is not a FITS file is reported there as such. The fields are: `exposure_type`
 (`bias`, `dark`, `flat`, `arc`, `science`, `background`, `unknown`),
 `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`, `target`,
 `exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless it

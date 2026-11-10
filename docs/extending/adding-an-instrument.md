@@ -69,7 +69,10 @@ Nothing downstream of ingest sees a raw keyword, so a change of control
 software is a change of this file. Unresolved fields are recorded, never
 guessed. A `per_unit` field reads a keyword template once per telescope unit
 (`{nn}` is the two-digit unit number) and gives the units whose keyword is
-present; it replaces `keys`, `filename_regex` and `default`. A time field's
+present; it replaces `keys`, `filename_regex` and `default`. `targets` must be
+read this way (ingest takes it as unit–target pairs, and a map that gives it
+`keys` is rejected when it is loaded); one value for every fiber is the
+`target` field. A time field's
 `timezone` (`utc`, an IANA zone name, or `assume-utc`) says how a stamp without
 an offset is read (see [The night folder](../running/night-folder.md)). The
 manifest can override any field frame by frame.

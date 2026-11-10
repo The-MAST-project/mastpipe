@@ -23,6 +23,7 @@ from mastpipe.instruments.registry import (
     load_layout,
     load_line_table,
 )
+from mastpipe.io.headers import HeaderMap
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.sim.simulator import FWHM_PX, GAUSSIAN_FWHM, SimTruth, simulate_night
 from mastpipe.steps.calib import build_calibration_set, build_master, calibrate_frame
@@ -41,6 +42,12 @@ ARC_SIGMA_PX = FWHM_PX / GAUSSIAN_FWHM
 @pytest.fixture(scope="session")
 def highspec_effective() -> EffectiveConfig:
     return build_effective(load_instrument("highspec"), "Mg", "main")
+
+
+@pytest.fixture
+def highspec_map() -> HeaderMap:
+    """HighSpec's shipped header map, parsed."""
+    return HeaderMap.from_dict(load_header_map("highspec"))
 
 
 @pytest.fixture(scope="session")

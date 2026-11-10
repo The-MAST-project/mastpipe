@@ -51,11 +51,6 @@ def make_detector(**overrides) -> DetectorConfig:
 
 
 @pytest.fixture
-def highspec_map() -> HeaderMap:
-    return HeaderMap.from_dict(load_header_map("highspec"))
-
-
-@pytest.fixture
 def night(tmp_path: Path) -> Path:
     data = np.arange(12, dtype=np.uint16).reshape(3, 4)
     write_fits(
@@ -105,7 +100,8 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     assert bias.mid_time == "2026-10-01T18:00:00"  # a zero-second exposure: start is mid
     assert bias.binning == (2, 1)  # VBIN absent: the missing axis defaults to 1
     assert bias.targets == () and bias.arc_kind is None
-    assert "targets" in bias.unresolved and "exposure_time" not in bias.unresolved
+    # a calibration frame has no target: targets is not unresolved
+    assert "targets" not in bias.unresolved and "exposure_time" not in bias.unresolved
     assert "target" not in bias.unresolved
 
     sci = refs[1].meta
@@ -497,21 +493,24 @@ def test_manifest_matches_relative_path_glob_and_unique_name(nested: Path, highs
     write_manifest(
         path,
         [
-            {"source": "highspec/acquisition-0001/*.fits", "target": "", "arc_kind": "full"},
-            {"source": "exposure-002.fits", "target": "flat lamp", "arc_kind": ""},
+            {"source": "highspec/acquisition-0001/*.fits", "target": "", "arc_kind": "full", "lamp_state": ""},
+            {"source": "exposure-002.fits", "target": "flat lamp", "arc_kind": "", "lamp_state": ""},
             {
                 "source": "highspec/acquisition-0002/exposure-001.fits",
                 "target": "star",
                 "arc_kind": "",
+                "lamp_state": "",
             },
-            {"source": "*.fits", "target": "top level only", "arc_kind": ""},
-            {"source": "**/exposure-00[12].fits", "target": "", "arc_kind": ""},
+            {"source": "*.fits", "target": "top level only", "arc_kind": "", "lamp_state": ""},
+            {"source": "**/exposure-00[12].fits", "target": "", "arc_kind": "", "lamp_state": "on"},
         ],
     )
     unmatched: list[str] = []
     new = apply_manifest(refs, read_manifest(path), unmatched)
     assert [ref.meta.arc_kind for ref in new] == ["full", None, None]
     assert [ref.meta.target_for(None) for ref in new] == [None, "star", "flat lamp"]
+    # "**/" crosses folders and "[12]" is a character class: every exposure file matches
+    assert [ref.meta.lamp_state for ref in new] == ["on", "on", "on"]
     # "*" does not cross "/": the fourth row matches nothing at the top level
     assert unmatched == ["manifest row 3: *.fits"]
 
@@ -625,3 +624,107 @@ def test_manifest_overrides_clear_unresolved(tmp_path: Path):
     # a row that overrides nothing of the unresolved fields leaves the list as it is
     other = pd.DataFrame([{"source": "x.fits", "exposure_time": "3"}], dtype=str)
     assert apply_manifest([ref], other)[0].meta.unresolved == ref.meta.unresolved
+
+
+# ------------------------------------------------- ingest and manifest fixes (tidy-up)
+
+
+def test_backslash_sources_match_as_folder_separators(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
+    """A manifest written on Windows separates folders with ``\\``: it matches as ``/``,
+    for a relative path and for a glob alike."""
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(
+        path,
+        [
+            {"source": "highspec\\acquisition-0001\\*.fits", "lamp_state": "on"},
+            {"source": "highspec\\acquisition-0002\\exposure-002.fits", "lamp_state": "off"},
+        ],
+    )
+    unmatched: list[str] = []
+    new = apply_manifest(refs, read_manifest(path), unmatched)
+    assert unmatched == []
+    assert [ref.meta.lamp_state for ref in new] == ["on", None, "off"]
+
+
+def test_scan_folder_reports_unmatched_manifest_rows(night: Path, highspec_map: HeaderMap, tmp_path: Path):
+    """``scan_folder(manifest=...)`` fills ``unmatched`` as :func:`apply_manifest` does."""
+    path = tmp_path / "manifest.csv"
+    write_manifest(path, [{"source": "a_bias.fits", "lamp_state": "off"}, {"source": "nothing.fits", "lamp_state": "on"}])
+    unmatched: list[str] = []
+    refs = scan_folder(night, "highspec", highspec_map, manifest=path, unmatched=unmatched)
+    assert unmatched == ["manifest row 1: nothing.fits"]
+    assert refs[0].meta.lamp_state == "off"
+
+
+def test_object_zero_is_a_target(tmp_path: Path, highspec_map: HeaderMap):
+    """Only a missing card or a blank string names no target: ``OBJECT = 0`` is target ``0``."""
+    write_fits(tmp_path / "science.fits", np.ones((2, 3), dtype=np.uint16), {"EXPOSURE": 300.0, "OBJECT": 0})
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.targets == (("*", "0"),)
+    assert "targets" not in ref.meta.unresolved
+
+
+def test_calibration_frames_do_not_list_targets_as_unresolved(tmp_path: Path, highspec_map: HeaderMap):
+    """A calibration frame has no target to resolve; a science or ``light`` frame without
+    one still lists ``targets``."""
+    for name, imagetyp in (("bias", "Bias"), ("dark", "Dark"), ("flat", "Flat"), ("arc", "Arc"), ("light", "Light")):
+        write_fits(tmp_path / f"{name}.fits", BLANK, {"IMAGETYP": imagetyp, "EXPOSURE": 5.0})
+    metas = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert [metas[f"{name}.fits"].exposure_type for name in ("bias", "dark", "flat", "arc", "light")] == [
+        "bias",
+        "dark",
+        "flat",
+        "arc",
+        "light",
+    ]
+    for name in ("bias", "dark", "flat", "arc"):
+        assert "targets" not in metas[f"{name}.fits"].unresolved, name
+    assert "targets" in metas["light.fits"].unresolved
+    # a manifest row that makes the frame a calibration frame clears it too
+    manifest = pd.DataFrame([{"source": "light.fits", "exposure_type": "flat"}], dtype=str)
+    (flat,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "light.fits"], manifest
+    )
+    assert flat.meta.exposure_type == "flat" and "targets" not in flat.meta.unresolved
+
+
+def test_other_instrument_mef_is_skipped_once_per_file(tmp_path: Path, highspec_map: HeaderMap):
+    primary = fits.PrimaryHDU()
+    primary.header["INSTRUME"] = "Deepspec"
+    hdus = [fits.ImageHDU(BLANK, name=band) for band in ("I", "G", "R", "U")]
+    fits.HDUList([primary, *hdus]).writeto(tmp_path / "deepspec.fits")
+    skipped: list[tuple[str, str]] = []
+    assert scan_folder(tmp_path, "highspec", highspec_map, skipped=skipped) == []
+    assert skipped == [("deepspec.fits", "instrument 'deepspec' is not 'highspec'")]
+
+
+def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
+    """A row naming an existing file whose name is not a FITS file name (so the scan never
+    read it) is reported apart, in ``unsupported``, when ``folder`` is given; a row naming
+    nothing that exists stays in ``unmatched``."""
+    (nested / "highspec" / "acquisition-0001" / "exposure-001.fts").write_bytes(b"")
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(
+        path,
+        [
+            {"source": "highspec/acquisition-0001/exposure-001.fts", "lamp_state": "on"},
+            {"source": "exposure-001.fts", "lamp_state": "on"},
+            {"source": "seq.txt", "lamp_state": "on"},
+            {"source": "nothing.fits", "lamp_state": "on"},
+        ],
+    )
+    unmatched: list[str] = []
+    unsupported: list[str] = []
+    apply_manifest(refs, read_manifest(path), unmatched, folder=nested, unsupported=unsupported)
+    assert unsupported == [
+        "manifest row 0: highspec/acquisition-0001/exposure-001.fts",
+        "manifest row 1: exposure-001.fts",
+        "manifest row 2: seq.txt",
+    ]
+    assert unmatched == ["manifest row 3: nothing.fits"]
+    # without a list for them, such rows stay in unmatched, as before
+    unmatched = []
+    apply_manifest(refs, read_manifest(path), unmatched, folder=nested)
+    assert len(unmatched) == 4

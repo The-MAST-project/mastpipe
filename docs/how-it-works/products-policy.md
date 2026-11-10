@@ -44,7 +44,10 @@ A science product's **key** is the input checksum, the configuration hash
 (every `--set` override and `--time-policy` included), the reference
 solution's hash (`MPWREFH`), the sorted drift-arc checksums, the layout preset
 and the hash of its CSV file (`MPLAYOUT`, `MPLAYH`), a hash of the masters'
-file checksums (`MPMKH`) and the frame's time zone (`MPTZ`). A quick-look run
+file checksums (`MPMKH`) and the frame's time zone (`MPTZ`: `utc`, `assumed-utc`
+or the IANA zone its clock was read in). A product built from a group of frames
+(a master, a trace set) whose times were read in different zones records their
+labels sorted and joined by commas, such as `assumed-utc,utc`. A quick-look run
 skips a product whose key matches and redoes one whose key changed — which is
 how early-night frames reduced before the first calibration-fiber arc are
 upgraded from `reference` to `transferred` once the arc lands, and how an

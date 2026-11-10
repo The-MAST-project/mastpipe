@@ -327,6 +327,22 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
     assert [source for source, _ in summary.failed] == ["group main/None"]
 
 
+def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_path):
+    """A row naming a file that exists but is not a FITS file name is skipped as such, not
+    as matching no frame."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    shutil.copy(sim_dir / "sim_bias_00.fits", folder / "sim_bias_00.fits")
+    (folder / "notes.txt").write_text("bias taken with the dome closed\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("source,lamp_state\nnotes.txt,off\nnothing.fits,off\n", encoding="utf-8")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", manifest=manifest))
+    assert "manifest row 0: notes.txt: not a FITS file (.fits, .fit, .fits.fz)" in summary.skipped
+    assert "manifest row 1: nothing.fits: matches no frame" in summary.skipped
+    assert not any(row.startswith("manifest row 0") and "matches no frame" in row for row in summary.skipped)
+
+
 # ------------------------------------------------------------ calibration frames, binning
 
 

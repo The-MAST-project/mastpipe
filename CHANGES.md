@@ -13,6 +13,17 @@
     `ASSUMED_UTC`, still importable from `io.ingest`); a frame's stamp is parsed once;
   - the simulator reads `night_start` with `core.times.to_utc`: a start with an offset is
     converted to UTC instead of being written into the truth and headers with its offset;
+  - a manifest `source` with `\` folder separators (written on Windows) now matches;
+  - `scan_folder(manifest=..., unmatched=[...])` reports the manifest rows matching no
+    frame, as `apply_manifest` does (the runner's own path is unchanged);
+  - a manifest row naming an existing file that is not a FITS file is skipped as
+    `not a FITS file (.fits, .fit, .fits.fz)` rather than `matches no frame`
+    (`apply_manifest(..., folder=, unsupported=)`);
+  - a multi-extension file of another instrument is skipped once, not once per HDU;
+  - `OBJECT = 0` is the target `0`: only a missing card or a blank string names no target;
+  - a calibration frame (bias, dark, flat, arc, background, from its header or a manifest
+    row) no longer lists `targets` among its unresolved fields; a header map whose
+    `targets` field is not `per_unit` is rejected when it is loaded;
 - Internal restructuring, no behaviour change: the quick-look runner is split into stage
   modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
   stay importable from `mastpipe.pipeline.runner`.

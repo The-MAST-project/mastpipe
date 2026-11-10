@@ -32,7 +32,8 @@ not settled yet; any acquisition folder under the root is read.
 The folder is scanned **recursively**. A FITS file is any file whose name ends
 in `.fits`, `.fit` or `.fits.fz`, in any case; files and folders whose name
 starts with `.` are ignored, and other files (`seq.txt`, logs, notes) are not
-scanned at all. A file with a FITS name that cannot be opened is recorded as a
+scanned at all. A symbolic link to a folder is not descended into (a linked
+FITS file is read). A file with a FITS name that cannot be opened is recorded as a
 **failure** (`unreadable FITS file`), and the run's exit status is 2.
 
 Every frame is known by its path **relative to the night folder**, with forward
@@ -158,7 +159,9 @@ suffix (`2026-10-01T18:02:30`).
   together select the gain and read noise and are matched by the library;
 - the targets, one per telescope: the cards `OBJ01`…`OBJ20` when the control
   software writes them (none does yet), else one `OBJECT` card that applies to
-  every science fiber.
+  every science fiber. Only a missing or blank card names no target (`OBJECT =
+  0` is the target `0`); a calibration frame (bias, dark, flat, arc,
+  background) does not list its targets as unresolved.
 
 ## The manifest
 
@@ -187,15 +190,22 @@ A row's `source` is one of:
 - a **bare file name**, which matches the one file of that name anywhere in the
   tree; a name that several files share is an error that lists them.
 
+A `\` in a source is read as a folder separator, so a manifest written on
+Windows (`acquisition-0012\exposure-003.fits`) matches as well.
+
 An `extension` column restricts a row to one HDU of a multi-extension file.
 Rows apply in order, so a later row wins over an earlier one for the frames
 both name. A row that matches no frame is listed under *skipped*, never
-dropped silently.
+dropped silently; a row naming a file that exists but is not a FITS file (a
+`.txt`, a `.fts`) is listed there as `not a FITS file`, since the scan never
+reads it.
 
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `light`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
-every telescope; the older `target` column is still read that way),
+every telescope; the older `target` column is still read that way; `;`
+separates entries and the first `=` separates the unit from the target, so no
+target name can contain `;`, and a bare name cannot contain `=`),
 `exposure_time`, `mid_time` (taken as the mid-exposure time; a stamp with an
 explicit offset is honoured and converted to UTC, a naive one is UTC),
 `binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,

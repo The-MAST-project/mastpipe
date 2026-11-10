@@ -5,8 +5,9 @@ each acquisition in a folder of its own), opens every FITS file, resolves each i
 header through the instrument's :class:`~mastpipe.io.headers.HeaderMap` and classifies it,
 producing one :class:`~mastpipe.core.model.FrameRef` per image HDU (the primary HDU
 when it carries data, else every image extension, each read with the primary header
-underneath its own). A frame's ``source`` is its path relative to the night folder, with
-forward slashes; a frame whose header names another instrument is left out. The
+underneath its own); a symbolic link to a folder is not descended into. A frame's
+``source`` is its path relative to the night folder, with forward slashes; a frame whose
+header names another instrument is left out. The
 ``mid_time`` of a frame is derived from the header's time field and the exposure time
 according to the field's ``reference`` (``start``: plus half the exposure; ``end``:
 minus half; ``mid``: as given) and converted to UTC, a stamp without an offset read
@@ -14,11 +15,13 @@ according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
 ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
 shifted and ``unresolved`` lists ``mid_time``. A frame's ``targets`` come from the map's
 per-unit ``targets`` field (one target per telescope unit), else from its single
-``target`` field as ``(("*", target),)``, which applies to every science fiber (an empty
-or blank one names none); when neither resolves ``unresolved`` lists ``targets``. A manifest CSV can override any metadata
-field frame by frame (its ``mid_time`` is taken as the mid-time, in UTC); a row names
-its frames by relative path, glob pattern or unique file name. It is how laboratory data
-without instrument keywords enter the pipeline.
+``target`` field as ``(("*", target),)``, which applies to every science fiber (only a
+missing or blank one names none); when neither resolves ``unresolved`` lists ``targets``,
+except for the :data:`CALIBRATION_TYPES`, which have no target. A manifest CSV can
+override any metadata field frame by frame (its ``mid_time`` is taken as the mid-time,
+UTC unless it carries an offset, which is honoured); a row names its frames by relative
+path, glob pattern or unique file name. It is how laboratory data without instrument
+keywords enter the pipeline.
 :func:`load_frame` reads one HDU as ``float32``, crops it and applies the detector's
 orientation. Downstream code sees only the pipeline vocabulary carried by
 :class:`~mastpipe.core.model.FrameMeta`.
@@ -70,6 +73,8 @@ TARGETS_FIELD = "targets"
 """The header-map field (``per_unit``) naming each telescope unit's target."""
 TARGET_FIELD = "target"
 """The header-map field naming one target for every fiber, the fallback of ``targets``."""
+CALIBRATION_TYPES = ("bias", "dark", "flat", "arc", "background")
+"""Exposure types with no target: ``targets`` is never listed as unresolved for them."""
 
 #: Header-map fields copied verbatim into :class:`FrameMeta` when they resolve.
 PASSTHROUGH_FIELDS = (
@@ -170,6 +175,7 @@ def scan_folder(
     unreadable: list[Path] | None = None,
     recursive: bool = True,
     skipped: list[tuple[str, str]] | None = None,
+    unmatched: list[str] | None = None,
 ) -> list[FrameRef]:
     """One :class:`FrameRef` per image HDU of every FITS file under ``folder``, in path order.
 
@@ -180,11 +186,13 @@ def scan_folder(
     instead (``identify`` scans a single file that way). ``header_map`` is a parsed
     :class:`HeaderMap` or the raw mapping it is built from. A frame whose ``instrument``
     field resolves to another instrument than ``instrument`` (compared case-insensitively)
-    is left out, and appended to ``skipped`` as ``(source, reason)`` when it is a list.
+    is left out, and appended to ``skipped`` as ``(source, reason)`` when it is a list (once
+    per file, however many of its HDUs are frames).
     ``FileNotFoundError`` when ``folder`` is not a directory; an empty list when it holds
     no matching file. A file astropy cannot open raises ``OSError``, unless ``unreadable``
     is a list: the path is appended to it and scanning continues. ``manifest`` (a table
-    from :func:`read_manifest` or its path) is applied to the result.
+    from :func:`read_manifest` or its path) is applied to the result, its rows that match
+    no frame appended to ``unmatched`` when it is a list (see :func:`apply_manifest`).
     """
     folder = Path(folder)
     if not folder.is_dir():
@@ -202,12 +210,15 @@ def scan_folder(
             unreadable.append(path)
             continue
         checksum: str | None = None
+        other: str | None = None
         for index, header in hdus:
             fields, unresolved = header_map.resolve(header, path.name)
             written = fields.get(INSTRUMENT_FIELD)
             if written is not None and str(written).lower() != instrument.lower():
-                if skipped is not None:
-                    skipped.append((source, f"instrument {written!r} is not {instrument!r}"))
+                reason = f"instrument {written!r} is not {instrument!r}"
+                if skipped is not None and reason != other:
+                    skipped.append((source, reason))
+                other = reason
                 continue
             if checksum is None:
                 checksum = file_checksum(path)
@@ -216,7 +227,7 @@ def scan_folder(
     if manifest is not None:
         if not isinstance(manifest, pd.DataFrame):
             manifest = read_manifest(manifest)
-        refs = apply_manifest(refs, manifest)
+        refs = apply_manifest(refs, manifest, unmatched)
     return refs
 
 
@@ -279,11 +290,11 @@ def _build_meta(
     targets = fields.get(TARGETS_FIELD)
     if not targets:
         single = fields.get(TARGET_FIELD)
-        # an empty or blank OBJECT card names no target
-        targets = () if not single or not str(single).strip() else ((ALL_TELESCOPES, str(single)),)
+        # only a missing card or a blank string names no target (OBJECT = 0 is target "0")
+        targets = () if single is None or not str(single).strip() else ((ALL_TELESCOPES, str(single)),)
     targets = tuple((str(telescope), str(target)) for telescope, target in targets)
     unresolved = [name for name in unresolved if name not in (TARGETS_FIELD, TARGET_FIELD)]
-    if not targets:
+    if not targets and exposure_type not in CALIBRATION_TYPES:
         unresolved.append(TARGETS_FIELD)
     camera = fields.get("camera")
     passthrough = {name: fields.get(name) for name in PASSTHROUGH_FIELDS}
@@ -402,17 +413,29 @@ def read_manifest(path: Path | str) -> pd.DataFrame:
     return table
 
 
-def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: list[str] | None = None) -> list[FrameRef]:
+def apply_manifest(
+    refs: Iterable[FrameRef],
+    manifest: pd.DataFrame,
+    unmatched: list[str] | None = None,
+    folder: Path | str | None = None,
+    unsupported: list[str] | None = None,
+) -> list[FrameRef]:
     """New refs with the manifest's non-empty cells written over their metadata.
 
-    A row's ``source`` matches a ref whose relative path it is; else, when it holds glob
+    A ``\\`` in a row's ``source`` is a folder separator, read as ``/`` (a manifest written
+    on Windows). A row's ``source`` matches a ref whose relative path it is; else, when it holds glob
     characters, the refs whose relative path it matches (``*`` and ``?`` stay within a
     folder, ``**`` crosses folders); else a bare file name matches the one file of that
     name, and ``ValueError`` names the candidates when several files have it. When the
     row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
     rows win). A field a row sets is removed from the frame's ``unresolved``, and a
-    ``target`` cell resolves ``targets``. A row matching no ref is appended to
-    ``unmatched`` as ``"manifest row {index}: {source}"`` when it is a list. Overriding
+    ``target`` cell resolves ``targets`` (as does a row that makes the frame one of the
+    :data:`CALIBRATION_TYPES`, which have no target). A row matching no ref is appended to
+    ``unmatched`` as ``"manifest row {index}: {source}"`` when it is a list; when
+    ``folder`` (the scanned folder) is given and ``unsupported`` is a list, a row that
+    instead names an existing file under ``folder`` whose name is not a FITS file name
+    (:data:`FITS_SUFFIXES`), so the scan never read it, is appended to ``unsupported`` in
+    the same form. Overriding
     ``exposure_type`` records ``"manifest"`` as the classification rule unless the row
     sets one.
     ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
@@ -425,15 +448,22 @@ def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: 
         source, extension, values = _row_overrides(row, index)
         matched = _match_sources(source, sources, f"manifest row {index}")
         rows.append((matched, extension, values))
-        hit = any(_applies(ref, matched, extension) for ref in refs)
-        if not hit and unmatched is not None:
-            unmatched.append(f"manifest row {index}: {source}")
+        if any(_applies(ref, matched, extension) for ref in refs):
+            continue
+        label = f"manifest row {index}: {source}"
+        if unsupported is not None and folder is not None and _names_other_file(Path(folder), source):
+            unsupported.append(label)
+        elif unmatched is not None:
+            unmatched.append(label)
     out: list[FrameRef] = []
     for ref in refs:
         meta = ref.meta
         for matched, extension, values in rows:
             if _applies(ref, matched, extension):
-                unresolved = tuple(name for name in meta.unresolved if name not in values)
+                cleared = set(values)
+                if values.get("exposure_type") in CALIBRATION_TYPES:
+                    cleared.add(TARGETS_FIELD)
+                unresolved = tuple(name for name in meta.unresolved if name not in cleared)
                 meta = dataclasses.replace(meta, **values, unresolved=unresolved)
         out.append(dataclasses.replace(ref, meta=meta) if meta is not ref.meta else ref)
     return out
@@ -441,6 +471,25 @@ def apply_manifest(refs: Iterable[FrameRef], manifest: pd.DataFrame, unmatched: 
 
 def _applies(ref: FrameRef, matched: set[str], extension: int | None) -> bool:
     return ref.meta.source in matched and (extension is None or extension == ref.extension)
+
+
+def _names_other_file(folder: Path, source: str) -> bool:
+    """Whether a manifest ``source`` (a relative path or a bare file name, not a glob) names
+    an existing file under ``folder`` that is not a FITS file name, so the scan never read
+    it; hidden files and folders are not looked at, as the scan does not."""
+    if GLOB_CHARS & set(source):
+        return False
+    candidates = [folder.joinpath(*source.split("/"))] if "/" in source else list(folder.rglob(source))
+    for path in candidates:
+        try:
+            relative = path.relative_to(folder)
+        except ValueError:  # ".." in the source: outside the folder
+            continue
+        if any(part.startswith(".") for part in relative.parts) or not path.is_file():
+            continue
+        if not path.name.lower().endswith(FITS_SUFFIXES):
+            return True
+    return False
 
 
 def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
@@ -494,7 +543,7 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
 
 def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[str, Any]]:
     label = f"manifest row {index}"
-    source = str(row["source"]).strip()
+    source = str(row["source"]).strip().replace("\\", "/")  # a Windows separator is a folder separator
     if not source:
         raise ValueError(f"{label}: empty source")
     extension_text = str(row["extension"]).strip() if "extension" in row else ""

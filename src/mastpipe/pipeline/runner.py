@@ -2,7 +2,8 @@
 wavelength-calibrated and sky-subtracted spectra and per-target combinations, with QC.
 
 :func:`run_quicklook` scans the folder and its subfolders (manifest applied; frames of
-another instrument and manifest rows matching no frame go into ``skipped``), drops the
+another instrument, manifest rows matching no frame and rows naming a file that is not a
+FITS file go into ``skipped``), drops the
 frames whose type is ``unknown`` into ``skipped`` with their classification rule, gives
 ``options.configuration`` to every frame whose header and manifest name no grating (so its
 products, masters and library entries carry that name), and reduces every
@@ -98,7 +99,7 @@ from mastpipe.config.models import InstrumentConfig
 from mastpipe.core.model import FrameRef
 from mastpipe.core.times import ASSUMED_UTC
 from mastpipe.instruments.registry import layout_hash, load_header_map, load_instrument, load_layout
-from mastpipe.io.ingest import apply_manifest, read_manifest, scan_folder
+from mastpipe.io.ingest import FITS_SUFFIXES, apply_manifest, read_manifest, scan_folder
 from mastpipe.pipeline.arc_stage import _arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (
@@ -280,10 +281,15 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             log.warning("skipped %s: %s", source, reason)
         if manifest is not None:
             unmatched: list[str] = []
-            refs = apply_manifest(refs, manifest, unmatched)
+            unsupported: list[str] = []
+            refs = apply_manifest(refs, manifest, unmatched, folder=night_dir, unsupported=unsupported)
             for row in unmatched:
                 summary.skipped.append(f"{row}: matches no frame")
                 log.warning("%s: matches no frame", row)
+            for row in unsupported:
+                reason = f"not a FITS file ({', '.join(FITS_SUFFIXES)})"
+                summary.skipped.append(f"{row}: {reason}")
+                log.warning("%s: %s", row, reason)
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")

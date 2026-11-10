@@ -26,7 +26,8 @@ sections:
     each telescope unit's two-digit number, and the value is the tuple of ``(unit name,
     value)`` pairs of the units whose keyword is present (each value transformed as above;
     a blank or ``missing_values`` value counts as absent), in unit order, or unresolved
-    when no unit's keyword is present.
+    when no unit's keyword is present. The fields of :data:`PER_UNIT_FIELDS` (``targets``)
+    are read this way only: ingest takes their value as ``(unit, value)`` pairs.
 
 ``classification``
     an ordered list of rules ``{when: {<field>: {lt: v} | {eq: v} | {missing: true}}, type}``
@@ -75,6 +76,9 @@ TIME_REFERENCES = ("start", "mid", "end")
 """Which instant of the exposure a time field records (the ``reference`` option)."""
 UNIT_PLACEHOLDER = "{nn}"
 """Where a ``per_unit`` template takes the two-digit unit number."""
+PER_UNIT_FIELDS = ("targets",)
+"""Pipeline fields whose value is one entry per telescope unit: they must declare
+``per_unit`` (``target`` is the single-value field for every fiber)."""
 UNCLASSIFIED = "unknown"
 PROVISIONAL = "light"
 """The header type that the rules with conditions may still refine."""
@@ -168,7 +172,8 @@ class HeaderMap:
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> HeaderMap:
         """Parse the raw YAML mapping; ``ValueError`` for an unknown option, type or operator,
-        a rule referring to a field the map does not define, or an invalid exposure type."""
+        a field of :data:`PER_UNIT_FIELDS` without ``per_unit``, a rule referring to a field
+        the map does not define, or an invalid exposure type."""
         raw_fields = d.get("fields") or {}
         if not isinstance(raw_fields, Mapping):
             raise ValueError("header map: 'fields' must be a mapping")
@@ -239,6 +244,11 @@ def _parse_field(name: str, spec: Any) -> FieldSpec:
         clashing = [option for option in ("keys", "filename_regex", "default") if option in spec]
         if clashing:
             raise ValueError(f"header map field {name!r}: per_unit excludes {', '.join(clashing)}")
+    elif name in PER_UNIT_FIELDS:
+        raise ValueError(
+            f"header map field {name!r}: must be read per_unit (a keyword template with "
+            f"{UNIT_PLACEHOLDER}); a single value for every fiber is the 'target' field"
+        )
     elif not keys and regex is None and "default" not in spec:
         raise ValueError(f"header map field {name!r}: needs keys, filename_regex or default")
     mapping = spec.get("map")
