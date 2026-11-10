@@ -51,7 +51,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig, EffectiveConfig
+from mastpipe.core.times import to_utc
 from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import expected_shape as oriented_shape
 from mastpipe.steps.geometry import (
@@ -640,7 +641,8 @@ def simulate_night(
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
     Frames are ``sim_<type>_<nn>.fits`` at ``detector.shape``, one every ``cadence_min``
-    minutes from ``night_start`` in the order bias, dark, flat, full arc, background, then
+    minutes from ``night_start`` (ISO-8601, read by :func:`~mastpipe.core.times.to_utc`: UTC unless
+    it carries an offset) in the order bias, dark, flat, full arc, background, then
     one calibration-fiber arc followed by its share of the science frames, repeated
     ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). The
     cadence sets each frame's mid-time (the truth table's ``mid_time``); the header's
@@ -677,7 +679,7 @@ def simulate_night(
     lit = scene.swapped(swap_rows)
     y_center = scene.y_center
     schedule = _schedule(n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science)
-    start = datetime.fromisoformat(night_start)
+    start = to_utc(night_start).tz_convert(None).to_pydatetime()  # naive UTC, like every mid_time
     kinds = [kind for _, kind in schedule]
     origin_seconds = (kinds.index("full") if "full" in kinds else 0) * cadence_min * 60.0
     end_seconds = (len(schedule) - 1) * cadence_min * 60.0

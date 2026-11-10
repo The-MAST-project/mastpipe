@@ -2,6 +2,17 @@
 
 ## 0.0.1 (unreleased)
 
+- Ingest, time and metadata fixes (2026-11-11):
+  - a header-map `timezone` naming UTC by its IANA name (`UTC`, `Etc/UTC` and their
+    aliases) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /
+    `Etc/UTC`. The label is part of the science idempotence key, so a science product
+    reduced under such a custom map is reduced again once (its `MPTZ` becomes `utc`); the
+    shipped HighSpec map uses `assume-utc`, whose labels (`utc` for a stamp with an
+    offset, `assumed-utc` otherwise) do not change, so no HighSpec product is reduced
+    again. The label logic lives in `core.times` (`read_time`, `zone_label`, and
+    `ASSUMED_UTC`, still importable from `io.ingest`); a frame's stamp is parsed once;
+  - the simulator reads `night_start` with `core.times.to_utc`: a start with an offset is
+    converted to UTC instead of being written into the truth and headers with its offset;
 - Internal restructuring, no behaviour change: the quick-look runner is split into stage
   modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
   stay importable from `mastpipe.pipeline.runner`.

@@ -502,3 +502,14 @@ def test_swapped_fibers_swap_their_spectra_not_the_truth(tmp_path, highspec_effe
         np.testing.assert_array_equal(fits.getdata(tmp_path / "d" / name), fits.getdata(out_dir / name), err_msg=name)
     with pytest.raises(ValueError, match="swap_fibers"):
         simulate_night(highspec_effective, renumbered, mg_lines, tmp_path / "e", swap_fibers=(1, 3), **kwargs)
+
+
+def test_night_start_with_an_offset_is_converted_to_utc(tmp_path, highspec_effective, survey_layout, mg_lines):
+    """``night_start`` is read as every time is (``core.times.to_utc``): UTC unless it
+    carries an offset, which is honoured; the truth and the headers stay naive UTC."""
+    kwargs = dict(seed=1, n_bias=1, n_dark=0, n_flat=0, n_full_arc=0, n_cal_arc=0, n_science=0, n_background=0)
+    truth = simulate_night(
+        highspec_effective, survey_layout, mg_lines, tmp_path, night_start="2026-10-01T20:00:00+02:00", **kwargs
+    )
+    assert truth.frames.mid_time.tolist() == ["2026-10-01T18:00:00"]
+    assert fits.getheader(tmp_path / truth.frames.file.iloc[0])["DATE-OBS"] == "2026-10-01T18:00:00"

@@ -201,8 +201,11 @@ def test_timezone_option_is_validated():
         return HeaderMap.from_dict(raw).fields["mid_time"]
 
     assert spec().timezone == "utc"
-    for zone in ("utc", "assume-utc", "Asia/Jerusalem", "UTC"):
+    for zone in ("utc", "assume-utc", "Asia/Jerusalem"):
         assert spec(timezone=zone).timezone == zone
+    # an IANA name for UTC is the utc keyword (core.times.check_timezone)
+    for zone in ("UTC", "Etc/UTC"):
+        assert spec(timezone=zone).timezone == "utc"
     for bad in ("Mars/Olympus", "", "../etc", 3):
         with pytest.raises(ValueError, match="timezone"):
             spec(timezone=bad)

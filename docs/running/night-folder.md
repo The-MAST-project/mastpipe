@@ -137,6 +137,8 @@ ingest adds half the exposure time to reach the mid-time.
 
 Each time field carries a `timezone` option saying how a stamp without an
 offset is read: `utc`, an IANA zone name (`Asia/Jerusalem`), or `assume-utc`.
+An IANA name of UTC itself (`UTC`, `Etc/UTC`) is the same as `utc`, and its
+frames are labelled `utc`.
 A stamp with an explicit offset is honoured whatever the option says. Under
 `assume-utc` a naive stamp is taken as UTC, the run logs one warning, and
 every product records the assumption in its `MPTZ` card (`assumed-utc`).

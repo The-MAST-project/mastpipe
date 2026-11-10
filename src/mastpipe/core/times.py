@@ -11,7 +11,14 @@ to ``timezone``:
     the value is taken as UTC although nobody has established that its clock is (a header
     map's way of saying so out loud);
 an IANA zone name (``"Asia/Jerusalem"``)
-    the value is a wall-clock time in that zone.
+    the value is a wall-clock time in that zone. A name of UTC itself (``"UTC"``,
+    ``"Etc/UTC"`` and their aliases, :data:`UTC_NAMES`) is the ``"utc"`` keyword:
+    :func:`check_timezone` normalises it, so both spellings read and label a time alike.
+
+:func:`read_time` parses a value once and says whether it carried its own offset;
+:func:`zone_label` turns that into the ``FrameMeta.timezone`` label: ``"utc"`` for an
+explicit value or under ``"utc"``, ``"assumed-utc"`` (:data:`ASSUMED_UTC`) under
+``"assume-utc"``, else the zone name.
 
 :func:`utc_iso` writes the form every ``mid_time`` uses: naive ISO-8601 UTC, whole
 seconds (fractions are dropped). Nothing here reads a file or a configuration.
@@ -29,15 +36,22 @@ UTC = "utc"
 ASSUME_UTC = "assume-utc"
 KEYWORDS = (UTC, ASSUME_UTC)
 """The ``timezone`` values that are not IANA zone names."""
+ASSUMED_UTC = "assumed-utc"
+"""The ``FrameMeta.timezone`` label of a stamp without an offset taken as UTC under
+``assume-utc``."""
+UTC_NAMES = frozenset({"UTC", "Etc/UTC", "Etc/UCT", "UCT", "Etc/Universal", "Universal", "Etc/Zulu", "Zulu"})
+"""IANA names of UTC itself, read as the ``"utc"`` keyword."""
 
 
 def check_timezone(timezone: Any) -> str:
-    """``timezone`` when it is ``"utc"``, ``"assume-utc"`` or a known IANA zone name;
-    ``ValueError`` otherwise."""
+    """``timezone`` when it is ``"utc"``, ``"assume-utc"`` or a known IANA zone name, a name
+    of UTC itself (:data:`UTC_NAMES`) as ``"utc"``; ``ValueError`` otherwise."""
     if timezone in KEYWORDS:
         return timezone
     if not isinstance(timezone, str) or not timezone:
         raise ValueError(f"timezone must be one of {KEYWORDS} or an IANA zone, got {timezone!r}")
+    if timezone in UTC_NAMES:
+        return UTC
     try:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError) as error:
@@ -60,16 +74,33 @@ def is_explicit(value: str) -> bool:
         return False
 
 
-def to_utc(value: str, timezone: str = UTC) -> pd.Timestamp:
-    """``value`` as an aware UTC timestamp, a naive value read according to ``timezone``
-    (see the module docstring). ``ValueError`` for an unparsable value or an unknown zone."""
+def read_time(value: str, timezone: str = UTC) -> tuple[pd.Timestamp, bool]:
+    """``(stamp, explicit)``: ``value`` parsed once as an aware UTC timestamp, a naive value
+    read according to ``timezone`` (see the module docstring), and whether it carried its
+    own offset. ``ValueError`` for an unparsable value or an unknown zone."""
     timezone = check_timezone(timezone)
     parsed = _parse(value)
-    if parsed.tzinfo is None:
+    explicit = parsed.tzinfo is not None
+    if not explicit:
         # replace() never raises: a wall-clock time repeated or skipped by a daylight-saving
         # change is read with its first (fold 0) offset
         parsed = parsed.replace(tzinfo=ZoneInfo("UTC" if timezone in KEYWORDS else timezone))
-    return pd.Timestamp(parsed).tz_convert("UTC")
+    return pd.Timestamp(parsed).tz_convert("UTC"), explicit
+
+
+def to_utc(value: str, timezone: str = UTC) -> pd.Timestamp:
+    """``value`` as an aware UTC timestamp, a naive value read according to ``timezone``
+    (see the module docstring). ``ValueError`` for an unparsable value or an unknown zone."""
+    return read_time(value, timezone)[0]
+
+
+def zone_label(timezone: str, explicit: bool) -> str:
+    """The ``FrameMeta.timezone`` label of a time read under ``timezone`` (a value checked
+    by :func:`check_timezone`): ``"utc"`` when the value carried its own offset or under
+    ``"utc"``, :data:`ASSUMED_UTC` under ``"assume-utc"``, else the zone name."""
+    if explicit:
+        return UTC
+    return ASSUMED_UTC if timezone == ASSUME_UTC else timezone
 
 
 def utc_iso(stamp: pd.Timestamp | datetime) -> str:

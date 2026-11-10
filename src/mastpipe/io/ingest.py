@@ -48,7 +48,8 @@ from mastpipe.core.model import (
     FrameMeta,
     FrameRef,
 )
-from mastpipe.core.times import ASSUME_UTC, UTC, is_explicit, to_utc, utc_iso
+from mastpipe.core.times import ASSUMED_UTC as ASSUMED_UTC  # lives in core.times; importable here too
+from mastpipe.core.times import UTC, read_time, to_utc, utc_iso, zone_label
 from mastpipe.io.headers import HeaderMap
 from mastpipe.vocab import is_unit_name
 
@@ -56,8 +57,6 @@ CHECKSUM_LENGTH = 16
 CHUNK_SIZE = 1 << 20
 DEFAULT_CAMERA = "main"
 MANIFEST_RULE = "manifest"
-ASSUMED_UTC = "assumed-utc"
-"""``FrameMeta.timezone`` of a stamp without an offset taken as UTC under ``assume-utc``."""
 TIME_FIELD = "mid_time"
 """The header-map field carrying the exposure's time, whose ``reference`` says which instant."""
 INSTRUMENT_FIELD = "instrument"
@@ -313,22 +312,22 @@ def _mid_time(value: Any, exposure_time: Any, reference: str, timezone: str = UT
     ``value`` (an ISO-8601 string) and ``exposure_time`` in seconds, according to
     ``reference``; a ``value`` without an offset is read according to ``timezone``.
 
-    ``zone`` is the :attr:`FrameMeta.timezone` label: ``"utc"`` for a value with its own
-    offset (or under ``timezone="utc"``), ``"assumed-utc"`` under ``"assume-utc"``, else
-    the zone name. ``derived`` is false when the time is given but could not be turned
-    into a mid-time: without an exposure time it is converted but not shifted; a time that
-    does not parse is passed on as it came, with no zone. ``None`` stays ``None`` (and
+    ``zone`` is the :attr:`FrameMeta.timezone` label (:func:`~mastpipe.core.times.zone_label`):
+    ``"utc"`` for a value with its own offset (or under ``timezone="utc"``),
+    ``"assumed-utc"`` under ``"assume-utc"``, else the zone name. ``derived`` is false
+    when the time is given but could not be turned into a mid-time: without an exposure
+    time it is converted but not shifted; a time that does not parse is passed on as it
+    came, with no zone. ``None`` stays ``None`` (and
     counts as derived: there is nothing to note twice).
     """
     if value is None:
         return None, True, None
     text = str(value)
     try:
-        stamp = to_utc(text, timezone)
+        stamp, explicit = read_time(text, timezone)
     except ValueError:
         return text, False, None
-    assumed = ASSUMED_UTC if timezone == ASSUME_UTC else timezone
-    zone = UTC if is_explicit(text) else assumed
+    zone = zone_label(timezone, explicit)
     if reference == "mid":
         return utc_iso(stamp), True, zone
     if exposure_time is None:

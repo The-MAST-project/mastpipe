@@ -96,8 +96,9 @@ from mastpipe.__version__ import __version__
 from mastpipe.config.loader import build_effective, calib_hash, config_hash
 from mastpipe.config.models import InstrumentConfig
 from mastpipe.core.model import FrameRef
+from mastpipe.core.times import ASSUMED_UTC
 from mastpipe.instruments.registry import layout_hash, load_header_map, load_instrument, load_layout
-from mastpipe.io.ingest import ASSUMED_UTC, apply_manifest, read_manifest, scan_folder
+from mastpipe.io.ingest import apply_manifest, read_manifest, scan_folder
 from mastpipe.pipeline.arc_stage import _arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (

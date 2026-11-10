@@ -201,6 +201,25 @@ def test_frame_meta_records_the_timezone_used(tmp_path: Path, highspec_map: Head
     assert ref.meta.mid_time == "2026-09-09T12:00:00" and ref.meta.timezone == "utc"
 
 
+@pytest.mark.parametrize("zone", ["UTC", "Etc/UTC"])
+def test_a_utc_zone_name_labels_frames_utc(tmp_path: Path, zone: str):
+    """A map naming UTC by its IANA name labels its frames ``utc``, as ``utc`` itself does:
+    the label is part of a science product's idempotence key, so the two spellings must
+    not reduce a frame differently."""
+    write_fits(tmp_path / "frame.fits", BLANK, {"IMAGETYP": "light", "EXPOSURE": 60.0, "FRAME": "2026-09-09T11:35:24"})
+    raw = load_header_map("highspec")
+    raw["fields"]["mid_time"] = {**raw["fields"]["mid_time"], "timezone": zone}
+    (ref,) = scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw))
+    assert ref.meta.mid_time == "2026-09-09T11:35:54" and ref.meta.timezone == "utc"
+
+
+def test_assumed_utc_label_is_importable_from_ingest_and_times():
+    from mastpipe.core import times
+    from mastpipe.io import ingest
+
+    assert ingest.ASSUMED_UTC is times.ASSUMED_UTC
+
+
 def test_scan_folder_rejects_a_missing_folder(tmp_path: Path, highspec_map: HeaderMap):
     with pytest.raises(FileNotFoundError, match="nope"):
         scan_folder(tmp_path / "nope", "highspec", highspec_map)
