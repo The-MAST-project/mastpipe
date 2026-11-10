@@ -2,6 +2,9 @@
 
 ## 0.0.1 (unreleased)
 
+- Internal restructuring, no behaviour change: the quick-look runner is split into stage
+  modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
+  stay importable from `mastpipe.pipeline.runner`.
 - Review fixes (2026-11-08):
   - a background master whose inputs carried no exposure time no longer fails every
     frame of the group with "background subtraction requested ..."; the frames take the

@@ -412,3 +412,13 @@ designer made, and from the rulings made while the plan was executed.
   Sensitivity to fiber-identity and drift-row mistakes is proven by dedicated tests
   instead: the end-to-end swap test at a jitter of 1 px and the drift-fit test at a
   2 px gradient, which a drift flat in `y` fails.
+
+## 2026-11-10 — Tidy-up after Plan 1.5
+
+- **The quick-look runner is split into stage modules**, moved without any change of
+  logic: `pipeline.group` (run options and summary, the per-group state `_Group`, the
+  folder and policy constants, the logger and the helpers more than one stage uses),
+  `pipeline.masters`, `pipeline.traces`, `pipeline.arc_stage` and `pipeline.science`;
+  `pipeline.runner` keeps the recipe's description, the group loop and `run_quicklook`,
+  and re-exports the public names. **A stage module imports `pipeline.group`, never
+  another stage or `pipeline.runner`**: a helper two stages need moves to `group`.

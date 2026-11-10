@@ -20,6 +20,13 @@ their calibrations exist. Every stage keeps what the previous one produced:
 the product carries the raw extraction and each later version side by side
 ([Products policy](products-policy.md)).
 
+In the code, the quick-look recipe is `pipeline.runner`; it calls the stage
+modules in order: `pipeline.masters` (masters and calibration set),
+`pipeline.traces` (`light` frames resolved from their content, then the
+traces), `pipeline.arc_stage` (full arcs re-solved, drift arcs fitted) and
+`pipeline.science` (science frames to products, and the per-target
+combination), all sharing the group state of `pipeline.group`.
+
 ## Two run modes, one code path
 
 The observatory's **quick-look** is non-interactive: it uses the most recent

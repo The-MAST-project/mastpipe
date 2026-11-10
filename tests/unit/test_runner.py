@@ -22,17 +22,10 @@ from mastpipe.core.model import (
 )
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.pipeline.arcs import pair_arcs
-from mastpipe.pipeline.runner import (
-    RunOptions,
-    _arc_weights,
-    _arcs_for,
-    _blend_drifts,
-    _calibrated,
-    _group_binning,
-    _group_readout,
-    _usable_frames,
-    run_quicklook,
-)
+from mastpipe.pipeline.group import _calibrated, _group_binning, _group_readout
+from mastpipe.pipeline.masters import _usable_frames
+from mastpipe.pipeline.runner import RunOptions, run_quicklook
+from mastpipe.pipeline.science import _arc_weights, _arcs_for, _blend_drifts
 from mastpipe.vocab import GRATING_NAMES
 
 N_PIX = 1598
