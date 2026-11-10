@@ -35,7 +35,7 @@ import hashlib
 import re
 from collections import ChainMap
 from collections.abc import Callable, Iterable, Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import numpy as np
@@ -451,6 +451,7 @@ def apply_manifest(
         matched = _match_sources(source, sources, f"manifest row {index}")
         rows.append((matched, extension, values))
         if unmatched is not None and not any(_applies(ref, matched, extension) for ref in refs):
+            # the runner splits this label on its first ": " to get the source back
             unmatched.append(f"manifest row {index}: {source}")
     out: list[FrameRef] = []
     for ref in refs:
@@ -479,18 +480,20 @@ def names_non_fits_file(folder: Path | str, source: str) -> bool:
     """Whether a manifest row's ``source`` names an existing file under the night
     ``folder`` whose name is not a FITS file name (:data:`FITS_SUFFIXES`), so the scan never
     read it: a relative path, or a bare file name anywhere below ``folder``; a ``\\`` is a
-    folder separator, as in :func:`apply_manifest`. A glob names no such file, and hidden
-    files and folders are not looked at, as the scan does not. A runner uses it to say why a
-    row in :func:`apply_manifest`'s ``unmatched`` matched no frame.
+    folder separator, as in :func:`apply_manifest`. A glob, a rooted source (``/x``) and one
+    naming a drive (``C:x``) name no such file, and hidden files and folders are not looked
+    at, as the scan does not. A runner uses it to say why a row in :func:`apply_manifest`'s
+    ``unmatched`` matched no frame.
     """
     folder = Path(folder)
     source = source.strip().replace("\\", "/")
-    if not source or GLOB_CHARS & set(source):
+    # a drive is tested the Windows way on every platform (rglob refuses one on Windows)
+    if not source or GLOB_CHARS & set(source) or source.startswith("/") or PureWindowsPath(source).drive:
         return False
     candidates = [folder.joinpath(*source.split("/"))] if "/" in source else list(folder.rglob(source))
     for path in candidates:
         # relative_to is lexical: it keeps a ".." part (rejected by the dot test below) and
-        # raises only for a source naming another drive (Windows "C:x")
+        # raises only for a path on another drive (Windows "C:dir/x.txt", refused above)
         try:
             relative = path.relative_to(folder)
         except ValueError:
@@ -507,7 +510,10 @@ def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
     if source in sources:
         return {source}
     if GLOB_CHARS & set(source):
-        regex = _glob_regex(source)
+        try:
+            regex = _glob_regex(source)
+        except re.error as error:  # a reversed range, say: reported like the other row errors
+            raise ValueError(f"{label}: bad glob {source!r}: {error}") from error
         return {candidate for candidate in sources if regex.fullmatch(candidate)}
     if "/" in source:
         return set()
@@ -520,12 +526,16 @@ def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """A glob over relative POSIX paths as a regex: ``*`` and ``?`` do not cross ``/``,
     ``**`` does (``**/`` also matches no folder at all); ``[...]`` is a character class
-    (``[!...]`` its complement), never matching ``/``. ``pattern`` holds no ``\\`` (a
-    manifest source has its backslashes read as ``/`` before it gets here)."""
+    (``[!...]`` its complement), never matching ``/``. As in :mod:`fnmatch`, a ``]`` right
+    after ``[`` or ``[!`` is a member, ``a-z`` is a range, and every other character of a
+    class is literal (``[``, ``&``, ``|``, ``~``, ``^``, a ``-`` that starts or ends it); a
+    ``[`` without a closing ``]`` is literal. ``re.error`` for a reversed range
+    (``[9-0]``). ``pattern`` holds no ``\\`` (a manifest source has its backslashes read
+    as ``/`` before it gets here)."""
     parts: list[str] = []
     i = 0
     while i < len(pattern):
-        close = pattern.find("]", i + 2) if pattern[i] == "[" else -1
+        close = _class_end(pattern, i) if pattern[i] == "[" else -1
         if pattern.startswith("**/", i):
             parts.append("(?:.*/)?")
             i += 3
@@ -540,16 +550,40 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
             i += 1
         elif close != -1:
             body = pattern[i + 1 : close]
-            if body.startswith("!"):
-                parts.append(f"[^/{body[1:]}]")
-            else:
-                body = "\\" + body if body.startswith("^") else body
-                parts.append(f"(?!/)[{body}]")
+            negate = body.startswith("!")
+            members = _class_members(body[1:] if negate else body)
+            parts.append(f"[^/{members}]" if negate else f"(?!/)[{members}]")
             i = close + 1
         else:
             parts.append(re.escape(pattern[i]))
             i += 1
     return re.compile("".join(parts))
+
+
+def _class_end(pattern: str, start: int) -> int:
+    """Index of the ``]`` closing the class opened at ``pattern[start]``, ``-1`` without
+    one; a ``]`` first in the class (after ``[`` or ``[!``) is a member, as in fnmatch."""
+    j = start + 1
+    if pattern.startswith("!", j):
+        j += 1
+    if pattern.startswith("]", j):
+        j += 1
+    return pattern.find("]", j)
+
+
+def _class_members(body: str) -> str:
+    """The body of a glob class as the body of a regex class: ranges ``x-y`` kept, every
+    character escaped, so nothing in it is special to ``re`` (no nested set, no ``&&``)."""
+    members: list[str] = []
+    k = 0
+    while k < len(body):
+        if k + 2 < len(body) and body[k + 1] == "-":
+            members.append(f"{re.escape(body[k])}-{re.escape(body[k + 2])}")
+            k += 3
+        else:
+            members.append(re.escape(body[k]))
+            k += 1
+    return "".join(members)
 
 
 def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[str, Any]]:

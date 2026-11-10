@@ -50,13 +50,14 @@ Per camera and grating found in the folder:
   today, so a night from the site needs this option; without it those frames
   are not reduced and their group, `group main/(no configuration)`, fails with
   the list of the instrument's configurations. A frame that names its grating
-  (in its header or a manifest row) keeps it, even a grating other than this
-  one; one that does not takes this one, and its products, masters and library
-  entries are named by it. Such a frame's product records where its grating came
-  from: the provenance step `configuration Mg from the run's --configuration
-  (none in the header or manifest)`, and `configuration_origin` in its QC file
-  (`run`, or `frame` for a grating the header or manifest named; in the QC of
-  every science frame, full arc and drift arc).
+  (in its header, its file name or a manifest row) keeps it, even a grating
+  other than this one; one that does not takes this one, and its products,
+  masters and library entries are named by it. Such a frame's product records
+  where its grating came from: the provenance step `configuration Mg from the
+  run's --configuration (none in the header, file name or manifest)`, and
+  `configuration_origin` in its QC file (`run`, or `frame` for a grating the
+  frame itself named; in the QC of every science frame, full arc and drift
+  arc).
 
 `--manifest file.csv`
 : Metadata overrides by relative path, glob pattern or file name; see

@@ -2,7 +2,8 @@
 
 import csv
 import hashlib
-from pathlib import Path
+from dataclasses import replace
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 import pandas as pd
@@ -666,6 +667,44 @@ def test_object_zero_is_a_target(tmp_path: Path, highspec_map: HeaderMap):
     assert "targets" not in ref.meta.unresolved
 
 
+def odd_name_refs(tmp_path: Path, names: list[str]) -> list[FrameRef]:
+    meta = FrameMeta(instrument="highspec", camera="main", exposure_type="bias")
+    return [FrameRef(path=tmp_path / name, extension=0, meta=replace(meta, source=name)) for name in names]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matched"),
+    [
+        ("f[[]1.fits", ["f[1.fits"]),
+        ("f[a&&b].fits", ["f&.fits", "fa.fits"]),
+        ("f[a||b].fits", ["f|.fits", "fa.fits"]),
+        ("f[a~~b].fits", ["f~.fits", "fa.fits"]),
+        ("f[--1].fits", ["f-.fits", "f1.fits"]),
+        ("f[!]]1.fits", ["f[1.fits"]),
+        ("f[]]1.fits", ["f]1.fits"]),
+        ("f[0-9].fits", ["f1.fits"]),
+    ],
+)
+def test_manifest_glob_classes_are_literal_where_fnmatch_is(tmp_path: Path, pattern: str, matched: list[str]):
+    """Inside ``[...]`` the characters ``re`` treats specially (``[``, a doubled ``&``,
+    ``|``, ``~``, ``-``) are literal and a leading ``]`` is a member, as in fnmatch; no
+    FutureWarning from ``re`` (an error under this suite's warning filter)."""
+    names = ["f[1.fits", "f]1.fits", "f&.fits", "f|.fits", "f~.fits", "f-.fits", "f1.fits", "fa.fits"]
+    manifest = pd.DataFrame([{"source": pattern, "lamp_state": "on"}], dtype=str)
+    new = apply_manifest(odd_name_refs(tmp_path, names), manifest)
+    assert sorted(ref.meta.source for ref in new if ref.meta.lamp_state == "on") == sorted(matched)
+
+
+def test_manifest_glob_with_a_reversed_range_names_the_row(tmp_path: Path):
+    """A class ``re`` cannot compile (a reversed range) is a ``ValueError`` naming the row
+    and the glob, like the manifest's other errors, not a bare ``re.error``."""
+    manifest = pd.DataFrame(
+        [{"source": "x.fits", "lamp_state": "on"}, {"source": "frame[9-0].fits", "lamp_state": "on"}], dtype=str
+    )
+    with pytest.raises(ValueError, match=r"manifest row 1: bad glob 'frame\[9-0\]\.fits'"):
+        apply_manifest(odd_name_refs(tmp_path, ["frame1.fits"]), manifest)
+
+
 def test_logical_object_card_names_no_target(tmp_path: Path, highspec_map: HeaderMap):
     """A logical card (``OBJECT = F``, ``OBJ01 = T``) is not a target name: the frame
     has no target, and ``targets`` stays unresolved."""
@@ -724,7 +763,7 @@ def test_other_instrument_mef_is_skipped_once_per_file(tmp_path: Path, highspec_
     assert skipped == [("deepspec.fits", "instrument 'deepspec' is not 'highspec'")]
 
 
-def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
+def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_map: HeaderMap, tmp_path: Path, monkeypatch):
     """:func:`apply_manifest` reads no file: every row matching no frame is in
     ``unmatched``. :func:`names_non_fits_file` tells the rows naming an existing file
     whose name is not a FITS file name (so the scan never read it) from those naming
@@ -746,5 +785,15 @@ def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_m
     assert unmatched == [f"manifest row {index}: {source}" for index, source in enumerate(sources[:4])]
     assert [names_non_fits_file(nested, source) for source in sources] == [True, True, True, False, False]
     assert names_non_fits_file(nested, "highspec\\acquisition-0001\\exposure-001.fts")  # a Windows separator
-    for source in (".notes.txt", "*.fts", "../night/seq.txt"):
+    # hidden, a glob, outside the folder, rooted, or naming a drive: none names a file of
+    # the folder. Python 3.11 on Windows refuses a drive in an rglob pattern; simulated here
+    rglob = Path.rglob
+
+    def windows_rglob(self, pattern):
+        if PureWindowsPath(pattern).drive:
+            raise NotImplementedError("Non-relative patterns are unsupported")
+        return rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", windows_rglob)
+    for source in (".notes.txt", "*.fts", "../night/seq.txt", "/seq.txt", "\\seq.txt", "C:seq.txt", "C:/seq.txt"):
         assert not names_non_fits_file(nested, source), source

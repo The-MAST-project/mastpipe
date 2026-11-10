@@ -188,7 +188,10 @@ A row's `source` is one of:
 
 - a **relative path** from the night folder (`acquisition-0012/exposure-003.fits`);
 - a **glob pattern** over relative paths (`acquisition-0012/*.fits`;
-  `*` and `?` stay within one folder, `**` crosses folders);
+  `*` and `?` stay within one folder, `**` crosses folders; `[0-9]` and `[!0-9]`
+  are character classes, read as Python's `fnmatch` reads them, and a class
+  that cannot be read, such as the reversed range `[9-0]`, is an error naming
+  the row);
 - a **bare file name**, which matches the one file of that name anywhere in the
   tree; a name that several files share is an error that lists them.
 

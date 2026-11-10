@@ -36,7 +36,7 @@ from mastpipe.pipeline.group import (
     _group_readout,
 )
 from mastpipe.pipeline.masters import _masters_hash, _usable_frames
-from mastpipe.pipeline.runner import RunOptions, run_quicklook
+from mastpipe.pipeline.runner import RunOptions, RunSummary, run_quicklook
 from mastpipe.pipeline.science import _arc_weights, _arcs_for, _blend_drifts
 from mastpipe.vocab import GRATING_NAMES
 
@@ -189,13 +189,21 @@ def test_blend_drifts_weights_two_models():
     assert _arc_weights([(first, 0.3), (second, 0.7)], ["aaa", "bbb"]) == pytest.approx([0.3, 0.7])
 
 
-def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog):
-    """A drift model that is not usable is warned about once per arc, its gate's reason
-    giving the usable fibers and the warning adding only how many arc fibers there were."""
+@pytest.mark.parametrize(
+    ("usable", "scatter", "reason"),
+    [
+        ([True, True, False], 0.02, "2 usable arc fibers, min_fibers is 3"),
+        ([True, True, True], 0.5, "scatter 0.500 px exceeds max_scatter_px 0.05"),
+    ],
+)
+def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog, usable, scatter, reason):
+    """A drift model that is not usable is warned about once per arc: the gate's reason
+    (with its own number, usable fibers or scatter) once, then how many arc fibers there
+    were, and no number repeated."""
     from mastpipe.pipeline import arc_stage
 
-    fibers = {0: (0.2, 1e-5, 20, 0.02, True), 20: (0.4, 1e-5, 18, 0.03, True), 44: (0.1, 1e-5, 2, 0.5, False)}
-    drift = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers, usable=False)
+    fibers = {fiber: (0.2, 1e-5, 20, 0.02, ok) for fiber, ok in zip((0, 20, 44), usable, strict=True)}
+    drift = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers, scatter_px=scatter, usable=False)
     arc_traces = [SimpleNamespace(index=fiber) for fiber in fibers]
     traceset = SimpleNamespace(by_role=lambda role: arc_traces, shape=(400, N_PIX))
     group = SimpleNamespace(
@@ -205,7 +213,7 @@ def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog):
         preset="survey45",
         traces=lambda: traceset,
         injected_masters=dict,
-        drift_params=DriftParams(),
+        drift_params=DriftParams(max_scatter_px=0.05),
         arcs=[],
         run_configured=frozenset(),
     )
@@ -218,7 +226,52 @@ def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="mastpipe"):
         arc_stage._cal_arc(group, ref)
     (message,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert message == "drift arc aaa.fits: model not usable: 2 usable arc fibers, min_fibers is 3 (of 3 arc fibers)"
+    assert message.startswith("drift arc aaa.fits: model not usable: ")
+    assert message.count(reason) == 1 and message.endswith("; 3 arc fibers")
+    assert message.count("usable arc fibers") == (1 if "min_fibers" in reason else 0)
+    assert message.count("scatter ") == (1 if "max_scatter" in reason else 0)  # the scatter value
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_full_arc_records_where_its_configuration_came_from(monkeypatch, configured):
+    """A full arc given ``--configuration`` by the run carries the provenance step on the
+    reference it is solved into, and ``configuration_origin`` ``run`` in its ``wref`` QC;
+    one whose header named its grating carries no step and ``frame``."""
+    from mastpipe.pipeline import arc_stage
+
+    meta = make_meta("2026-10-01T20:00:00", "aaa", "arc")
+    previous = make_reference("r1", "2026-10-01T18:00:00")
+    added, qc = [], []
+    library = SimpleNamespace(
+        reference_for_source=lambda *args: None,
+        find_reference=lambda *args: previous,
+        add_reference=lambda solution, prov, camera: added.append(prov) or Path("new_wref.fits"),
+    )
+    group = SimpleNamespace(
+        effective=SimpleNamespace(instrument="highspec", configuration="Mg", camera="main"),
+        library=library,
+        options=SimpleNamespace(force=False),
+        layout=None,
+        out_dir=None,
+        preset="survey45",
+        traces=lambda: None,
+        injected_masters=dict,
+        summary=RunSummary(),
+        run_configured=frozenset({(meta.source, meta.extension)}) if configured else frozenset(),
+    )
+    lines = SimpleNamespace(traceset=[])
+    solution = SimpleNamespace(identifier="r2", valid_from="2026-10-01T20:00:00", solutions={})
+    monkeypatch.setattr(arc_stage, "_arc_lines", lambda *args, **kwargs: lines)
+    monkeypatch.setattr(arc_stage, "_solve_and_package", lambda *args: solution)
+    monkeypatch.setattr(arc_stage, "_provenance", lambda effective, lines, steps, layout: SimpleNamespace(steps=steps))
+    monkeypatch.setattr(arc_stage, "_write_qc", lambda group, name, stage, values: qc.append((stage, values)))
+    arc_stage._full_arc(group, FrameRef(path=Path("aaa.fits"), extension=0, meta=meta))
+    (prov,) = added
+    step = "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
+    assert (step in prov.steps) is configured
+    assert prov.steps[-1] == "wavecal seeded by reference r1"
+    ((stage, values),) = qc
+    assert stage == "reference" and values["configuration_origin"] == ("run" if configured else "frame")
 
 
 # ------------------------------------------------------------- no silent configuration
@@ -273,7 +326,7 @@ def test_configuration_steps_name_the_run_option_only_for_frames_it_configured()
     named = make_meta("2026-10-01T20:00:00", "bbb", "science")
     group = SimpleNamespace(run_configured=frozenset({(configured.source, configured.extension)}))
     assert _configuration_steps(group, configured) == [
-        "configuration Mg from the run's --configuration (none in the header or manifest)"
+        "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
     ]
     assert _configuration_origin(group, configured) == "run"
     assert _configuration_steps(group, named) == []

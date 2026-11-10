@@ -3,9 +3,10 @@
 ## 0.0.1 (unreleased)
 
 - Provenance, QA and messages (2026-11-11):
-  - a frame given the run's `--configuration` (its header and manifest name no grating)
-    says so: its science or reference product gains the provenance step `configuration
-    <name> from the run's --configuration (none in the header or manifest)`, and the QC
+  - a frame given the run's `--configuration` (its header, file name and manifest name no
+    grating) says so: its science or reference product gains the provenance step
+    `configuration <name> from the run's --configuration (none in the header, file name or
+    manifest)`, and the QC
     of every science frame, full arc and drift arc gains `configuration_origin` (`run`
     or `frame`). Neither is part of an idempotence key or a reference hash, so no
     existing product is reduced again; a product keeps its old steps until it is
@@ -20,17 +21,24 @@
     tolerance, `callib.TEMPERATURE_TOLERANCE_C`);
   - clearer messages: a science product's `MPDUSE` comment names the test an unusable
     drift model failed (`write_spectra(..., drift_reason=)`); the quick-look warning for
-    an unusable drift arc gives the fiber count once; a grating block with a foreign name
+    an unusable drift arc gives the fiber count once (`...: <reason>; N arc fibers`); a grating block with a foreign name
     is reported with its file name; the simulator's `load_truth` names an array missing
     from an older `truth.npz` (`ValueError`), `SimTruth.trace_shifts` raises `KeyError`
     naming an unknown file, and `SimTruth.row_of` raises `ValueError` naming a trace id
     found on several layout rows (it was a `KeyError` saying there was none);
+  - a manifest glob class is read as fnmatch reads it: `[`, a doubled `&`, `|`, `~` or `-`
+    inside `[...]` are literal (they raised a `FutureWarning` from `re`), `[!]]` excludes
+    `]` (it was mistranslated), and a class `re` cannot compile (a reversed range,
+    `[9-0]`) is a `ValueError` naming the manifest row and the glob, like the manifest's
+    other errors, instead of a bare `re.error`; `names_non_fits_file` is false for a
+    rooted source (`/x`) or one naming a drive (`C:x`), which Python 3.11's `rglob`
+    refuses on Windows;
   - documented: constructing a `CalibLibrary` creates its folder and lock file (write
     access needed), and `find_reference` reads the index without the lock, like `find`.
 - Ingest, time and metadata fixes (2026-11-11):
   - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
-    `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /
-    `Etc/UTC`. The label is part of the science idempotence key, so a science product
+    `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`,
+    and its frames are labelled `utc` rather than `UTC` / `Etc/UTC`. The label is part of the science idempotence key, so a science product
     reduced under such a custom map is reduced again once (its `MPTZ` becomes `utc`); the
     shipped HighSpec map uses `assume-utc`, whose labels (`utc` for a stamp with an
     offset, `assumed-utc` otherwise) do not change, so no HighSpec product is reduced

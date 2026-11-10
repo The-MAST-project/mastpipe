@@ -1092,7 +1092,8 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         assert qc.values["classification_rule"] == "content:continuum"
         # no GRATING card: the configuration came from the run, and both records say so
         assert qc.values["configuration_origin"] == "run"
-        assert "configuration Mg from the run's --configuration (none in the header or manifest)" in prov.steps
+        step = "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
+        assert step in prov.steps
         reference = labelled.pop(es.meta.source)
         assert sorted(s.fiber for s in es.spectra) == sorted(s.fiber for s in reference.spectra)
         by_fiber = {s.fiber: s for s in reference.spectra}

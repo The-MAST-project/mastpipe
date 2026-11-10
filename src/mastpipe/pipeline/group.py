@@ -58,7 +58,7 @@ NO_FRAMES = "no readable frame in the night folder"
 CONFIGURATION_FROM_RUN = "run"
 """QC ``configuration_origin`` of a frame given ``options.configuration`` by the run."""
 CONFIGURATION_FROM_FRAME = "frame"
-"""QC ``configuration_origin`` of a frame whose header or manifest named its grating."""
+"""QC ``configuration_origin`` of a frame whose header, file name or manifest named its grating."""
 
 
 # ------------------------------------------------------------------------------ options
@@ -400,7 +400,8 @@ def _content_steps(meta: FrameMeta) -> list[str]:
 
 def _configuration_origin(group: _Group, meta: FrameMeta) -> str:
     """Where the frame's configuration came from, for its QC: :data:`CONFIGURATION_FROM_RUN`
-    (``options.configuration``) or :data:`CONFIGURATION_FROM_FRAME` (its header or manifest)."""
+    (``options.configuration``) or :data:`CONFIGURATION_FROM_FRAME` (its header, file name or
+    manifest)."""
     configured = (meta.source, meta.extension) in group.run_configured
     return CONFIGURATION_FROM_RUN if configured else CONFIGURATION_FROM_FRAME
 
@@ -408,7 +409,8 @@ def _configuration_origin(group: _Group, meta: FrameMeta) -> str:
 def _configuration_steps(group: _Group, meta: FrameMeta) -> list[str]:
     """The provenance step recording a configuration the run gave the frame, if it did."""
     if _configuration_origin(group, meta) == CONFIGURATION_FROM_RUN:
-        return [f"configuration {meta.configuration} from the run's --configuration (none in the header or manifest)"]
+        origin = "from the run's --configuration (none in the header, file name or manifest)"
+        return [f"configuration {meta.configuration} {origin}"]
     return []
 
 
