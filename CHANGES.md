@@ -24,6 +24,12 @@
   - a calibration frame (bias, dark, flat, arc, background, from its header or a manifest
     row) no longer lists `targets` among its unresolved fields; a header map whose
     `targets` field is not `per_unit` is rejected when it is loaded;
+  - a `FrameMeta` naming one telescope twice in `targets` is rejected (ingest and the
+    manifest never produce one; a hand-built one made `target_for` take the last entry);
+  - `calibrate_frame` raises on the dark path for a hand-built `CalibrationSet` with a
+    `dark_rate_variance` but no `t_dark`, instead of dropping the dark variance;
+  - `vocab.is_unit_name` and `unit_number` accept ASCII digits only and take the same
+    optional `project` argument (default `vocab.PROJECT`, `mast`) as `unit_name`.
 - Internal restructuring, no behaviour change: the quick-look runner is split into stage
   modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
   stay importable from `mastpipe.pipeline.runner`.

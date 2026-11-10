@@ -83,6 +83,8 @@ class FrameMeta:
     ``targets`` holds ``(telescope, target)`` pairs: one per telescope unit when the
     header or manifest names targets per unit, or a single ``("*", target)`` pair that
     applies to every science fiber (a single ``OBJECT``); :meth:`target_for` reads it.
+    ``ValueError`` when a pair is malformed or a telescope (``"*"`` included) is named
+    twice.
     """
 
     instrument: str
@@ -110,9 +112,13 @@ class FrameMeta:
         _check_choice("exposure_type", self.exposure_type, EXPOSURE_TYPES)
         if self.arc_kind is not None:
             _check_choice("arc_kind", self.arc_kind, ARC_KINDS)
+        seen: set[str] = set()
         for pair in self.targets:
             if not isinstance(pair, tuple) or len(pair) != 2 or not all(isinstance(part, str) for part in pair):
                 raise ValueError(f"targets must be (telescope, target) string pairs, got {pair!r}")
+            if pair[0] in seen:
+                raise ValueError(f"targets name telescope {pair[0]!r} twice: {self.targets!r}")
+            seen.add(pair[0])
 
     @property
     def readout_key(self) -> str:
@@ -175,7 +181,9 @@ class CalibrationSet:
     """The calibration inputs for one detector: masters, scaling times and noise model.
 
     ``t_dark`` is the dark master's exposure time when ``dark_rate`` comes from one (``None``
-    otherwise). ``bias_variance`` and ``background_variance`` are the per-pixel variances
+    otherwise, a nominal rate); a ``dark_rate_variance`` needs it, and
+    :func:`~mastpipe.steps.calib.calibrate_frame` raises on the dark path without it.
+    ``bias_variance`` and ``background_variance`` are the per-pixel variances
     of the bias and background masters (ADU²) and ``dark_rate_variance`` the dark master's
     own variance over ``t_dark²`` (ADU² s⁻², without the bias part: the bias enters the
     calibrated frame through one array, so its terms are combined there); ``None`` where

@@ -353,6 +353,29 @@ def test_master_variance_enters_the_error_budget():
     np.testing.assert_allclose(added(150.0, False, no_dark), vb, rtol=0, atol=1e-4)
 
 
+def test_dark_variance_without_t_dark_is_an_error():
+    """A hand-built set with a dark-rate variance but no ``t_dark`` cannot weigh the bias
+    and dark terms (``s = t / t_dark``): the dark path raises instead of dropping the
+    dark variance. Without that variance a dark rate needs no ``t_dark`` (a nominal rate),
+    and the background path does not use the dark at all."""
+    calib = CalibrationSet(
+        bias=np.full(SHAPE, 500.0, dtype=np.float32),
+        dark_rate=0.1,
+        background=np.full(SHAPE, 560.0, dtype=np.float32),
+        t_background=6.0,
+        gain=2.0,
+        read_noise=4.0,
+        shape=SHAPE,
+        dark_rate_variance=np.full(SHAPE, 1e-4, dtype=np.float32),
+    )
+    sci = frame(1000.0, "science", 150.0)
+    with pytest.raises(ValueError, match="t_dark"):
+        calibrate_frame(sci, calib, subtract_background=False)
+    calibrate_frame(sci, calib, subtract_background=True)
+    nominal = calibrate_frame(sci, replace(calib, dark_rate_variance=None), subtract_background=False)
+    assert np.allclose(nominal.data, 1000.0 - 500.0 - 0.1 * 150.0)
+
+
 def test_calibration_set_carries_the_master_variances():
     biases = [frame(v, "bias", 0.0) for v in (499.0, 500.0, 502.0)]
     darks = [frame(v, "dark", 300.0) for v in (528.0, 530.0, 533.0)]
