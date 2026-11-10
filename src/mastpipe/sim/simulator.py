@@ -641,9 +641,9 @@ def simulate_night(
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
     Frames are ``sim_<type>_<nn>.fits`` at ``detector.shape``, one every ``cadence_min``
-    minutes from ``night_start`` (ISO-8601, read by :func:`~mastpipe.core.times.to_utc`: UTC unless
-    it carries an offset) in the order bias, dark, flat, full arc, background, then
-    one calibration-fiber arc followed by its share of the science frames, repeated
+    minutes from ``night_start`` (ISO-8601, read by :func:`~mastpipe.core.times.to_utc`:
+    UTC unless it carries an offset) in the order bias, dark, flat, full arc, background,
+    then one calibration-fiber arc followed by its share of the science frames, repeated
     ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). The
     cadence sets each frame's mid-time (the truth table's ``mid_time``); the header's
     ``DATE-OBS`` is the exposure start, half the exposure time earlier, as the control

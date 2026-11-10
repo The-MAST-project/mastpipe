@@ -7,12 +7,11 @@ producing one :class:`~mastpipe.core.model.FrameRef` per image HDU (the primary 
 when it carries data, else every image extension, each read with the primary header
 underneath its own); a symbolic link to a folder is not descended into. A frame's
 ``source`` is its path relative to the night folder, with forward slashes; a frame whose
-header names another instrument is left out. The
-``mid_time`` of a frame is derived from the header's time field and the exposure time
-according to the field's ``reference`` (``start``: plus half the exposure; ``end``:
-minus half; ``mid``: as given) and converted to UTC, a stamp without an offset read
-according to the field's ``timezone`` (:mod:`mastpipe.core.times`);
-``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
+header names another instrument is left out. The ``mid_time`` of a frame is derived from
+the header's time field and the exposure time according to the field's ``reference``
+(``start``: plus half the exposure; ``end``: minus half; ``mid``: as given) and converted
+to UTC, a stamp without an offset read according to the field's ``timezone``
+(:mod:`mastpipe.core.times`); ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
 shifted and ``unresolved`` lists ``mid_time``. A frame's ``targets`` come from the map's
 per-unit ``targets`` field (one target per telescope unit), else from its single
 ``target`` field as ``(("*", target),)``, which applies to every science fiber (only a
@@ -328,8 +327,8 @@ def _mid_time(value: Any, exposure_time: Any, reference: str, timezone: str = UT
     ``"assumed-utc"`` under ``"assume-utc"``, else the zone name. ``derived`` is false
     when the time is given but could not be turned into a mid-time: without an exposure
     time it is converted but not shifted; a time that does not parse is passed on as it
-    came, with no zone. ``None`` stays ``None`` (and
-    counts as derived: there is nothing to note twice).
+    came, with no zone. ``None`` stays ``None`` (and counts as derived: there is nothing
+    to note twice).
     """
     if value is None:
         return None, True, None
@@ -423,10 +422,10 @@ def apply_manifest(
     """New refs with the manifest's non-empty cells written over their metadata.
 
     A ``\\`` in a row's ``source`` is a folder separator, read as ``/`` (a manifest written
-    on Windows). A row's ``source`` matches a ref whose relative path it is; else, when it holds glob
-    characters, the refs whose relative path it matches (``*`` and ``?`` stay within a
-    folder, ``**`` crosses folders); else a bare file name matches the one file of that
-    name, and ``ValueError`` names the candidates when several files have it. When the
+    on Windows). A row's ``source`` matches a ref whose relative path it is; else, when it
+    holds glob characters, the refs whose relative path it matches (``*`` and ``?`` stay
+    within a folder, ``**`` crosses folders); else a bare file name matches the one file of
+    that name, and ``ValueError`` names the candidates when several files have it. When the
     row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
     rows win). A field a row sets is removed from the frame's ``unresolved``, and a
     ``target`` cell resolves ``targets`` (as does a row that makes the frame one of the
@@ -435,9 +434,8 @@ def apply_manifest(
     ``folder`` (the scanned folder) is given and ``unsupported`` is a list, a row that
     instead names an existing file under ``folder`` whose name is not a FITS file name
     (:data:`FITS_SUFFIXES`), so the scan never read it, is appended to ``unsupported`` in
-    the same form. Overriding
-    ``exposure_type`` records ``"manifest"`` as the classification rule unless the row
-    sets one.
+    the same form. Overriding ``exposure_type`` records ``"manifest"`` as the
+    classification rule unless the row sets one.
     ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
     :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
     """

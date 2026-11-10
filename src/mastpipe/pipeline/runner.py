@@ -3,8 +3,8 @@ wavelength-calibrated and sky-subtracted spectra and per-target combinations, wi
 
 :func:`run_quicklook` scans the folder and its subfolders (manifest applied; frames of
 another instrument, manifest rows matching no frame and rows naming a file that is not a
-FITS file go into ``skipped``), drops the
-frames whose type is ``unknown`` into ``skipped`` with their classification rule, gives
+FITS file go into ``skipped``), drops the frames whose type is ``unknown`` into
+``skipped`` with their classification rule, gives
 ``options.configuration`` to every frame whose header and manifest name no grating (so its
 products, masters and library entries carry that name), and reduces every
 ``(camera, configuration)`` group in turn:
