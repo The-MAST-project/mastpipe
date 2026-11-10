@@ -12,6 +12,9 @@
     rewritten for another reason;
   - a group whose frames name no configuration is labelled `group main/(no
     configuration)` rather than `group main/None`;
+  - the anchor-panel PNG of `identify` is written atomically, like the FITS and JSON
+    products: a temporary next to it moved into place, so a failed drawing leaves no
+    partial file;
 - Ingest, time and metadata fixes (2026-11-11):
   - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
     `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /

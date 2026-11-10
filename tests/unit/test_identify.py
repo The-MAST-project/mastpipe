@@ -169,6 +169,37 @@ def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
 # ---------------------------------------------------------------------------- identify
 
 
+def test_plot_anchor_panels_writes_through_a_temporary(tmp_path, monkeypatch):
+    """The PNG is written to a temporary and moved into place: a drawing that fails part-way
+    leaves no partial file at the final name (an earlier figure there stays as it was), and
+    a successful one leaves no temporary behind."""
+    from matplotlib.figure import Figure
+
+    wave = np.linspace(513.0, 527.5, 400)
+    usable = pd.DataFrame({"wavelength": [516.0, 520.0], "usable": [True, True]})
+    obs_lines = pd.DataFrame({"x_center": [10.0, 50.0], "height": [5.0, 6.0], "use_x": [True, True]})
+    args = (wave, np.ones_like(wave), usable, np.ones(100), obs_lines, (513.0, 527.5))
+    out = tmp_path / "anchor_panels.png"
+    plot_anchor_panels(*args, out=out)
+    assert out.read_bytes().startswith(b"\x89PNG")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["anchor_panels.png"]
+    earlier = out.read_bytes()
+
+    def broken_savefig(self, fname, **kwargs):
+        Path(fname).write_bytes(b"\x89PNG partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Figure, "savefig", broken_savefig)
+    with pytest.raises(OSError, match="disk full"):
+        plot_anchor_panels(*args, out=out)
+    assert out.read_bytes() == earlier
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["anchor_panels.png"]
+    fresh = tmp_path / "new" / "anchor_panels.png"
+    with pytest.raises(OSError, match="disk full"):
+        plot_anchor_panels(*args, out=fresh)
+    assert list(fresh.parent.iterdir()) == []
+
+
 def test_identify_without_anchors_writes_panels_and_candidates(arc, survey_effective, tmp_path):
     out_dir = tmp_path / "out"
     ref, png = run_identify(arc.path, survey_effective, "survey45", out_dir, anchor_trace=0)

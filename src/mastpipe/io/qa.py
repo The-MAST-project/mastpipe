@@ -7,8 +7,9 @@ normalised to their peak and numbered on their strongest well-separated lines, s
 few template-measured pairs can be read off by pattern and typed back as anchors.
 
 Figures are drawn with matplotlib's object-oriented interface on an ``Agg`` canvas and
-written straight to file, so the command runs unattended and on machines without a
-display, never touches the global pyplot state, and leaves a notebook's own backend alone.
+written to file (atomically, through :func:`~mastpipe.io.atomic.atomic_write`), so the
+command runs unattended and on machines without a display, never touches the global
+pyplot state, and leaves a notebook's own backend alone.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+
+from mastpipe.io.atomic import atomic_write
 
 FIGURE_SIZE = (13.0, 7.2)
 """Inches, the notebook's ``figwidth`` and height."""
@@ -107,7 +110,9 @@ def plot_anchor_panels(
     lamp and the instrument's differ.
 
     Returns ``(template, measured)``: ``id, wavelength`` and ``id, x_center`` tables, ids
-    from 1 in each. The figure is closed after it is saved; the parent folder is created.
+    from 1 in each. The PNG is written to a temporary next to ``out`` and moved into place
+    (:func:`~mastpipe.io.atomic.atomic_write`), so a failed drawing leaves no partial file;
+    the parent folder is created.
     """
     out = Path(out)
     atlas_wave = np.asarray(atlas_wave, dtype=float).ravel()
@@ -163,6 +168,6 @@ def plot_anchor_panels(
     ax.set_title("MEASURED - continuum-subtracted arc spectrum of the anchor trace", loc="left")
     ax.grid(alpha=0.25)
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=DPI)
+    with atomic_write(out) as tmp:
+        fig.savefig(tmp, dpi=DPI, format="png")  # the temporary's name has no .png suffix
     return template, measured
