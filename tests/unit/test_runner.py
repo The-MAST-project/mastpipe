@@ -322,7 +322,7 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
     summary = run_quicklook(folder, tmp_path / "out", options)
     assert summary.skipped == [
         "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
-        "manifest row 0: nothing.fits: matches no frame",
+        "manifest row 0 (nothing.fits): matches no frame",
     ]
     assert [source for source, _ in summary.failed] == ["group main/None"]
 
@@ -338,8 +338,8 @@ def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_p
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,lamp_state\nnotes.txt,off\nnothing.fits,off\n", encoding="utf-8")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", manifest=manifest))
-    assert "manifest row 0: notes.txt: not a FITS file (.fits, .fit, .fits.fz)" in summary.skipped
-    assert "manifest row 1: nothing.fits: matches no frame" in summary.skipped
+    assert "manifest row 0 (notes.txt): not a FITS file (.fits, .fit, .fits.fz)" in summary.skipped
+    assert "manifest row 1 (nothing.fits): matches no frame" in summary.skipped
     assert not any(row.startswith("manifest row 0") and "matches no frame" in row for row in summary.skipped)
 
 

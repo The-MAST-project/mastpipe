@@ -3,8 +3,8 @@
 ## 0.0.1 (unreleased)
 
 - Ingest, time and metadata fixes (2026-11-11):
-  - a header-map `timezone` naming UTC by its IANA name (`UTC`, `Etc/UTC` and their
-    aliases) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /
+  - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
+    `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /
     `Etc/UTC`. The label is part of the science idempotence key, so a science product
     reduced under such a custom map is reduced again once (its `MPTZ` becomes `utc`); the
     shipped HighSpec map uses `assume-utc`, whose labels (`utc` for a stamp with an
@@ -17,10 +17,16 @@
   - `scan_folder(manifest=..., unmatched=[...])` reports the manifest rows matching no
     frame, as `apply_manifest` does (the runner's own path is unchanged);
   - a manifest row naming an existing file that is not a FITS file is skipped as
-    `not a FITS file (.fits, .fit, .fits.fz)` rather than `matches no frame`
-    (`apply_manifest(..., folder=, unsupported=)`);
+    `manifest row N (name): not a FITS file (.fits, .fit, .fits.fz)` rather than as
+    matching no frame (`io.ingest.names_non_fits_file`; `apply_manifest` reads no file);
+    a row matching no frame is skipped as `manifest row N (name): matches no frame`
+    (was `manifest row N: name: matches no frame`);
+  - a manifest row that makes a calibration frame a science (or any non-calibration)
+    frame without a target lists `targets` among its unresolved fields, as ingest does
+    for such a header;
   - a multi-extension file of another instrument is skipped once, not once per HDU;
-  - `OBJECT = 0` is the target `0`: only a missing card or a blank string names no target;
+  - `OBJECT = 0` is the target `0`: only a missing card, a blank string or a logical card
+    (`OBJECT = F`, likewise an `OBJnn`) names no target;
   - a calibration frame (bias, dark, flat, arc, background, from its header or a manifest
     row) no longer lists `targets` among its unresolved fields; a header map whose
     `targets` field is not `per_unit` is rejected when it is loaded;

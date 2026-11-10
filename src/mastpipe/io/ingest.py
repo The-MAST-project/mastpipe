@@ -11,12 +11,13 @@ header names another instrument is left out. The ``mid_time`` of a frame is deri
 the header's time field and the exposure time according to the field's ``reference``
 (``start``: plus half the exposure; ``end``: minus half; ``mid``: as given) and converted
 to UTC, a stamp without an offset read according to the field's ``timezone``
-(:mod:`mastpipe.core.times`); ``FrameMeta.timezone`` records how. When the exposure time is unknown the time is not
-shifted and ``unresolved`` lists ``mid_time``. A frame's ``targets`` come from the map's
-per-unit ``targets`` field (one target per telescope unit), else from its single
-``target`` field as ``(("*", target),)``, which applies to every science fiber (only a
-missing or blank one names none); when neither resolves ``unresolved`` lists ``targets``,
-except for the :data:`CALIBRATION_TYPES`, which have no target. A manifest CSV can
+(:mod:`mastpipe.core.times`); ``FrameMeta.timezone`` records how. When the exposure time
+is unknown the time is not shifted and ``unresolved`` lists ``mid_time``. A frame's
+``targets`` come from the map's per-unit ``targets`` field (one target per telescope
+unit), else from its single ``target`` field as ``(("*", target),)``, which applies to
+every science fiber (a missing card, a blank string or a logical card names none); when
+neither resolves ``unresolved`` lists ``targets``, except for the
+:data:`CALIBRATION_TYPES`, which have no target. A manifest CSV can
 override any metadata field frame by frame (its ``mid_time`` is taken as the mid-time,
 UTC unless it carries an offset, which is honoured); a row names its frames by relative
 path, glob pattern or unique file name. It is how laboratory data without instrument
@@ -286,11 +287,11 @@ def _build_meta(
     if arc_kind is not None and arc_kind not in ARC_KINDS:
         arc_kind = None
         unresolved.append("arc_kind")
-    targets = fields.get(TARGETS_FIELD)
+    # a logical card (OBJECT = F) names no target; OBJECT = 0 is the target "0"
+    targets = tuple(pair for pair in fields.get(TARGETS_FIELD) or () if _names_target(pair[1]))
     if not targets:
         single = fields.get(TARGET_FIELD)
-        # only a missing card or a blank string names no target (OBJECT = 0 is target "0")
-        targets = () if single is None or not str(single).strip() else ((ALL_TELESCOPES, str(single)),)
+        targets = ((ALL_TELESCOPES, single),) if _names_target(single) else ()
     targets = tuple((str(telescope), str(target)) for telescope, target in targets)
     unresolved = [name for name in unresolved if name not in (TARGETS_FIELD, TARGET_FIELD)]
     if not targets and exposure_type not in CALIBRATION_TYPES:
@@ -311,6 +312,12 @@ def _build_meta(
         classification_rule=rule,
         **passthrough,
     )
+
+
+def _names_target(value: Any) -> bool:
+    """Whether a header value names a target: not a missing card, a blank string or a
+    logical card."""
+    return value is not None and not isinstance(value, (bool, np.bool_)) and bool(str(value).strip())
 
 
 def _axis_binning(value: Any) -> int:
@@ -416,8 +423,6 @@ def apply_manifest(
     refs: Iterable[FrameRef],
     manifest: pd.DataFrame,
     unmatched: list[str] | None = None,
-    folder: Path | str | None = None,
-    unsupported: list[str] | None = None,
 ) -> list[FrameRef]:
     """New refs with the manifest's non-empty cells written over their metadata.
 
@@ -429,13 +434,12 @@ def apply_manifest(
     row has a non-empty ``extension`` it matches that HDU only. Rows apply in order (later
     rows win). A field a row sets is removed from the frame's ``unresolved``, and a
     ``target`` cell resolves ``targets`` (as does a row that makes the frame one of the
-    :data:`CALIBRATION_TYPES`, which have no target). A row matching no ref is appended to
-    ``unmatched`` as ``"manifest row {index}: {source}"`` when it is a list; when
-    ``folder`` (the scanned folder) is given and ``unsupported`` is a list, a row that
-    instead names an existing file under ``folder`` whose name is not a FITS file name
-    (:data:`FITS_SUFFIXES`), so the scan never read it, is appended to ``unsupported`` in
-    the same form. Overriding ``exposure_type`` records ``"manifest"`` as the
-    classification rule unless the row sets one.
+    :data:`CALIBRATION_TYPES`, which have no target); a row that makes it another type
+    while it has no target lists ``targets``, as ingest does for such a header. A row
+    matching no ref is appended to ``unmatched`` as ``"manifest row {index}: {source}"``
+    when it is a list (:func:`names_non_fits_file` tells whether its source names a file
+    the scan never read). Reads no file. Overriding ``exposure_type`` records
+    ``"manifest"`` as the classification rule unless the row sets one.
     ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
     :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
     """
@@ -446,23 +450,23 @@ def apply_manifest(
         source, extension, values = _row_overrides(row, index)
         matched = _match_sources(source, sources, f"manifest row {index}")
         rows.append((matched, extension, values))
-        if any(_applies(ref, matched, extension) for ref in refs):
-            continue
-        label = f"manifest row {index}: {source}"
-        if unsupported is not None and folder is not None and _names_other_file(Path(folder), source):
-            unsupported.append(label)
-        elif unmatched is not None:
-            unmatched.append(label)
+        if unmatched is not None and not any(_applies(ref, matched, extension) for ref in refs):
+            unmatched.append(f"manifest row {index}: {source}")
     out: list[FrameRef] = []
     for ref in refs:
         meta = ref.meta
         for matched, extension, values in rows:
             if _applies(ref, matched, extension):
                 cleared = set(values)
-                if values.get("exposure_type") in CALIBRATION_TYPES:
+                exposure_type = values.get("exposure_type")
+                if exposure_type in CALIBRATION_TYPES:
                     cleared.add(TARGETS_FIELD)
                 unresolved = tuple(name for name in meta.unresolved if name not in cleared)
                 meta = dataclasses.replace(meta, **values, unresolved=unresolved)
+                # a type with a target but none named: listed, as ingest lists it for a header
+                lacks_target = not meta.targets and TARGETS_FIELD not in meta.unresolved
+                if exposure_type not in (None, *CALIBRATION_TYPES) and lacks_target:
+                    meta = dataclasses.replace(meta, unresolved=(*meta.unresolved, TARGETS_FIELD))
         out.append(dataclasses.replace(ref, meta=meta) if meta is not ref.meta else ref)
     return out
 
@@ -471,17 +475,25 @@ def _applies(ref: FrameRef, matched: set[str], extension: int | None) -> bool:
     return ref.meta.source in matched and (extension is None or extension == ref.extension)
 
 
-def _names_other_file(folder: Path, source: str) -> bool:
-    """Whether a manifest ``source`` (a relative path or a bare file name, not a glob) names
-    an existing file under ``folder`` that is not a FITS file name, so the scan never read
-    it; hidden files and folders are not looked at, as the scan does not."""
-    if GLOB_CHARS & set(source):
+def names_non_fits_file(folder: Path | str, source: str) -> bool:
+    """Whether a manifest row's ``source`` names an existing file under the night
+    ``folder`` whose name is not a FITS file name (:data:`FITS_SUFFIXES`), so the scan never
+    read it: a relative path, or a bare file name anywhere below ``folder``; a ``\\`` is a
+    folder separator, as in :func:`apply_manifest`. A glob names no such file, and hidden
+    files and folders are not looked at, as the scan does not. A runner uses it to say why a
+    row in :func:`apply_manifest`'s ``unmatched`` matched no frame.
+    """
+    folder = Path(folder)
+    source = source.strip().replace("\\", "/")
+    if not source or GLOB_CHARS & set(source):
         return False
     candidates = [folder.joinpath(*source.split("/"))] if "/" in source else list(folder.rglob(source))
     for path in candidates:
+        # relative_to is lexical: it keeps a ".." part (rejected by the dot test below) and
+        # raises only for a source naming another drive (Windows "C:x")
         try:
             relative = path.relative_to(folder)
-        except ValueError:  # ".." in the source: outside the folder
+        except ValueError:
             continue
         if any(part.startswith(".") for part in relative.parts) or not path.is_file():
             continue
@@ -508,7 +520,8 @@ def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """A glob over relative POSIX paths as a regex: ``*`` and ``?`` do not cross ``/``,
     ``**`` does (``**/`` also matches no folder at all); ``[...]`` is a character class
-    (``[!...]`` its complement), never matching ``/``."""
+    (``[!...]`` its complement), never matching ``/``. ``pattern`` holds no ``\\`` (a
+    manifest source has its backslashes read as ``/`` before it gets here)."""
     parts: list[str] = []
     i = 0
     while i < len(pattern):
@@ -526,7 +539,7 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
             parts.append("[^/]")
             i += 1
         elif close != -1:
-            body = pattern[i + 1 : close].replace("\\", "\\\\")
+            body = pattern[i + 1 : close]
             if body.startswith("!"):
                 parts.append(f"[^/{body[1:]}]")
             else:

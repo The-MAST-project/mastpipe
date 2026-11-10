@@ -99,7 +99,7 @@ from mastpipe.config.models import InstrumentConfig
 from mastpipe.core.model import FrameRef
 from mastpipe.core.times import ASSUMED_UTC
 from mastpipe.instruments.registry import layout_hash, load_header_map, load_instrument, load_layout
-from mastpipe.io.ingest import FITS_SUFFIXES, apply_manifest, read_manifest, scan_folder
+from mastpipe.io.ingest import FITS_SUFFIXES, apply_manifest, names_non_fits_file, read_manifest, scan_folder
 from mastpipe.pipeline.arc_stage import _arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (
@@ -281,15 +281,15 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             log.warning("skipped %s: %s", source, reason)
         if manifest is not None:
             unmatched: list[str] = []
-            unsupported: list[str] = []
-            refs = apply_manifest(refs, manifest, unmatched, folder=night_dir, unsupported=unsupported)
+            refs = apply_manifest(refs, manifest, unmatched)
             for row in unmatched:
-                summary.skipped.append(f"{row}: matches no frame")
-                log.warning("%s: matches no frame", row)
-            for row in unsupported:
-                reason = f"not a FITS file ({', '.join(FITS_SUFFIXES)})"
-                summary.skipped.append(f"{row}: {reason}")
-                log.warning("%s: %s", row, reason)
+                label, _, source = row.partition(": ")  # "manifest row {index}: {source}"
+                if names_non_fits_file(night_dir, source):
+                    reason = f"not a FITS file ({', '.join(FITS_SUFFIXES)})"
+                else:
+                    reason = "matches no frame"
+                summary.skipped.append(f"{label} ({source}): {reason}")
+                log.warning("%s (%s): %s", label, source, reason)
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")

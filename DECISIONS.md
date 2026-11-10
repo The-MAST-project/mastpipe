@@ -448,11 +448,16 @@ designer made, and from the rulings made while the plan was executed.
   `per_fiber["usable"]` in `__post_init__`, which test fixtures and the reading of products
   written before `MPDNUSE` rely on; a default of 0 would silently report zero usable
   fibers instead, so the two `or 0` reads stay.
-- **A zone name for UTC is the `utc` keyword**: `core.times.check_timezone` reads `UTC`,
-  `Etc/UTC` and their aliases as `utc`, and the `FrameMeta.timezone` label is computed in
-  one place (`core.times.zone_label`), so two spellings of the same clock cannot give two
-  idempotence keys. The C2 rule (every time field declares `utc`, an IANA zone or
-  `assume-utc`) is unchanged.
+- **A zone name for UTC is the `utc` keyword**: `core.times.check_timezone` reads the UTC
+  names (`core.times.UTC_NAMES`: `UTC`, `Etc/UTC`, `UCT`, `Universal`, `Zulu` and their
+  `Etc/` forms) as `utc`, and the `FrameMeta.timezone` label is computed in one place
+  (`core.times.zone_label`), so two spellings of the same clock cannot give two
+  idempotence keys. `GMT` and the `Etc/GMT` zones are deliberately left alone: they are
+  accepted as IANA zones and still label as themselves. The C2 rule (every time field
+  declares `utc`, an IANA zone or `assume-utc`) is unchanged.
+- **A `\` in a manifest `source` is always a folder separator**, so a manifest written on
+  Windows matches. The accepted loss: a file whose name contains a backslash (legal on
+  POSIX) can no longer be named in a manifest, by path or by glob.
 - **`targets` is not unresolved on a calibration frame**: a bias, dark, flat, arc or
   background frame has no target, so listing it as unresolved was noise. A `light` or
   `science` frame still lists it. `targets` must be a `per_unit` field of the header map

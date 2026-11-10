@@ -18,6 +18,7 @@ from mastpipe.io.ingest import (
     expected_shape,
     file_checksum,
     load_frame,
+    names_non_fits_file,
     read_manifest,
     scan_folder,
 )
@@ -665,6 +666,17 @@ def test_object_zero_is_a_target(tmp_path: Path, highspec_map: HeaderMap):
     assert "targets" not in ref.meta.unresolved
 
 
+def test_logical_object_card_names_no_target(tmp_path: Path, highspec_map: HeaderMap):
+    """A logical card (``OBJECT = F``, ``OBJ01 = T``) is not a target name: the frame
+    has no target, and ``targets`` stays unresolved."""
+    write_fits(tmp_path / "science.fits", BLANK, {"EXPOSURE": 300.0, "OBJECT": False})
+    write_fits(tmp_path / "unit.fits", BLANK, {"EXPOSURE": 300.0, "OBJ01": True})
+    metas = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    for source in ("science.fits", "unit.fits"):
+        assert metas[source].targets == (), source
+        assert "targets" in metas[source].unresolved, source
+
+
 def test_calibration_frames_do_not_list_targets_as_unresolved(tmp_path: Path, highspec_map: HeaderMap):
     """A calibration frame has no target to resolve; a science or ``light`` frame without
     one still lists ``targets``."""
@@ -687,6 +699,19 @@ def test_calibration_frames_do_not_list_targets_as_unresolved(tmp_path: Path, hi
         [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "light.fits"], manifest
     )
     assert flat.meta.exposure_type == "flat" and "targets" not in flat.meta.unresolved
+    # and one that makes a calibration frame a science frame without a target lists it,
+    # as a header-classified science frame does
+    manifest = pd.DataFrame([{"source": "bias.fits", "exposure_type": "science"}], dtype=str)
+    (science,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "bias.fits"], manifest
+    )
+    assert science.meta.exposure_type == "science" and science.meta.unresolved.count("targets") == 1
+    # a row that also names the target leaves nothing to resolve
+    manifest = pd.DataFrame([{"source": "bias.fits", "exposure_type": "science", "target": "HD 1"}], dtype=str)
+    (science,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "bias.fits"], manifest
+    )
+    assert "targets" not in science.meta.unresolved
 
 
 def test_other_instrument_mef_is_skipped_once_per_file(tmp_path: Path, highspec_map: HeaderMap):
@@ -700,31 +725,26 @@ def test_other_instrument_mef_is_skipped_once_per_file(tmp_path: Path, highspec_
 
 
 def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
-    """A row naming an existing file whose name is not a FITS file name (so the scan never
-    read it) is reported apart, in ``unsupported``, when ``folder`` is given; a row naming
-    nothing that exists stays in ``unmatched``."""
+    """:func:`apply_manifest` reads no file: every row matching no frame is in
+    ``unmatched``. :func:`names_non_fits_file` tells the rows naming an existing file
+    whose name is not a FITS file name (so the scan never read it) from those naming
+    nothing; a hidden file, a glob and a source outside the folder name none."""
     (nested / "highspec" / "acquisition-0001" / "exposure-001.fts").write_bytes(b"")
+    (nested / ".notes.txt").write_bytes(b"")
     refs = scan_folder(nested, "highspec", highspec_map)
     path = tmp_path / "manifest.csv"
-    write_manifest(
-        path,
-        [
-            {"source": "highspec/acquisition-0001/exposure-001.fts", "lamp_state": "on"},
-            {"source": "exposure-001.fts", "lamp_state": "on"},
-            {"source": "seq.txt", "lamp_state": "on"},
-            {"source": "nothing.fits", "lamp_state": "on"},
-        ],
-    )
-    unmatched: list[str] = []
-    unsupported: list[str] = []
-    apply_manifest(refs, read_manifest(path), unmatched, folder=nested, unsupported=unsupported)
-    assert unsupported == [
-        "manifest row 0: highspec/acquisition-0001/exposure-001.fts",
-        "manifest row 1: exposure-001.fts",
-        "manifest row 2: seq.txt",
+    sources = [
+        "highspec/acquisition-0001/exposure-001.fts",
+        "exposure-001.fts",
+        "seq.txt",
+        "nothing.fits",
+        "highspec/acquisition-0001/exposure-001.fits",
     ]
-    assert unmatched == ["manifest row 3: nothing.fits"]
-    # without a list for them, such rows stay in unmatched, as before
-    unmatched = []
-    apply_manifest(refs, read_manifest(path), unmatched, folder=nested)
-    assert len(unmatched) == 4
+    write_manifest(path, [{"source": source, "lamp_state": "on"} for source in sources[:4]])
+    unmatched: list[str] = []
+    apply_manifest(refs, read_manifest(path), unmatched)
+    assert unmatched == [f"manifest row {index}: {source}" for index, source in enumerate(sources[:4])]
+    assert [names_non_fits_file(nested, source) for source in sources] == [True, True, True, False, False]
+    assert names_non_fits_file(nested, "highspec\\acquisition-0001\\exposure-001.fts")  # a Windows separator
+    for source in (".notes.txt", "*.fts", "../night/seq.txt"):
+        assert not names_non_fits_file(nested, source), source

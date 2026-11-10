@@ -159,9 +159,11 @@ suffix (`2026-10-01T18:02:30`).
   together select the gain and read noise and are matched by the library;
 - the targets, one per telescope: the cards `OBJ01`…`OBJ20` when the control
   software writes them (none does yet), else one `OBJECT` card that applies to
-  every science fiber. Only a missing or blank card names no target (`OBJECT =
-  0` is the target `0`); a calibration frame (bias, dark, flat, arc,
-  background) does not list its targets as unresolved.
+  every science fiber. Only a missing card, a blank one or a logical one
+  (`OBJECT = F`) names no target (`OBJECT = 0` is the target `0`); a
+  calibration frame (bias, dark, flat, arc, background) does not list its
+  targets as unresolved, and any other frame without a target does, whether
+  its type comes from the header or from a manifest row.
 
 ## The manifest
 
@@ -195,10 +197,10 @@ Windows (`acquisition-0012\exposure-003.fits`) matches as well.
 
 An `extension` column restricts a row to one HDU of a multi-extension file.
 Rows apply in order, so a later row wins over an earlier one for the frames
-both name. A row that matches no frame is listed under *skipped*, never
-dropped silently; a row naming a file that exists but is not a FITS file (a
-`.txt`, a `.fts`) is listed there as `not a FITS file`, since the scan never
-reads it.
+both name. A row that matches no frame is listed under *skipped* as
+`manifest row 3 (exposure-009.fits): matches no frame`, never dropped
+silently; a row naming a file that exists but is not a FITS file (a `.txt`, a
+`.fts`) is listed there as `not a FITS file`, since the scan never reads it.
 
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `light`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
