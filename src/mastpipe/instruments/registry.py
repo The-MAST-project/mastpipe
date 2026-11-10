@@ -63,7 +63,9 @@ def load_instrument(name: str) -> InstrumentConfig:
             if block.name in blocks:
                 raise ValueError(f"{path.name}: configuration {block.name!r} defined twice")
             if sub == "gratings" and block.name not in GRATING_NAMES:
-                raise ValueError(f"grating block {block.name!r} is not a MAST_common grating name {GRATING_NAMES}")
+                raise ValueError(
+                    f"{path.name}: grating block {block.name!r} is not a MAST_common grating name {GRATING_NAMES}"
+                )
             blocks[block.name] = block.model_dump()
     raw["configurations"] = blocks
     return InstrumentConfig.model_validate(raw)

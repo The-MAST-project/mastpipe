@@ -37,7 +37,7 @@ from mastpipe.pipeline.group import (
 )
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.combine import combine_spectra, group_by_target
-from mastpipe.steps.drift import apply_drift
+from mastpipe.steps.drift import apply_drift, drift_unusable_reason
 from mastpipe.steps.extract import extract_aperture
 from mastpipe.steps.fluxcal import apply_response, flux_status
 from mastpipe.steps.sky import subtract_sky_all
@@ -303,7 +303,8 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         layout_hash=group.layout_hash,
         masters_hash=group.masters_hash,
     )
-    products.write_spectra(path, es, prov, drift=drift, weights=weights)
+    reason = None if drift is None else drift_unusable_reason(drift, group.drift_params)
+    products.write_spectra(path, es, prov, drift=drift, weights=weights, drift_reason=reason)
     group.summary.products.append(path)
     if stored is not None:
         group.summary.reduced_again.append(meta.source)

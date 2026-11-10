@@ -498,7 +498,7 @@ def _read_coefficients(header: fits.Header, scheme: tuple[str, str, int]) -> np.
     return np.array([float(header[f"{prefix}{n:0{digits}d}"]) for n in range(1, count + 1)])
 
 
-def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinTableHDU:
+def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None, reason: str | None = None) -> fits.BinTableHDU:
     """``DriftModel.per_fiber`` plus a ``WEIGHT`` column (1.0 for a fiber ``weights`` lacks),
     with the model's scalars and polynomials as cards."""
     table = drift.per_fiber.copy()
@@ -508,7 +508,7 @@ def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinT
     header = hdu.header
     _set(header, "MPDTIME", drift.arc_mid_time, "drift arc mid-time, UTC")
     _set(header, "MPDSCAT", float(drift.scatter_px), "drift scatter, px")
-    _set(header, "MPDUSE", bool(drift.usable), _drift_use_comment(drift))
+    _set(header, "MPDUSE", bool(drift.usable), _drift_use_comment(drift, reason))
     _set(header, "MPDNUSE", int(drift.n_usable or 0), "usable arc fibers in the drift model")
     _set(header, "MPDNPIX", int(drift.n_pix), "pixels along dispersion")
     _add_coefficients(header, DRIFT_SHIFT_SCHEME, drift.shift_coeffs)
@@ -516,11 +516,14 @@ def _drift_hdu(drift: DriftModel, weights: dict[int, float] | None) -> fits.BinT
     return hdu
 
 
-def _drift_use_comment(drift: DriftModel) -> str:
-    """The ``MPDUSE`` comment: what an unusable model was judged on (the thresholds are the
-    run's configuration, recorded in the drift QC JSON)."""
+def _drift_use_comment(drift: DriftModel, reason: str | None = None) -> str:
+    """The ``MPDUSE`` comment: for an unusable model the gate that failed (``reason``), else
+    what it was judged on (the thresholds are the run's configuration, recorded in the drift
+    QC JSON)."""
     if drift.usable:
         return "drift model usable"
+    if reason:
+        return reason
     return f"{drift.n_usable} usable arc fibers, scatter {drift.scatter_px:.3g} px"
 
 
@@ -562,6 +565,7 @@ def write_spectra(
     prov: Provenance,
     drift: DriftModel | None = None,
     weights: dict[int, float] | None = None,
+    drift_reason: str | None = None,
 ) -> Path:
     """Table ``SPECTRA``, one row per fiber: ``FIBER, ROLE, TELESCOPE, TARGET`` and the
     vector columns ``PIXEL, FLUX, ERROR, MASK``, the optional grids ``WAVELENGTH, SKY,
@@ -578,7 +582,9 @@ def write_spectra(
     ``drift``, when given, is written as the ``DRIFT`` table: ``DriftModel.per_fiber`` plus
     a ``WEIGHT`` column (``weights`` by fiber, 1.0 when absent) with the cards ``MPDTIME``
     (``arc_mid_time``), ``MPDSCAT``, ``MPDUSE`` (its comment saying, for an unusable
-    model, the usable arc fibers and the scatter it was judged on), ``MPDNUSE``
+    model, ``drift_reason`` -- the gate that failed, as
+    :func:`~mastpipe.steps.drift.drift_unusable_reason` gives it, trimmed to the card --
+    else the usable arc fibers and the scatter it was judged on), ``MPDNUSE``
     (``n_usable``), ``MPDNPIX`` and the shift / stretch
     coefficients as ``MPDNSH`` / ``MPDSHnn`` and ``MPDNST`` / ``MPDSTnn``; the arc checksums
     are the provenance's ``MPDARCnn`` cards.
@@ -639,7 +645,7 @@ def write_spectra(
     _add_provenance(primary.header, _exposure_provenance(prov, es))
     hdus: list[Any] = [primary, spectra_hdu]
     if drift is not None:
-        hdus.append(_drift_hdu(drift, weights))
+        hdus.append(_drift_hdu(drift, weights, drift_reason))
     return _write(path, hdus)
 
 

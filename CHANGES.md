@@ -15,6 +15,18 @@
   - the anchor-panel PNG of `identify` is written atomically, like the FITS and JSON
     products: a temporary next to it moved into place, so a failed drawing leaves no
     partial file;
+  - `identify` and `solve` log the library masters they applied (file names) and warn
+    when a library master matches in all but detector temperature (beyond the 2 °C
+    tolerance, `callib.TEMPERATURE_TOLERANCE_C`);
+  - clearer messages: a science product's `MPDUSE` comment names the test an unusable
+    drift model failed (`write_spectra(..., drift_reason=)`); the quick-look warning for
+    an unusable drift arc gives the fiber count once; a grating block with a foreign name
+    is reported with its file name; the simulator's `load_truth` names an array missing
+    from an older `truth.npz` (`ValueError`), `SimTruth.trace_shifts` raises `KeyError`
+    naming an unknown file, and `SimTruth.row_of` raises `ValueError` naming a trace id
+    found on several layout rows (it was a `KeyError` saying there was none);
+  - documented: constructing a `CalibLibrary` creates its folder and lock file (write
+    access needed), and `find_reference` reads the index without the lock, like `find`.
 - Ingest, time and metadata fixes (2026-11-11):
   - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
     `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /

@@ -169,7 +169,7 @@ def test_grating_block_with_foreign_name_is_rejected(tmp_path, monkeypatch):
     (copy / "gratings" / "Mg.yaml").unlink()
     (copy / "gratings" / "mgb518.yaml").write_text(text.replace("name: Mg", "name: mgb518"), encoding="utf-8")
     monkeypatch.setattr(registry, "instrument_dir", lambda name: copy)
-    with pytest.raises(ValueError, match="GRATING_NAMES|Mg"):
+    with pytest.raises(ValueError, match=r"^mgb518\.yaml: grating block 'mgb518' is not a MAST_common grating name"):
         registry.load_instrument("highspec")
 
 

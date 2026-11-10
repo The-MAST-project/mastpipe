@@ -1,6 +1,8 @@
 """Tests for the synthetic-night simulator, checked against the truth it writes."""
 
 import re
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -167,6 +169,23 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert dict(science_meta.targets) == expected
     arc_header = fits.getheader(frame_path(out_dir, truth, "arc"))
     assert not any(f"OBJ{n:02d}" in arc_header for n in range(1, 21))
+
+
+def test_truth_errors_name_what_is_missing(sim_night, tmp_path):
+    """A truth file written before an array existed names the array; an unknown frame and
+    a trace id on several layout rows are named too."""
+    out_dir, truth = sim_night
+    shutil.copy(out_dir / "truth.json", tmp_path / "truth.json")
+    with np.load(out_dir / "truth.npz") as arrays:
+        kept = {name: arrays[name] for name in arrays.files if name != "B_per_trace"}
+    np.savez(tmp_path / "truth.npz", **kept)
+    with pytest.raises(ValueError, match="truth.npz: no array 'B_per_trace'"):
+        load_truth(tmp_path)
+    with pytest.raises(KeyError, match="no frame 'nothing.fits' in the truth"):
+        truth.trace_shifts("nothing.fits")
+    doubled = replace(truth, layout=truth.layout.assign(trace=0))
+    with pytest.raises(ValueError, match="trace id 0 is on 45 layout rows"):
+        doubled.row_of(0)
 
 
 def test_truth_roundtrip(sim_night, highspec_effective):

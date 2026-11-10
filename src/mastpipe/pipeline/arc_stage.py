@@ -145,14 +145,8 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
     worst = float(np.nanmax(np.abs(shifts))) if len(shifts) and np.isfinite(shifts).any() else 0.0
     unusable = drift_unusable_reason(drift, group.drift_params)
     if unusable is not None:
-        log.warning(
-            "drift arc %s: model not usable: %s (%d of %d fibers usable, scatter %.3f px)",
-            meta.source,
-            unusable,
-            drift.n_usable,
-            len(per_fiber),
-            drift.scatter_px,
-        )
+        # the reason names the gate and its number (usable fibers or scatter): not repeated
+        log.warning("drift arc %s: model not usable: %s (of %d arc fibers)", meta.source, unusable, len(per_fiber))
     elif worst > group.drift_params.warn_shift_px:
         log.warning(
             "drift arc %s: shift %.2f px exceeds warn_shift_px %.2f",

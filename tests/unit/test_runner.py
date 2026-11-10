@@ -3,6 +3,7 @@ paired with (those fitted against its own reference), the blend of two drift mod
 under the ``interpolate`` policy, the group's binning and the per-frame isolation of the
 calibration frames."""
 
+import logging
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -186,6 +187,38 @@ def test_blend_drifts_weights_two_models():
     bad = make_drift("ccc", "2026-10-01T22:00:00", [0.5], [0.0], fibers_a, usable=False)
     assert not _blend_drifts([(first, 0.5), (bad, 0.5)])[0].usable
     assert _arc_weights([(first, 0.3), (second, 0.7)], ["aaa", "bbb"]) == pytest.approx([0.3, 0.7])
+
+
+def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog):
+    """A drift model that is not usable is warned about once per arc, its gate's reason
+    giving the usable fibers and the warning adding only how many arc fibers there were."""
+    from mastpipe.pipeline import arc_stage
+
+    fibers = {0: (0.2, 1e-5, 20, 0.02, True), 20: (0.4, 1e-5, 18, 0.03, True), 44: (0.1, 1e-5, 2, 0.5, False)}
+    drift = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers, usable=False)
+    arc_traces = [SimpleNamespace(index=fiber) for fiber in fibers]
+    traceset = SimpleNamespace(by_role=lambda role: arc_traces, shape=(400, N_PIX))
+    group = SimpleNamespace(
+        effective=None,
+        layout=None,
+        out_dir=None,
+        preset="survey45",
+        traces=lambda: traceset,
+        injected_masters=dict,
+        drift_params=DriftParams(),
+        arcs=[],
+        run_configured=frozenset(),
+    )
+    monkeypatch.setattr(arc_stage, "_reference_for", lambda group, at_time: make_reference("r1", "2026-10-01T18:00:00"))
+    monkeypatch.setattr(arc_stage, "TraceSet", lambda **kwargs: None)
+    monkeypatch.setattr(arc_stage, "_arc_lines", lambda *args, **kwargs: SimpleNamespace(tables=[None] * len(fibers)))
+    monkeypatch.setattr(arc_stage, "fit_drift", lambda *args: drift)
+    monkeypatch.setattr(arc_stage, "_write_qc", lambda *args: None)
+    ref = FrameRef(path=Path("aaa.fits"), extension=0, meta=make_meta("2026-10-01T20:00:00", "aaa"))
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        arc_stage._cal_arc(group, ref)
+    (message,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert message == "drift arc aaa.fits: model not usable: 2 usable arc fibers, min_fibers is 3 (of 3 arc fibers)"
 
 
 # ------------------------------------------------------------- no silent configuration

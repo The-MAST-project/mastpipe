@@ -355,6 +355,36 @@ def test_arc_lines_reads_the_given_library(sim_night_lab3, highspec_effective, l
     assert not out_dir.exists()
 
 
+def test_library_masters_are_logged_and_a_bias_too_far_in_temperature_is_named(
+    sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog
+):
+    """``identify`` and ``solve`` log the masters they applied (file names), and warn when a
+    library bias is left out only because its detector temperature is beyond the tolerance."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "calib")
+    ref = _readout_ref(night_dir, truth, "em")
+    with caplog.at_level(logging.INFO, logger="mastpipe"):
+        _arc_lines(ref, highspec_effective, lab3_layout, tmp_path)
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert f"{ref.meta.source}: masters applied: {names['bias image/em']}" in infos, infos
+
+    (entry,) = [e for e in CalibLibrary(tmp_path / "calib").list("bias") if e["path"] == names["bias image/em"]]
+    stored = float(entry["detector_temperature"])
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        near = identify._library_masters(
+            tmp_path / "calib", highspec_effective, replace(ref.meta, detector_temperature=stored + 1.0)
+        )
+    assert near["bias"][1] == names["bias image/em"] and not caplog.records
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        far = identify._library_masters(
+            tmp_path / "calib", highspec_effective, replace(ref.meta, detector_temperature=stored + 5.0)
+        )
+    assert "bias" not in far
+    (message,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert names["bias image/em"] in message and "temperature" in message and "tolerance 2" in message, message
+
+
 def test_arc_lines_warns_of_an_unlisted_amplifier(sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog):
     """An arc whose amplifier the camera's ``readouts`` table does not list takes the
     camera's default noise; ``identify`` and ``solve`` say so, as the runner does."""

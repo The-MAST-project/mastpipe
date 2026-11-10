@@ -92,7 +92,8 @@ A `DRIFT` table is attached when a drift model was applied: per calibration
 fiber, the shift and stretch measured, the lines used, the rms, a usable flag
 and the blend weight, with the arc's mid-time, the smoothed model's
 coefficients, the number of usable arc fibers (`MPDNUSE`) and whether the model
-is usable (`MPDUSE`) in its header.
+is usable (`MPDUSE`, whose comment names the test an unusable model failed, e.g.
+`2 usable arc fibers, min_fibers is 3`) in its header.
 
 ## Wavelength status
 
