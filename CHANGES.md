@@ -5,6 +5,16 @@
 - Internal restructuring, no behaviour change: the quick-look runner is split into stage
   modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
   stay importable from `mastpipe.pipeline.runner`.
+- Masters and library fixes (2026-11-10):
+  - a library flat is reused only when the masters it was calibrated with have the same
+    content (the hash of their file checksums, now recorded in the flat as `MPMKH`), not
+    merely the same file names; a flat written before this change carries no `MPMKH` and
+    is built again once, on the first run that would have reused it;
+  - the flat batch (one exposure time) is chosen among the frames that survive loading
+    and calibration, as for the other kinds, not by its raw frame count;
+  - a trace set built on a flat is named with the flat's first input checksum instead of
+    `nosum`, so two trace sets of one stamp no longer share a name; a library's earlier
+    `*_nosum_traces.fits` files stay beside the new ones (science keys are unaffected).
 - Review fixes (2026-11-08):
   - a background master whose inputs carried no exposure time no longer fails every
     frame of the group with "background subtraction requested ..."; the frames take the

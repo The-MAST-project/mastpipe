@@ -3,6 +3,8 @@ paired with (those fitted against its own reference), the blend of two drift mod
 under the ``interpolate`` policy, the group's binning and the per-frame isolation of the
 calibration frames."""
 
+import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,9 +23,12 @@ from mastpipe.core.model import (
     ReferenceSolution,
 )
 from mastpipe.instruments.registry import load_instrument
+from mastpipe.io.products import read_master, write_master
+from mastpipe.pipeline import masters
 from mastpipe.pipeline.arcs import pair_arcs
+from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import _calibrated, _group_binning, _group_readout
-from mastpipe.pipeline.masters import _usable_frames
+from mastpipe.pipeline.masters import _masters_hash, _usable_frames
 from mastpipe.pipeline.runner import RunOptions, run_quicklook
 from mastpipe.pipeline.science import _arc_weights, _arcs_for, _blend_drifts
 from mastpipe.vocab import GRATING_NAMES
@@ -488,3 +493,92 @@ def test_background_master_without_exposure_time_is_not_subtracted(tmp_path):
     frame, steps = _calibrated(group, ref)
     assert steps[0] == "bias" and steps[1].startswith("background x 0.5")
     assert np.allclose(frame.data, 500.0 - 30.0 * 0.5)
+
+
+# ------------------------------------------------------------------- masters and library
+
+CALIB_OPTIONS = RunOptions("highspec", layout="survey45")
+
+
+def calibration_night(sim_dir: Path, folder: Path, kinds: tuple[str, ...] = ("bias", "flat")) -> Path:
+    """A night folder holding only the simulated night's frames of ``kinds``: the masters
+    and the traces are reduced, nothing else."""
+    folder.mkdir()
+    for kind in kinds:
+        for path in sorted(sim_dir.glob(f"sim_{kind}_*.fits")):
+            shutil.copy(path, folder / path.name)
+    return folder
+
+
+def library_master(out: Path, kind: str) -> Path:
+    (entry,) = CalibLibrary(out / "calib").list(kind=kind)
+    return out / "calib" / entry["path"]
+
+
+def test_library_flat_is_reused_only_with_the_same_masters_content(sim_night, tmp_path):
+    """A library flat records the hash of the checksums of the masters it was calibrated
+    with (``MPMKH``) and is reused only when the group's masters hash the same: a bias
+    rewritten under the same name rebuilds it, and so does, once, a flat written before
+    the hash was recorded. The trace set built on the flat carries the checksum of the
+    flat's first input frame in its name, as the flat does, not ``nosum``."""
+    folder = calibration_night(sim_night[0], tmp_path / "night")
+    out = tmp_path / "out"
+    first = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert first.failed == []
+    bias_path, flat_path = library_master(out, "bias"), library_master(out, "flat")
+    bias, _ = read_master(bias_path)
+    flat, flat_prov = read_master(flat_path)
+    assert flat_prov.masters_hash == _masters_hash({"bias": (bias, bias_path)})
+    (traces,) = (out / "calib").glob("*_traces.fits")
+    assert traces.name.split("_")[4] == flat_path.name.split("_")[4] == flat.provenance["inputs"][0][:6]
+
+    # nothing changed: the flat is reused
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+
+    # another bias under the same file name (and the same index entry): the bias is
+    # reused as it stands, the flat calibrated with the old one is built again
+    _, bias_prov = read_master(bias_path)
+    write_master(bias_path, replace(bias, data=bias.data + 1.0), bias_prov)
+    changed = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert changed.failed == []
+    assert bias_path not in changed.products and flat_path in changed.products
+    assert read_master(flat_path)[1].masters_hash == _masters_hash({"bias": (bias, bias_path)})
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+
+    # a flat written before the masters hash was recorded is built again once
+    with fits.open(flat_path, mode="update") as hdul:
+        del hdul[0].header["MPMKH"]
+    assert flat_path in run_quicklook(folder, out, CALIB_OPTIONS).products
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+
+
+def test_flat_batch_is_chosen_among_the_frames_that_survive(sim_night, tmp_path, monkeypatch):
+    """The flats are batched by exposure time and the batch with the most frames that load
+    and calibrate is stacked, as for the other kinds: three 5 s flats of which two fail
+    their calibration lose to two 8 s flats. A flat whose calibration raises is recorded
+    in ``failed`` with the error."""
+    sim_dir, _ = sim_night
+    folder = calibration_night(sim_dir, tmp_path / "night")
+    for k, source in enumerate(("sim_flat_00.fits", "sim_flat_01.fits")):
+        with fits.open(sim_dir / source) as hdul:
+            data, header = hdul[0].data.copy(), hdul[0].header.copy()
+        header["EXPOSURE"] = 8.0
+        header["DATE-OBS"] = f"2026-10-01T20:0{k}:00"
+        fits.PrimaryHDU(data, header).writeto(folder / f"sim_flat_long_{k}.fits")
+    real = masters.calibrate_frame
+
+    def calibrate(frame, *args, **kwargs):
+        if frame.meta.source in ("sim_flat_00.fits", "sim_flat_01.fits"):
+            raise RuntimeError("calibration refused")
+        return real(frame, *args, **kwargs)
+
+    monkeypatch.setattr(masters, "calibrate_frame", calibrate)
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert summary.failed == [
+        ("sim_flat_00.fits", "RuntimeError: calibration refused"),
+        ("sim_flat_01.fits", "RuntimeError: calibration refused"),
+    ]
+    flat, prov = read_master(library_master(out, "flat"))
+    assert flat.validity["exposure_time"] == 8.0
+    assert flat.n_frames == 2 and len(prov.inputs) == 2

@@ -231,8 +231,12 @@ def _write_qc(group: _Group, name: str, stage: str, values: dict[str, Any]) -> P
 
 def _master_meta(group: _Group, master: MasterCalib) -> FrameMeta:
     """A :class:`~mastpipe.core.model.FrameMeta` standing for a master (from the library,
-    whose frames are not at hand), for naming and for the frames built from it."""
+    whose frames are not at hand), for naming and for the frames built from it. Its
+    ``checksum`` is the master's first input frame's, the checksum the master's own name
+    carries, so a product named after it (the trace set of a flat) carries it too; empty
+    (``nosum`` in a name) for a master that lists no inputs."""
     validity = master.validity
+    inputs = master.provenance.get("inputs") or []
     binning = validity.get("binning") or group.binning
     return FrameMeta(
         instrument=group.effective.instrument,
@@ -247,6 +251,7 @@ def _master_meta(group: _Group, master: MasterCalib) -> FrameMeta:
         detector_temperature=validity.get("detector_temperature"),
         fiber_preset=group.preset,
         source=f"master {master.kind}",
+        checksum=str(inputs[0]) if inputs else "",
     )
 
 
@@ -283,7 +288,16 @@ def _timezone(metas: Iterable[FrameMeta]) -> str | None:
     return ",".join(zones) if zones else None
 
 
-def _master_provenance(group: _Group, frames: list[Frame], calibrations: list[str], steps: list[str]) -> Provenance:
+def _master_provenance(
+    group: _Group,
+    frames: list[Frame],
+    calibrations: list[str],
+    steps: list[str],
+    masters_hash: str | None = None,
+) -> Provenance:
+    """The provenance of a master stacked from ``frames``; ``masters_hash`` is the
+    :func:`~mastpipe.pipeline.masters._masters_hash` of the masters applied to them (a
+    flat's), ``None`` for one stacked from raw frames."""
     return Provenance(
         pipeline_version=__version__,
         config_hash=group.cfg_hash,
@@ -291,6 +305,7 @@ def _master_provenance(group: _Group, frames: list[Frame], calibrations: list[st
         calibrations=calibrations,
         steps=steps,
         timezone=_timezone(frame.meta for frame in frames),
+        masters_hash=masters_hash,
     )
 
 

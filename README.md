@@ -335,8 +335,8 @@ master (camera, binning, readout mode, configuration, temperature, time) and
 reference (identifier, `valid_from`) so later runs find them. Files are named
 `{instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits`
 after the frame's UTC mid-time and the first six hex digits of its file's
-SHA-256 (a master's first input frame's; `nosum` on a trace set built from a
-library flat), so equal mid-times never collide, with `kind` one of `bias`,
+SHA-256 (a master's first input frame's, which a trace set built on a flat
+carries too), so equal mid-times never collide, with `kind` one of `bias`,
 `dark`, `background`, `flat`, `traces`, `spec` or `comb_<target>`; references are
 `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being the
 full arc's mid-time, and that name without the suffix is the reference

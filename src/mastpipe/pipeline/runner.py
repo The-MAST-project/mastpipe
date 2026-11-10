@@ -9,12 +9,14 @@ products, masters and library entries carry that name), and reduces every
 ``(camera, configuration)`` group in turn:
 
 1. **masters** — bias, dark and background frames are stacked (dark and background one
-   exposure time at a time, the largest batch serving the night), the flats calibrated
-   and stacked, and every master is added to the calibration library (``out/calib`` or
-   ``options.library``) — unless the library already holds one stacked from the same
-   frames under the same stacking parameters and detector (``calib_hash``; and, for the
-   flat, calibrated with the same masters), which is reused rather than rebuilt and
-   overwritten; ``options.force`` rebuilds. The frames are loaded one at a time: one that
+   exposure time at a time, the batch with the most surviving frames serving the night),
+   the flats calibrated and stacked (the exposure time with the most frames that survive
+   loading and calibration), and every master is added to the calibration library
+   (``out/calib`` or ``options.library``) — unless the library already holds one stacked
+   from the same frames under the same stacking parameters and detector (``calib_hash``;
+   and, for the flat, calibrated with masters of the same content, the hash of their file
+   checksums), which is reused rather than rebuilt and overwritten; ``options.force``
+   rebuilds. The frames are loaded one at a time: one that
    cannot be read, is not binned as the group's science frames (the
    most common binning among them) or has another shape than the detector's (after crop
    and orientation) is recorded in ``failed`` and left out; one read out otherwise than the

@@ -428,3 +428,21 @@ designer made, and from the rulings made while the plan was executed.
   a SHA-256. `core.hashing` imports nothing, so `config`, `instruments`, `steps` and
   `pipeline` all use it without a cycle. (Frame checksums keep their own
   `io.ingest.CHECKSUM_LENGTH`: they identify files, not configurations.)
+- **A library flat is reused by the content of its masters, compared by checksum**: the
+  flat records `MPMKH`, the hash of the file checksums of the masters it was calibrated
+  with (`_masters_hash`, the same hash a science key carries), and is reused only when
+  the group's masters hash the same, no longer when their file names merely match. A
+  flat written before the card existed reads as unset and is **built again once** rather
+  than trusted: its provenance holds only the masters' names, which cannot prove the
+  content. The rule that a master built in this run forbids reusing the flat stays (it is
+  now redundant but cheap).
+- **The flat batch is chosen among the frames that survive**, like the other kinds: every
+  exposure-time batch is loaded and calibrated, and the one with the most survivors (the
+  longer exposure on a tie) is stacked; the losing flat batches are not stacked.
+- **A flat-derived trace set is named with the flat's first input checksum** (the one in
+  the flat's own name), through `_master_meta`, rather than `nosum`, so trace sets of one
+  stamp built on flats stacked from different frames get different names.
+- **`DriftModel.n_usable` stays `int | None`**: an omitted count is derived from
+  `per_fiber["usable"]` in `__post_init__`, which test fixtures and the reading of products
+  written before `MPDNUSE` rely on; a default of 0 would silently report zero usable
+  fibers instead, so the two `or 0` reads stay.

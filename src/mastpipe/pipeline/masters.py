@@ -69,21 +69,37 @@ def _masters_hash(masters: dict[str, tuple[MasterCalib, Path]]) -> str | None:
     return hashlib.sha256("\n".join(checksums).encode()).hexdigest()[:HASH_LENGTH]
 
 
+def _batch_score(frames: list[Frame]) -> tuple[int, float]:
+    """How well a batch of surviving frames (one exposure time) serves the night: the
+    number of frames, then the exposure time."""
+    return len(frames), float(frames[0].meta.exposure_time or 0.0)
+
+
 def _library_master(
-    group: _Group, kind: str, frames: list[Frame], calibrations: list[str]
+    group: _Group, kind: str, frames: list[Frame], masters_hash: str | None
 ) -> tuple[MasterCalib, Path] | None:
     """The library's master of ``kind`` stacked from exactly ``frames`` (by checksum) under
-    the group's ``calib_hash`` with exactly ``calibrations`` applied, to reuse instead of
-    building it again; ``None`` under ``options.force`` or without one."""
+    the group's ``calib_hash`` and calibrated with masters of exactly the content
+    ``masters_hash`` says (:func:`_masters_hash` of the masters applied, the file's
+    ``MPMKH``; ``None`` for a master stacked from raw frames), to reuse instead of
+    building it again; ``None`` under ``options.force`` or without one. Comparing content
+    rather than file names catches a master rewritten under the same name; a flat written
+    before ``MPMKH`` was recorded reads as ``None`` and is built again once."""
     if group.options.force:
         return None
     checksums = [frame.meta.checksum for frame in frames]
     found = group.library.find_by_inputs(kind, checksums, group.effective.camera, group.calib_hash)
     if found is None:
         return None
-    stored = Provenance.from_header(fits.getheader(found[1])).calibrations
-    if stored != calibrations:
-        log.info("master %s in the library was calibrated with %s; building it again", kind, stored)
+    stored = Provenance.from_header(fits.getheader(found[1]))
+    if stored.masters_hash != masters_hash:
+        log.info(
+            "master %s in the library was calibrated with other masters (%s, hash %s, now %s); building it again",
+            kind,
+            ", ".join(stored.calibrations) or "none",
+            stored.masters_hash,
+            masters_hash,
+        )
         return None
     log.info("master %s reused from the library: %s", kind, found[1].name)
     return found
@@ -93,10 +109,13 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     """Stage 1: stack the night's masters into the library and build the calibration set.
     Every frame goes through :func:`_usable_frames`; a master the library already holds,
     stacked from the same surviving frames under the same ``calib_hash`` (and, for the
-    flat, calibrated with the same masters, none of them built in this run), is reused
-    rather than built and overwritten unless ``options.force``; a kind none of whose
-    frames survive is sought in the library.
-    Sets ``group.masters`` and ``group.masters_hash``."""
+    flat, calibrated with masters of the same content, :func:`_library_master`, none of
+    them built in this run), is reused rather than built and overwritten unless
+    ``options.force``; a kind none of whose frames survive is sought in the library.
+    Every kind is batched by exposure time (the bias in one batch) and the batch with the
+    most surviving frames serves the night (the longer exposure on a tie); the dark and
+    background batches are each kept in the library, the flat's losing batches are not
+    stacked. Sets ``group.masters`` and ``group.masters_hash``."""
     detector, params, library = group.effective.detector, group.params, group.library
     chosen: dict[str, tuple[MasterCalib, Path]] = {}
     built = False
@@ -108,7 +127,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
             frames = _usable_frames(group, batch, calibrate=False)
             if not frames:
                 continue
-            found = _library_master(group, kind, frames, [])
+            found = _library_master(group, kind, frames, None)
             if found is not None:
                 master, path = found
             else:
@@ -125,8 +144,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
                     master.validity.get("exposure_time"),
                     path.name,
                 )
-            exposure = master.validity.get("exposure_time")
-            score = (len(frames), float(exposure or 0.0))
+            score = _batch_score(frames)
             if best is None or score > best[0]:
                 best = (score, master, path)
         if best is not None:
@@ -150,13 +168,15 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
     background = chosen["background"][0] if "background" in chosen else None
     group.calib = build_calibration_set(bias, dark, background, detector, group.amplifier)
     applied = [path.name for _, path in chosen.values()]
+    applied_hash = _masters_hash(chosen)
 
     flats = by_type.get("flat", [])
-    frames = []
-    if flats:
-        batch = max(_by_exposure(flats), key=lambda b: (len(b), b[0].meta.exposure_time or 0.0))
-        frames = _usable_frames(group, batch, calibrate=True)
-    found = None if not frames or built else _library_master(group, "flat", frames, applied)
+    frames: list[Frame] = []
+    for batch in _by_exposure(flats):
+        survivors = _usable_frames(group, batch, calibrate=True)
+        if survivors and (not frames or _batch_score(survivors) > _batch_score(frames)):
+            frames = survivors
+    found = None if not frames or built else _library_master(group, "flat", frames, applied_hash)
     if found is not None:
         chosen["flat"] = found
     elif frames:
@@ -164,7 +184,7 @@ def _masters(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
         master = build_master(frames, "flat", params.calib)
         steps = calibration_steps(group.calib, float(frames[0].meta.exposure_time or 0.0), subtract)
         steps.append(f"stack {params.calib.stack_method} of {len(frames)} flat frames")
-        prov = _master_provenance(group, frames, applied, steps)
+        prov = _master_provenance(group, frames, applied, steps, masters_hash=applied_hash)
         path = library.add(master, prov, frames[0].meta, group.calib_hash)
         group.summary.products.append(path)
         chosen["flat"] = (master, path)

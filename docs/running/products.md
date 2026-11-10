@@ -9,10 +9,9 @@ frame's metadata, never from the raw file name:
 
 with the UTC mid-time of the exposure (`notime` without one), `checksum` the
 first six hex digits of the input file's SHA-256 (for a master, its first input
-frame's), so two exposures with the same mid-time never share a name (`nosum`
-on a trace set built from a library flat, which has no input frame), and
-`kind` one of `bias`, `dark`,
-`background`, `flat`, `traces`, `spec`, `comb_<target>`. A frame whose header
+frame's; for a trace set built on a flat, the flat's first input frame's), so
+two exposures with the same mid-time never share a name, and `kind` one of
+`bias`, `dark`, `background`, `flat`, `traces`, `spec`, `comb_<target>`. A frame whose header
 names no grating takes the configuration given with `--configuration`. Reference solutions
 are `{instrument}_{configuration}_{preset}_{stamp}_wref.fits`, the stamp being
 the full arc's mid-time; the name without `_wref.fits` is the **reference
