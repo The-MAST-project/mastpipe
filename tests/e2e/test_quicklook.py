@@ -999,6 +999,9 @@ def test_resolve_light_sorts_frames_by_content(tmp_path, night):
         rules[es.meta.source] = qc.values["classification_rule"]
         if es.meta.source != declared:
             assert any("content:continuum" in step for step in prov.steps)
+        # the GRATING card names the configuration: nothing came from the run
+        assert qc.values["configuration_origin"] == "frame"
+        assert not any("--configuration" in step for step in prov.steps)
     assert rules.pop(declared) == "manifest"
     assert set(rules.values()) == {"content:continuum"}
     log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
@@ -1061,6 +1064,8 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         site_night.dir, out, RunOptions("highspec", configuration="Mg", layout="survey45", library=library)
     )
     assert summary.failed == []
+    drift_qc = [read_qc(path) for path in summary.qc if path.name.endswith("_drift.json")]
+    assert drift_qc and all(qc.values["configuration_origin"] == "run" for qc in drift_qc)
     products = spec_products(out)
     assert len(products) == N_SCIENCE
     # --configuration names the grating of every frame, so nothing is filed under noconf
@@ -1085,6 +1090,9 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         assert es.wavelength_status == prov.wavelength_status == "transferred"
         qc = read_qc(out / "qa" / path.with_suffix(".json").name)
         assert qc.values["classification_rule"] == "content:continuum"
+        # no GRATING card: the configuration came from the run, and both records say so
+        assert qc.values["configuration_origin"] == "run"
+        assert "configuration Mg from the run's --configuration (none in the header or manifest)" in prov.steps
         reference = labelled.pop(es.meta.source)
         assert sorted(s.fiber for s in es.spectra) == sorted(s.fiber for s in reference.spectra)
         by_fiber = {s.fiber: s for s in reference.spectra}

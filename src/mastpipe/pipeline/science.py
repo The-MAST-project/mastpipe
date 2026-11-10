@@ -24,6 +24,8 @@ from mastpipe.pipeline.group import (
     _calibrated,
     _check_binning,
     _check_readout,
+    _configuration_origin,
+    _configuration_steps,
     _content_steps,
     _describe,
     _Group,
@@ -242,7 +244,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         log.info("reducing %s again: %s", meta.source, why)
 
     frame, steps = _calibrated(group, ref, cosmics=True)
-    steps = [*_content_steps(meta), *steps]
+    steps = [*_content_steps(meta), *_configuration_steps(group, meta), *steps]
     traceset = group.traces()
     spectra = extract_aperture(frame, traceset, params.extract)
     steps.append(
@@ -313,6 +315,7 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
         {
             "source": meta.source,
             "classification_rule": meta.classification_rule,
+            "configuration_origin": _configuration_origin(group, meta),
             "mid_time": meta.mid_time,
             "targets": dict(meta.targets),
             "wavelength_status": status,

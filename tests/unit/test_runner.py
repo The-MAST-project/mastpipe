@@ -27,7 +27,13 @@ from mastpipe.io.products import read_master, write_master
 from mastpipe.pipeline import masters
 from mastpipe.pipeline.arcs import pair_arcs
 from mastpipe.pipeline.callib import CalibLibrary
-from mastpipe.pipeline.group import _calibrated, _group_binning, _group_readout
+from mastpipe.pipeline.group import (
+    _calibrated,
+    _configuration_origin,
+    _configuration_steps,
+    _group_binning,
+    _group_readout,
+)
 from mastpipe.pipeline.masters import _masters_hash, _usable_frames
 from mastpipe.pipeline.runner import RunOptions, run_quicklook
 from mastpipe.pipeline.science import _arc_weights, _arcs_for, _blend_drifts
@@ -200,10 +206,45 @@ def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_pa
     fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
     message = "configuration unknown; pass --configuration one of ['Mg']"
-    assert summary.failed == [("group main/None", message)]
+    assert summary.failed == [("group main/(no configuration)", message)]
     assert sorted(load_instrument("highspec").configurations) == ["Mg"]
     assert set(GRATING_NAMES) - {"Mg"}  # names the fleet knows but highspec cannot reduce
     assert summary.products == [] and summary.qc == []
+
+
+def test_configuration_option_leaves_a_frame_naming_another_grating_alone(sim_night, tmp_path):
+    """``--configuration`` names the grating of a frame whose header names none; a frame
+    whose GRATING card names another grating keeps its own and is grouped under it (here a
+    grating HighSpec does not define, so that group fails on its own)."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    header["GRATING"] = "Ca"
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_ca.fits")
+    del header["GRATING"]
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_none.fits")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg"))
+    failed = dict(summary.failed)
+    assert sorted(failed) == ["group main/Ca", "group main/Mg"]
+    assert "'Ca'" in failed["group main/Ca"]
+
+
+def test_configuration_steps_name_the_run_option_only_for_frames_it_configured():
+    """The provenance step and the QC origin of a frame given ``--configuration`` by the
+    run (:func:`~mastpipe.pipeline.group._configuration_steps`), and of one whose header or
+    manifest named its grating."""
+    configured = make_meta("2026-10-01T20:00:00", "aaa", "science")
+    named = make_meta("2026-10-01T20:00:00", "bbb", "science")
+    group = SimpleNamespace(run_configured=frozenset({(configured.source, configured.extension)}))
+    assert _configuration_steps(group, configured) == [
+        "configuration Mg from the run's --configuration (none in the header or manifest)"
+    ]
+    assert _configuration_origin(group, configured) == "run"
+    assert _configuration_steps(group, named) == []
+    assert _configuration_origin(group, named) == "frame"
 
 
 # ------------------------------------------------------------------ assumed time zone
@@ -324,7 +365,7 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
         "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
         "manifest row 0 (nothing.fits): matches no frame",
     ]
-    assert [source for source, _ in summary.failed] == ["group main/None"]
+    assert [source for source, _ in summary.failed] == ["group main/(no configuration)"]
 
 
 def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_path):

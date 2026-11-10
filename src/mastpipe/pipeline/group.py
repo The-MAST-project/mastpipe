@@ -55,6 +55,10 @@ ALREADY_REDUCED = "already reduced"
 """Start of the ``skipped`` reason of a science product whose idempotence key is unchanged."""
 NO_FRAMES = "no readable frame in the night folder"
 """The failure recorded for a night folder that holds nothing to reduce."""
+CONFIGURATION_FROM_RUN = "run"
+"""QC ``configuration_origin`` of a frame given ``options.configuration`` by the run."""
+CONFIGURATION_FROM_FRAME = "frame"
+"""QC ``configuration_origin`` of a frame whose header or manifest named its grating."""
 
 
 # ------------------------------------------------------------------------------ options
@@ -137,6 +141,9 @@ class _Group:
     throughput: dict[int, float] = field(default_factory=dict)
     arcs: list[tuple[FrameMeta, DriftModel, str]] = field(default_factory=list)
     """The night's drift models with the identifier of the reference each was fitted against."""
+    run_configured: frozenset[tuple[str, int]] = frozenset()
+    """``(source, extension)`` of the frames whose header and manifest named no grating and
+    that the run gave ``options.configuration`` (:func:`_configuration_steps`)."""
 
     @property
     def params(self) -> StepParams:
@@ -388,6 +395,20 @@ def _content_steps(meta: FrameMeta) -> list[str]:
     """The provenance step recording a type resolved from the frame's content, if it was."""
     if meta.classification_rule in (ARC_LIKE, CONTINUUM):
         return [f"exposure type {meta.exposure_type} from the frame's content ({meta.classification_rule})"]
+    return []
+
+
+def _configuration_origin(group: _Group, meta: FrameMeta) -> str:
+    """Where the frame's configuration came from, for its QC: :data:`CONFIGURATION_FROM_RUN`
+    (``options.configuration``) or :data:`CONFIGURATION_FROM_FRAME` (its header or manifest)."""
+    configured = (meta.source, meta.extension) in group.run_configured
+    return CONFIGURATION_FROM_RUN if configured else CONFIGURATION_FROM_FRAME
+
+
+def _configuration_steps(group: _Group, meta: FrameMeta) -> list[str]:
+    """The provenance step recording a configuration the run gave the frame, if it did."""
+    if _configuration_origin(group, meta) == CONFIGURATION_FROM_RUN:
+        return [f"configuration {meta.configuration} from the run's --configuration (none in the header or manifest)"]
     return []
 
 

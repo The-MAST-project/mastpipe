@@ -6,8 +6,10 @@ another instrument, manifest rows matching no frame and rows naming a file that 
 FITS file go into ``skipped``), drops the frames whose type is ``unknown`` into
 ``skipped`` with their classification rule, gives
 ``options.configuration`` to every frame whose header and manifest name no grating (so its
-products, masters and library entries carry that name), and reduces every
-``(camera, configuration)`` group in turn:
+products, masters and library entries carry that name, and its product's provenance steps
+and QC ``configuration_origin`` record where the name came from), and reduces every
+``(camera, configuration)`` group in turn (a group of frames with no configuration at all
+fails, labelled ``group <camera>/(no configuration)``):
 
 1. **masters** — bias, dark and background frames are stacked (dark and background one
    exposure time at a time, the batch with the most surviving frames serving the night),
@@ -134,6 +136,10 @@ __all__ = [
 ]
 
 
+NO_CONFIGURATION = "(no configuration)"
+"""How a group label names the configuration of frames whose header, manifest and run name none."""
+
+
 # ---------------------------------------------------------------------------- the run
 
 
@@ -162,6 +168,7 @@ def _run_group(
     out_dir: Path,
     options: RunOptions,
     summary: RunSummary,
+    run_configured: frozenset[tuple[str, int]] = frozenset(),
 ) -> None:
     presets = {ref.meta.fiber_preset for ref in refs if ref.meta.fiber_preset}
     if options.layout is not None:
@@ -205,6 +212,7 @@ def _run_group(
         calib_hash=calib_hash(effective),
         timezone=_timezone(ref.meta for ref in refs),
         layout_hash=layout_hash(instrument.name, preset),
+        run_configured=run_configured,
     )
     log.info(
         "group %s/%s: %s, layout %s, config %s",
@@ -305,6 +313,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
         library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
         default_conf = options.configuration
         groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
+        run_configured: set[tuple[str, int]] = set()
         for ref in refs:
             meta = ref.meta
             if meta.exposure_type == "unknown":
@@ -316,9 +325,10 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 # the run's --configuration names the grating of a frame whose header does
                 # not, so its products, masters and library entries carry that name too
                 ref = replace(ref, meta=replace(meta, configuration=default_conf))
+                run_configured.add((meta.source, meta.extension))
             groups[(meta.camera, ref.meta.configuration)].append(ref)
         for (camera, configuration), group_refs in sorted(groups.items(), key=str):
-            label = f"group {camera}/{configuration}"
+            label = f"group {camera}/{NO_CONFIGURATION if configuration is None else configuration}"
             if options.camera is not None and camera != options.camera:
                 summary.skipped.append(f"{label}: not camera {options.camera}")
                 log.info("skipped %s: not camera %s", label, options.camera)
@@ -338,6 +348,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                     out_dir,
                     options,
                     summary,
+                    frozenset(run_configured),
                 )
             except Exception as error:
                 if options.on_error == "raise":

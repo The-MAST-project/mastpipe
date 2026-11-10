@@ -2,6 +2,16 @@
 
 ## 0.0.1 (unreleased)
 
+- Provenance, QA and messages (2026-11-11):
+  - a frame given the run's `--configuration` (its header and manifest name no grating)
+    says so: its science or reference product gains the provenance step `configuration
+    <name> from the run's --configuration (none in the header or manifest)`, and the QC
+    of every science frame, full arc and drift arc gains `configuration_origin` (`run`
+    or `frame`). Neither is part of an idempotence key or a reference hash, so no
+    existing product is reduced again; a product keeps its old steps until it is
+    rewritten for another reason;
+  - a group whose frames name no configuration is labelled `group main/(no
+    configuration)` rather than `group main/None`;
 - Ingest, time and metadata fixes (2026-11-11):
   - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
     `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`, and its frames are labelled `utc` rather than `UTC` /

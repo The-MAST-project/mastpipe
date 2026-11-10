@@ -14,6 +14,8 @@ from mastpipe.pipeline.group import (
     _calibrated,
     _check_binning,
     _check_readout,
+    _configuration_origin,
+    _configuration_steps,
     _content_steps,
     _Group,
     _per_frame,
@@ -81,7 +83,7 @@ def _full_arc(group: _Group, ref: FrameRef) -> None:
     prov = _provenance(
         effective,
         lines,
-        [*_content_steps(meta), f"wavecal seeded by reference {previous.identifier}"],
+        [*_content_steps(meta), *_configuration_steps(group, meta), f"wavecal seeded by reference {previous.identifier}"],
         layout=group.preset,
     )
     prov.reference_id = previous.identifier
@@ -95,6 +97,7 @@ def _full_arc(group: _Group, ref: FrameRef) -> None:
         {
             "source": meta.source,
             "classification_rule": meta.classification_rule,
+            "configuration_origin": _configuration_origin(group, meta),
             "identifier": solution.identifier,
             "valid_from": solution.valid_from,
             "seeded_by": previous.identifier,
@@ -165,6 +168,7 @@ def _cal_arc(group: _Group, ref: FrameRef) -> None:
         {
             "source": meta.source,
             "classification_rule": meta.classification_rule,
+            "configuration_origin": _configuration_origin(group, meta),
             "arc_mid_time": drift.arc_mid_time,
             "reference_id": reference.identifier,
             "usable": bool(drift.usable),
