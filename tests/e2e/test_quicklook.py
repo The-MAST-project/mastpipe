@@ -21,7 +21,7 @@ import pytest
 from astropy.io import fits
 
 from mastpipe.cli import main
-from mastpipe.config.loader import build_effective
+from mastpipe.config.loader import build_effective, parse_override
 from mastpipe.instruments import registry
 from mastpipe.instruments.registry import layout_hash, load_instrument
 from mastpipe.io.ingest import file_checksum
@@ -356,9 +356,10 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     tmp_path, night, survey_layout, mg_lines, identified, monkeypatch
 ):
     """Every part of the idempotence key reduces the night again when it changes: the time
-    policy (in the configuration hash), the layout CSV, the reference under the same
-    identifier and the masters (rebuilt by ``force`` or under other stacking parameters);
-    otherwise masters are reused."""
+    policy or a ``--set`` override (in the configuration hash), the layout CSV, the
+    reference under the same identifier and the masters (rebuilt by ``force`` or under
+    other stacking parameters); otherwise, a non-calibration override included, masters
+    are reused."""
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     out = tmp_path / "out"
     first = run_quicklook(folder, out, options())
@@ -382,11 +383,20 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     assert master_files(out) == masters
     assert not any(path.name in masters for path in again.products)
 
-    # (b) another time policy is another configuration: every science frame again
+    # (b) another time policy is another configuration: every science frame again, with
+    # the masters reused untouched (the calibration hash does not cover it)
     plain = config_hashes(out)
     nearest = run_quicklook(folder, out, options(time_policy="nearest"))
     assert nearest.failed == [] and sorted(nearest.reduced_again) == sources
     assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
+    assert master_files(out) == masters
+    # a --set override outside `calib` likewise: the science again, the masters reused
+    clip = run_quicklook(folder, out, options(parse_override("combine.clip_sigma=5")))
+    assert clip.failed == [] and sorted(clip.reduced_again) == sources
+    assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
+    assert master_files(out) == masters
+    assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
+    assert not any(path.name in masters for path in clip.products)
     back = run_quicklook(folder, out, options())
     assert sorted(back.reduced_again) == sources and config_hashes(out) == plain
 
