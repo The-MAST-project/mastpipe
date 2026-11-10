@@ -198,9 +198,9 @@ def _run_group(
         amplifier=amplifier,
         temperature=float(np.mean(temperatures)) if temperatures else None,
         near_time=first.mid_time,
+        calib_hash=calib_hash(effective),
         timezone=_timezone(ref.meta for ref in refs),
         layout_hash=layout_hash(instrument.name, preset),
-        calib_hash=calib_hash(effective),
     )
     log.info(
         "group %s/%s: %s, layout %s, config %s",

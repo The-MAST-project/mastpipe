@@ -18,13 +18,13 @@ import pandas as pd
 
 from mastpipe.config.loader import load_yaml
 from mastpipe.config.models import ConfigurationBlock, InstrumentConfig
+from mastpipe.core.hashing import HASH_LENGTH
 from mastpipe.core.model import ROLES
 from mastpipe.vocab import GRATING_NAMES
 
 LAYOUT_COLUMNS = ("trace", "role", "telescope", "y_nominal", "slope_nominal", "aperture")
 LINE_TABLE_COLUMNS = ("wavelength_nm", "species", "logI", "usable")
 BLOCK_FOLDERS = ("gratings", "bands")
-LAYOUT_HASH_LENGTH = 12
 
 
 def _root() -> Path:
@@ -103,15 +103,15 @@ def load_layout(name: str, preset: str) -> pd.DataFrame:
 
 
 def layout_hash(name: str, preset: str) -> str:
-    """The first :data:`LAYOUT_HASH_LENGTH` hex characters of the SHA-256 of the layout
-    ``preset``'s CSV file bytes with CRLF line endings read as LF (part of a science
-    product's idempotence key: an edited layout reduces the night again, a checkout with
-    other line endings does not). ``KeyError`` for an unknown preset."""
+    """The first :data:`~mastpipe.core.hashing.HASH_LENGTH` hex characters of the SHA-256
+    of the layout ``preset``'s CSV file bytes with CRLF line endings read as LF (part of a
+    science product's idempotence key: an edited layout reduces the night again, a
+    checkout with other line endings does not). ``KeyError`` for an unknown preset."""
     instrument = load_instrument(name)
     if preset not in instrument.layouts:
         raise KeyError(f"unknown layout preset {preset!r} for {name}; known: {instrument.layouts}")
     data = (instrument_dir(name) / "layouts" / f"{preset}.csv").read_bytes().replace(b"\r\n", b"\n")
-    return hashlib.sha256(data).hexdigest()[:LAYOUT_HASH_LENGTH]
+    return hashlib.sha256(data).hexdigest()[:HASH_LENGTH]
 
 
 def load_line_table(name: str, configuration: str) -> pd.DataFrame:

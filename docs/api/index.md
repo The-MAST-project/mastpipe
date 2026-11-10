@@ -9,6 +9,7 @@ Generated from the docstrings. Modules are grouped by layer; the *steps* are pur
 
 mastpipe
 mastpipe-core-model
+mastpipe-core-hashing
 mastpipe-config-models
 mastpipe-config-loader
 mastpipe-instruments-registry

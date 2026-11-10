@@ -5,6 +5,7 @@ then combined per target. The whole recipe is described in :mod:`mastpipe.pipeli
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -158,6 +159,32 @@ def _wavelengths(
     return status_for(pairs), wavelengths, drift, weights, skipped
 
 
+def _idempotence_key(
+    checksum: str | None,
+    config_hash: str,
+    reference_hash: str | None,
+    drift_arcs: Iterable[str],
+    layout: str | None,
+    layout_hash: str | None,
+    masters_hash: str | None,
+    timezone: str | None,
+) -> tuple[Any, ...]:
+    """A science product's idempotence key (described in :mod:`mastpipe.pipeline.runner`),
+    the drift-arc checksums sorted: built alike for the run (:func:`_science_frame`) and
+    for the product on disk (:func:`_stored_key`), so the two compare equal exactly when
+    every part does."""
+    return (
+        checksum,
+        config_hash,
+        reference_hash,
+        tuple(sorted(drift_arcs)),
+        layout,
+        layout_hash,
+        masters_hash,
+        timezone,
+    )
+
+
 def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
     """The idempotence key and wavelength status of the product at ``path``; ``None`` when
     there is none (an unreadable product counts as none and is rewritten)."""
@@ -168,11 +195,11 @@ def _stored_key(path: Path) -> tuple[tuple[Any, ...], str] | None:
     except (OSError, KeyError, ValueError) as error:
         log.warning("%s cannot be read as a product (%s); it will be rewritten", path.name, error)
         return None
-    key = (
+    key = _idempotence_key(
         prov.inputs[0] if prov.inputs else None,
         prov.config_hash,
         prov.reference_hash,
-        tuple(sorted(prov.drift_arcs)),
+        prov.drift_arcs,
         prov.layout,
         prov.layout_hash,
         prov.masters_hash,
@@ -195,11 +222,11 @@ def _science_frame(group: _Group, ref: FrameRef) -> None:
     pairs = [] if reference is None else pair_arcs(meta, arcs, reference, group.drift_params)
     drift_arcs = sorted({c for model, _ in pairs for c in model.arc_checksums})
     reference_hash = None if reference is None else (reference.hash or None)
-    key = (
+    key = _idempotence_key(
         meta.checksum,
         group.cfg_hash,
         reference_hash,
-        tuple(drift_arcs),
+        drift_arcs,
         group.preset,
         group.layout_hash,
         group.masters_hash,

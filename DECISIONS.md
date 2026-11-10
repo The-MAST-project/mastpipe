@@ -417,8 +417,14 @@ designer made, and from the rulings made while the plan was executed.
 
 - **The quick-look runner is split into stage modules**, moved without any change of
   logic: `pipeline.group` (run options and summary, the per-group state `_Group`, the
-  folder and policy constants, the logger and the helpers more than one stage uses),
-  `pipeline.masters`, `pipeline.traces`, `pipeline.arc_stage` and `pipeline.science`;
-  `pipeline.runner` keeps the recipe's description, the group loop and `run_quicklook`,
-  and re-exports the public names. **A stage module imports `pipeline.group`, never
-  another stage or `pipeline.runner`**: a helper two stages need moves to `group`.
+  folder and policy constants, the logger and the helpers shared by the stages and the
+  runner), `pipeline.masters`, `pipeline.traces`, `pipeline.arc_stage` and
+  `pipeline.science`; `pipeline.runner` keeps the recipe's description, the group loop
+  and `run_quicklook`, and re-exports the public names. **A stage module imports
+  `pipeline.group`, never another stage or `pipeline.runner`**: a helper two stages need
+  moves to `group`.
+- **One length for every short hash**: the configuration, calibration, layout, masters
+  and reference hashes keep the first `core.hashing.HASH_LENGTH` (12) hex characters of
+  a SHA-256. `core.hashing` imports nothing, so `config`, `instruments`, `steps` and
+  `pipeline` all use it without a cycle. (Frame checksums keep their own
+  `io.ingest.CHECKSUM_LENGTH`: they identify files, not configurations.)

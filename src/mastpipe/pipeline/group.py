@@ -1,7 +1,7 @@
 """The state shared by the quick-look stages: the run options and summary, the state of
 one ``(camera, configuration)`` group (:class:`_Group`), the output folder and policy
-constants, the ``mastpipe`` logger, and the helpers more than one stage uses (error
-policy, binning and readout checks, calibration of one frame, QC writing).
+constants, the ``mastpipe`` logger, and the helpers shared by the stages and the runner
+(error policy, binning and readout checks, calibration of one frame, QC writing).
 
 The stage modules (:mod:`~mastpipe.pipeline.masters`, :mod:`~mastpipe.pipeline.traces`,
 :mod:`~mastpipe.pipeline.arc_stage`, :mod:`~mastpipe.pipeline.science`) import this module
@@ -122,12 +122,12 @@ class _Group:
     """The group's output amplifier, whose gain and read noise calibrate its frames."""
     temperature: float | None
     near_time: str | None
+    calib_hash: str
+    """:func:`~mastpipe.config.loader.calib_hash` of ``effective``: masters are reused under it."""
     timezone: str | None = None
     """How the group's frame times were read (:func:`_timezone` of their metadata)."""
     layout_hash: str | None = None
     """:func:`~mastpipe.instruments.registry.layout_hash` of the group's preset."""
-    calib_hash: str | None = None
-    """:func:`~mastpipe.config.loader.calib_hash` of ``effective``: masters are reused under it."""
     masters: dict[str, tuple[MasterCalib, Path]] = field(default_factory=dict)
     masters_hash: str | None = None
     """:func:`~mastpipe.pipeline.masters._masters_hash` of ``masters``, set once they are chosen."""

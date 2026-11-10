@@ -63,9 +63,10 @@ def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]
     read out as the group is a calibration frame of another readout: recorded in
     ``skipped`` (:func:`~mastpipe.pipeline.group._same_readout`) and removed from
     ``arc_refs``. Each other candidate runs under the error policy of
-    :func:`~mastpipe.pipeline.group._per_frame`: one not binned as the group or that
-    cannot be calibrated is recorded in ``failed`` and removed from ``arc_refs``; either
-    way the arc stage does not record it again, and the others still compete."""
+    :func:`~mastpipe.pipeline.group._per_frame`: one not binned as the group, that cannot
+    be calibrated or on which :func:`~mastpipe.steps.trace.find_traces` raises is recorded
+    in ``failed`` and removed from ``arc_refs``, so it is withheld from the arc stage too;
+    either way the arc stage does not record it again, and the others still compete."""
     known = [ref for ref in arc_refs if ref.meta.arc_kind == "full"]
     candidates = known or [ref for ref in arc_refs if ref.meta.arc_kind is None]
     trace_params = group.params.trace.model_copy(update={"collapse": "percentile"})
@@ -91,7 +92,10 @@ def _full_arc_candidates(group: _Group, arc_refs: list[FrameRef]) -> list[Frame]
 
 
 def _traces(group: _Group, by_type: dict[str, list[FrameRef]]) -> None:
-    """Stage 2: find and match the traces, write the trace product and its QC."""
+    """Stage 2: find and match the traces, write the trace product and its QC. Without a
+    flat master the full arcs compete as the trace source
+    (:func:`_full_arc_candidates`), which removes from ``by_type["arc"]`` every candidate
+    skipped for its readout or failed, so the arc stage never sees them."""
     params = group.params
     flat_frame: Frame | None = None
     flat_name: list[str] = []

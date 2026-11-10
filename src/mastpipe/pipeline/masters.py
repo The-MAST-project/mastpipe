@@ -10,6 +10,7 @@ from pathlib import Path
 
 from astropy.io import fits
 
+from mastpipe.core.hashing import HASH_LENGTH
 from mastpipe.core.model import Frame, FrameRef, MasterCalib
 from mastpipe.io.ingest import expected_shape, file_checksum, load_frame
 from mastpipe.pipeline.group import (
@@ -58,18 +59,14 @@ def _usable_frames(group: _Group, refs: list[FrameRef], calibrate: bool) -> list
     return frames
 
 
-MASTERS_HASH_LENGTH = 12
-"""Hex characters kept of the SHA-256 in :func:`_masters_hash`."""
-
-
 def _masters_hash(masters: dict[str, tuple[MasterCalib, Path]]) -> str | None:
     """SHA-256 over the sorted file checksums of ``masters``' files (first
-    :data:`MASTERS_HASH_LENGTH` hex characters), part of a science product's idempotence
-    key; ``None`` without masters."""
+    :data:`~mastpipe.core.hashing.HASH_LENGTH` hex characters), part of a science
+    product's idempotence key; ``None`` without masters."""
     if not masters:
         return None
     checksums = sorted(file_checksum(path) for _, path in masters.values())
-    return hashlib.sha256("\n".join(checksums).encode()).hexdigest()[:MASTERS_HASH_LENGTH]
+    return hashlib.sha256("\n".join(checksums).encode()).hexdigest()[:HASH_LENGTH]
 
 
 def _library_master(
@@ -81,7 +78,6 @@ def _library_master(
     if group.options.force:
         return None
     checksums = [frame.meta.checksum for frame in frames]
-    assert group.calib_hash is not None
     found = group.library.find_by_inputs(kind, checksums, group.effective.camera, group.calib_hash)
     if found is None:
         return None

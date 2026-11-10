@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from mastpipe.config.models import EffectiveConfig, InstrumentConfig, StepParams
+from mastpipe.core.hashing import HASH_LENGTH
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -103,14 +104,15 @@ def build_effective(
 
 
 def _canonical_hash(payload: Any) -> str:
-    """First 12 hex digits of the sha256 of ``payload``'s canonical JSON (sorted keys,
-    no whitespace, ASCII)."""
+    """First :data:`~mastpipe.core.hashing.HASH_LENGTH` hex digits of the sha256 of
+    ``payload``'s canonical JSON (sorted keys, no whitespace, ASCII)."""
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:HASH_LENGTH]
 
 
 def config_hash(effective: EffectiveConfig) -> str:
-    """First 12 hex digits of the sha256 of the effective configuration's canonical JSON.
+    """First :data:`~mastpipe.core.hashing.HASH_LENGTH` hex digits of the sha256 of the
+    effective configuration's canonical JSON.
 
     The hash covers the values only (``layers``, which records how they were reached, is
     excluded), so the same effective configuration hashes the same on every platform and
