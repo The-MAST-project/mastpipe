@@ -391,9 +391,10 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
     assert master_files(out) == masters
     # a --set override outside `calib` likewise: the science again, the masters reused
+    nearest_hashes = config_hashes(out)
     clip = run_quicklook(folder, out, options(parse_override("combine.clip_sigma=5")))
     assert clip.failed == [] and sorted(clip.reduced_again) == sources
-    assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
+    assert len(config_hashes(out)) == 1 and config_hashes(out) not in (plain, nearest_hashes)
     assert master_files(out) == masters
     assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
     assert not any(path.name in masters for path in clip.products)

@@ -550,6 +550,8 @@ def test_library_flat_is_reused_only_with_the_same_masters_content(sim_night, tm
         del hdul[0].header["MPMKH"]
     assert flat_path in run_quicklook(folder, out, CALIB_OPTIONS).products
     assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+    # every run, rebuild or reuse, wrote the flat's trace set under the one name
+    assert list((out / "calib").glob("*_traces.fits")) == [traces]
 
 
 def test_flat_batch_is_chosen_among_the_frames_that_survive(sim_night, tmp_path, monkeypatch):

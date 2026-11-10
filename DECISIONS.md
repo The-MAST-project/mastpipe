@@ -434,8 +434,10 @@ designer made, and from the rulings made while the plan was executed.
   the group's masters hash the same, no longer when their file names merely match. A
   flat written before the card existed reads as unset and is **built again once** rather
   than trusted: its provenance holds only the masters' names, which cannot prove the
-  content. The rule that a master built in this run forbids reusing the flat stays (it is
-  now redundant but cheap).
+  content. Since the rebuilt flat's checksum differs, the science masters hash moves and
+  an existing output folder's science products are reduced again once: the accepted
+  price of not trusting names. The rule that a master built in this run forbids reusing
+  the flat stays (it is now redundant but cheap).
 - **The flat batch is chosen among the frames that survive**, like the other kinds: every
   exposure-time batch is loaded and calibrated, and the one with the most survivors (the
   longer exposure on a tie) is stacked; the losing flat batches are not stacked.
