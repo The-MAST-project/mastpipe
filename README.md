@@ -264,7 +264,8 @@ skipped; one whose key changed is reduced again; `--force` reduces everything. `
 valid at each frame's time. Frames the headers cannot classify are skipped
 with their rule, failures are recorded and the run goes on (`--on-error
 continue`, the default). The exit status is 2 when anything failed, when the
-night folder holds no readable frame, or when it does not exist.
+night folder holds no readable frame, when it does not exist, or when the
+manifest has an error (reported in one `FAILED:` line naming the file or the row).
 
 Frame times: the header map declares which instant a time keyword records
 (`reference: start | mid | end`; HighSpec's `DATE-OBS` / `DATE` is the exposure

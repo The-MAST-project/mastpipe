@@ -2,6 +2,13 @@
 
 ## 0.0.1 (unreleased)
 
+- Manifest errors on the command line (2026-11-11):
+  - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
+    such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on
+    stderr naming the file or the row and exit status 2, instead of a traceback. These
+    errors are `io.ingest.ManifestError`, a `ValueError` subclass; a file pandas cannot
+    read as UTF-8 CSV and an `extension` that is not an integer are now among them (they
+    were a bare pandas or `int()` error), and a rejected cell's message adds the reason.
 - Provenance, QA and messages (2026-11-11):
   - a frame given the run's `--configuration` (its header, file name and manifest name no
     grating) says so: its science or reference product gains the provenance step

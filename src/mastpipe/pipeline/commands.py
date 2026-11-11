@@ -9,6 +9,7 @@ reader of any product file, and print what happened.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from mastpipe.config.loader import build_effective, parse_override
 from mastpipe.config.models import InstrumentConfig
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io import products
+from mastpipe.io.ingest import ManifestError
 from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
 from mastpipe.pipeline.identify import CALIB_FOLDER, run_solve
 from mastpipe.pipeline.provenance import Provenance
@@ -85,8 +87,9 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
 
 
 def quicklook_command(args: argparse.Namespace) -> int:
-    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed or the
-    night folder does not exist."""
+    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed, the
+    night folder does not exist or the manifest is bad (a :class:`~mastpipe.io.ingest.ManifestError`, reported
+    in one ``FAILED:`` line on stderr)."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -104,6 +107,9 @@ def quicklook_command(args: argparse.Namespace) -> int:
         summary = run_quicklook(args.night_dir, args.out, options)
     except FileNotFoundError as error:
         print(f"FAILED: {error}")
+        return 2
+    except ManifestError as error:
+        print(f"FAILED: {error}", file=sys.stderr)
         return 2
     print(
         f"{len(summary.products)} products, {len(summary.qc)} QC files, "

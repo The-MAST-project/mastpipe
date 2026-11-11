@@ -735,6 +735,46 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     assert [source for source, _ in summary.failed] == ["junk.fits", "night empty"]
 
 
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ("source,exposure\nx.fits,1\n", "frames.csv: unknown manifest columns ['exposure']"),
+        ("source,targets\nx.fits,1=x\n", "manifest row 0: bad targets value '1=x'"),
+        ("source,lamp_state\nframe[9-0].fits,on\n", "manifest row 0: bad glob 'frame[9-0].fits'"),
+    ],
+)
+def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest, message):
+    """An error in the manifest's content ends ``quicklook`` with exit code 2 and one
+    ``FAILED:`` line on stderr naming the file or the row (after the run's opening log
+    line), not a traceback."""
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    path = tmp_path / "frames.csv"
+    path.write_text(manifest, encoding="utf-8")
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--manifest", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
+    assert failed == [captured.err.splitlines()[-1]] and message in failed[0], captured.err
+
+
+def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
+    """Only the manifest's errors are reported as a user error: a ``ValueError`` from the
+    reduction itself still propagates."""
+
+    def broken(*args, **kwargs):
+        raise ValueError("a programming error")
+
+    monkeypatch.setattr("mastpipe.pipeline.commands.run_quicklook", broken)
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with pytest.raises(ValueError, match="a programming error"):
+        main(argv)
+
+
 def test_unknown_frames_are_skipped_with_reason(tmp_path):
     folder = tmp_path / "night"
     folder.mkdir()

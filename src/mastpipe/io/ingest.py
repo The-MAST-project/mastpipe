@@ -157,6 +157,14 @@ LEGACY_MANIFEST_FIELDS = {TARGET_FIELD: TARGETS_FIELD}
 is one target for every telescope); the new column wins when a row fills both."""
 
 
+class ManifestError(ValueError):
+    """An error in a manifest's content, naming the file or the row: a file pandas cannot
+    read as UTF-8 CSV, a missing ``source`` column or an unknown one, or a row whose
+    source, extension or values are bad (:func:`read_manifest`, :func:`apply_manifest`).
+    A ``ValueError``, so callers catching that still catch it; a command catches this
+    class to report the manifest as a user error, apart from the run's own errors."""
+
+
 def file_checksum(path: Path | str) -> str:
     """The first 16 hex characters of the file's SHA-256, read in chunks."""
     digest = hashlib.sha256()
@@ -408,14 +416,20 @@ def load_frame(ref: FrameRef, detector: DetectorConfig) -> Frame:
 def read_manifest(path: Path | str) -> pd.DataFrame:
     """A manifest CSV as a table of strings: ``source`` (a relative path, a glob pattern or
     a file name, see :func:`apply_manifest`), optional ``extension``, and any column of
-    :data:`MANIFEST_FIELDS`; empty cells mean "no override"."""
+    :data:`MANIFEST_FIELDS`; empty cells mean "no override". :class:`ManifestError` naming
+    the file when it is not UTF-8 CSV (pandas' parser errors and ``UnicodeDecodeError`` are
+    ``ValueError`` subclasses), lacks ``source`` or has an unknown column;
+    ``FileNotFoundError`` when it does not exist."""
     path = Path(path)
-    table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
+    try:
+        table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
+    except ValueError as error:
+        raise ManifestError(f"{path.name}: not a readable UTF-8 CSV file: {error}") from error
     if "source" not in table.columns:
-        raise ValueError(f"{path.name}: a manifest needs a 'source' column")
+        raise ManifestError(f"{path.name}: a manifest needs a 'source' column")
     unknown = [column for column in table.columns if column not in (*MANIFEST_KEYS, *MANIFEST_FIELDS)]
     if unknown:
-        raise ValueError(f"{path.name}: unknown manifest columns {unknown}")
+        raise ManifestError(f"{path.name}: unknown manifest columns {unknown}")
     return table
 
 
@@ -440,8 +454,11 @@ def apply_manifest(
     when it is a list (:func:`names_non_fits_file` tells whether its source names a file
     the scan never read). Reads no file. Overriding ``exposure_type`` records
     ``"manifest"`` as the classification rule unless the row sets one.
-    ``ValueError`` for a value outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
-    :data:`~mastpipe.core.model.ARC_KINDS`, or a ``mid_time`` that does not parse.
+    :class:`ManifestError` (a ``ValueError``) naming the row for an empty ``source``, a bad
+    glob, a file name several files have, an ``extension`` that is not an integer, a value
+    outside :data:`~mastpipe.core.model.EXPOSURE_TYPES` or
+    :data:`~mastpipe.core.model.ARC_KINDS`, or a cell its parser rejects (a ``mid_time``
+    or ``targets`` that does not parse, say).
     """
     refs = list(refs)
     sources = sorted({ref.meta.source for ref in refs})
@@ -513,13 +530,13 @@ def _match_sources(source: str, sources: list[str], label: str) -> set[str]:
         try:
             regex = _glob_regex(source)
         except re.error as error:  # a reversed range, say: reported like the other row errors
-            raise ValueError(f"{label}: bad glob {source!r}: {error}") from error
+            raise ManifestError(f"{label}: bad glob {source!r}: {error}") from error
         return {candidate for candidate in sources if regex.fullmatch(candidate)}
     if "/" in source:
         return set()
     named = [candidate for candidate in sources if candidate.rsplit("/", 1)[-1] == source]
     if len(named) > 1:
-        raise ValueError(f"{label}: {source!r} names several files: {', '.join(named)}")
+        raise ManifestError(f"{label}: {source!r} names several files: {', '.join(named)}")
     return set(named)
 
 
@@ -590,9 +607,12 @@ def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[st
     label = f"manifest row {index}"
     source = str(row["source"]).strip().replace("\\", "/")  # a Windows separator is a folder separator
     if not source:
-        raise ValueError(f"{label}: empty source")
+        raise ManifestError(f"{label}: empty source")
     extension_text = str(row["extension"]).strip() if "extension" in row else ""
-    extension = int(extension_text) if extension_text else None
+    try:
+        extension = int(extension_text) if extension_text else None
+    except ValueError as error:
+        raise ManifestError(f"{label}: bad extension {extension_text!r}") from error
     values: dict[str, Any] = {}
     for name, parse in MANIFEST_FIELDS.items():
         if name not in row:
@@ -603,14 +623,14 @@ def _row_overrides(row: pd.Series, index: Any) -> tuple[str, int | None, dict[st
         try:
             values[name] = parse(text)
         except ValueError as error:
-            raise ValueError(f"{label}: bad {name} value {text!r}") from error
+            raise ManifestError(f"{label}: bad {name} value {text!r}: {error}") from error
     for legacy, field in LEGACY_MANIFEST_FIELDS.items():
         if legacy in values:
             values.setdefault(field, values.pop(legacy))
     if "exposure_type" in values and values["exposure_type"] not in EXPOSURE_TYPES:
-        raise ValueError(f"{label}: exposure_type must be one of {EXPOSURE_TYPES}")
+        raise ManifestError(f"{label}: exposure_type must be one of {EXPOSURE_TYPES}")
     if "arc_kind" in values and values["arc_kind"] not in ARC_KINDS:
-        raise ValueError(f"{label}: arc_kind must be one of {ARC_KINDS}")
+        raise ManifestError(f"{label}: arc_kind must be one of {ARC_KINDS}")
     if "exposure_type" in values:
         values.setdefault("classification_rule", MANIFEST_RULE)
     if "mid_time" in values:

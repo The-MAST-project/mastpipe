@@ -105,7 +105,9 @@ quick-look runs again, those frames are reduced once more and become
 The console shows one line per product and a summary; the log in `out/logs/`
 has everything with timestamps. The exit status is 0 when every frame was
 reduced or skipped as up to date, 2 when anything failed, when the folder held
-no readable frame, or when it does not exist. Skipped frames and failures are
+no readable frame, when it does not exist, or when the manifest has an error
+(one `FAILED:` line on stderr naming the file or the row; see
+[The manifest](night-folder.md#the-manifest)). Skipped frames and failures are
 listed with their reasons; see [Troubleshooting](troubleshooting.md).
 
 ## Running on a laptop afterwards

@@ -462,3 +462,9 @@ designer made, and from the rulings made while the plan was executed.
   background frame has no target, so listing it as unresolved was noise. A `light` or
   `science` frame still lists it. `targets` must be a `per_unit` field of the header map
   (ingest reads it as unit–target pairs); one value for every fiber is `target`.
+- **A manifest error is a user error, reported apart from the run's own errors**: what
+  `read_manifest` and `apply_manifest` reject in a manifest's content is an
+  `io.ingest.ManifestError` (a `ValueError` subclass, so existing callers are unchanged),
+  and `quicklook` catches that class only, printing one `FAILED:` line on stderr and
+  exiting 2. A plain `ValueError` from the reduction still ends in a traceback, since it
+  is a programming error, not the user's input.

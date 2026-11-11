@@ -15,6 +15,7 @@ from mastpipe.core.model import FrameMeta, FrameRef
 from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.headers import HeaderMap
 from mastpipe.io.ingest import (
+    ManifestError,
     apply_manifest,
     expected_shape,
     file_checksum,
@@ -703,6 +704,51 @@ def test_manifest_glob_with_a_reversed_range_names_the_row(tmp_path: Path):
     )
     with pytest.raises(ValueError, match=r"manifest row 1: bad glob 'frame\[9-0\]\.fits'"):
         apply_manifest(odd_name_refs(tmp_path, ["frame1.fits"]), manifest)
+
+
+@pytest.mark.parametrize(
+    ("rows", "match"),
+    [
+        ([{"source": "frame1.fits", "exposure": "1"}], r"unknown manifest columns \['exposure'\]"),
+        ([{"file": "frame1.fits", "lamp_state": "on"}], "needs a 'source' column"),
+        ([{"source": "frame1.fits", "targets": "1=x"}], "manifest row 0: bad targets value '1=x'"),
+        ([{"source": "frame[9-0].fits", "lamp_state": "on"}], r"manifest row 0: bad glob 'frame\[9-0\]\.fits'"),
+        ([{"source": "frame[a--b].fits", "lamp_state": "on"}], r"manifest row 0: bad glob 'frame\[a--b\]\.fits'"),
+        ([{"source": "frame1.fits", "extension": "first"}], "manifest row 0: bad extension 'first'"),
+        ([{"source": "", "lamp_state": "on"}], "manifest row 0: empty source"),
+        ([{"source": "frame1.fits", "exposure_type": "lamp"}], "manifest row 0: exposure_type"),
+        ([{"source": "twice.fits", "lamp_state": "on"}], "manifest row 0: 'twice.fits' names several files"),
+    ],
+)
+def test_manifest_errors_are_manifest_errors(tmp_path: Path, rows: list[dict], match: str):
+    """Every error in a manifest's content is a :class:`ManifestError` (a ``ValueError``)
+    naming the file or the row, so a command can report it apart from other errors."""
+    path = tmp_path / "frames.csv"
+    write_manifest(path, rows)
+    refs = odd_name_refs(tmp_path, ["frame1.fits", "a/twice.fits", "b/twice.fits"])
+    with pytest.raises(ManifestError, match=match) as excinfo:
+        apply_manifest(refs, read_manifest(path))
+    assert isinstance(excinfo.value, ValueError)
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (b"", "frames.csv: not a readable UTF-8 CSV file"),
+        (b"source,lamp_state\nframe1.fits,on\nframe2.fits,on,extra\n", "frames.csv: .*Expected 2 fields"),
+        (b"source,lamp_state\nframe\xe9.fits,on\n", "frames.csv: .*utf-8"),
+    ],
+)
+def test_unreadable_manifest_is_a_manifest_error(tmp_path: Path, content: bytes, match: str):
+    """A manifest pandas cannot read as UTF-8 CSV (empty, a later row with more cells than
+    the header, not UTF-8) is a :class:`ManifestError` naming the file; a missing one stays
+    ``FileNotFoundError``."""
+    path = tmp_path / "frames.csv"
+    path.write_bytes(content)
+    with pytest.raises(ManifestError, match=match):
+        read_manifest(path)
+    with pytest.raises(FileNotFoundError):
+        read_manifest(tmp_path / "missing.csv")
 
 
 def test_logical_object_card_names_no_target(tmp_path: Path, highspec_map: HeaderMap):
