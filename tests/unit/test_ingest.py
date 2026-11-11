@@ -751,6 +751,25 @@ def test_unreadable_manifest_is_a_manifest_error(tmp_path: Path, content: bytes,
         read_manifest(tmp_path / "missing.csv")
 
 
+def test_manifest_rows_longer_than_the_header_are_a_manifest_error(tmp_path: Path):
+    """When every data row has one cell more than the header (a trailing comma, say),
+    pandas would make the first column the index and shift the others, so that ``source``
+    holds the second cell and the manifest silently matches nothing: an error instead."""
+    path = tmp_path / "frames.csv"
+    path.write_text("source,lamp_state\nframe1.fits,on,\nframe2.fits,off,\n", encoding="utf-8")
+    with pytest.raises(ManifestError, match="frames.csv: rows have more cells than the header"):
+        read_manifest(path)
+
+
+def test_manifest_path_that_cannot_be_read_is_a_manifest_error(tmp_path: Path):
+    """A manifest path that is a folder (or otherwise cannot be opened) is a
+    :class:`ManifestError` naming it; a missing file stays ``FileNotFoundError``."""
+    folder = tmp_path / "frames.csv"
+    folder.mkdir()
+    with pytest.raises(ManifestError, match="frames.csv: cannot be read"):
+        read_manifest(folder)
+
+
 def test_logical_object_card_names_no_target(tmp_path: Path, highspec_map: HeaderMap):
     """A logical card (``OBJECT = F``, ``OBJ01 = T``) is not a target name: the frame
     has no target, and ``targets`` stays unresolved."""

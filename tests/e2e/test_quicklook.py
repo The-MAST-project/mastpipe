@@ -719,7 +719,8 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     assert not (tmp_path / "out").exists()  # nothing is written for a mistyped path
     argv = ["quicklook", str(nowhere), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
     assert main(argv) == 2
-    assert "nowhere" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == f"FAILED: night folder {nowhere} is not a directory\n"
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -758,6 +759,19 @@ def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest
     assert "Traceback" not in captured.err
     failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
     assert failed == [captured.err.splitlines()[-1]] and message in failed[0], captured.err
+
+
+def test_quicklook_reports_a_missing_manifest_on_stderr(tmp_path, capsys):
+    """A ``--manifest`` file that does not exist is reported like a missing night folder:
+    one ``FAILED:`` line on stderr, exit code 2."""
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Traceback" not in captured.err
+    failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
+    assert failed == [captured.err.splitlines()[-1]] and "missing.csv" in failed[0], captured.err
 
 
 def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):

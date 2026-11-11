@@ -418,13 +418,22 @@ def read_manifest(path: Path | str) -> pd.DataFrame:
     a file name, see :func:`apply_manifest`), optional ``extension``, and any column of
     :data:`MANIFEST_FIELDS`; empty cells mean "no override". :class:`ManifestError` naming
     the file when it is not UTF-8 CSV (pandas' parser errors and ``UnicodeDecodeError`` are
-    ``ValueError`` subclasses), lacks ``source`` or has an unknown column;
-    ``FileNotFoundError`` when it does not exist."""
+    ``ValueError`` subclasses), cannot be opened (a folder, say), has rows longer than its
+    header, lacks ``source`` or has an unknown column; ``FileNotFoundError`` when it does
+    not exist."""
     path = Path(path)
     try:
         table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        raise ManifestError(f"{path.name}: cannot be read: {error}") from error
     except ValueError as error:
         raise ManifestError(f"{path.name}: not a readable UTF-8 CSV file: {error}") from error
+    if not isinstance(table.index, pd.RangeIndex):
+        # every row one cell longer than the header: pandas made the first column the
+        # index, shifting the others under the wrong names
+        raise ManifestError(f"{path.name}: rows have more cells than the header")
     if "source" not in table.columns:
         raise ManifestError(f"{path.name}: a manifest needs a 'source' column")
     unknown = [column for column in table.columns if column not in (*MANIFEST_KEYS, *MANIFEST_FIELDS)]

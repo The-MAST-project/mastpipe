@@ -216,12 +216,14 @@ explicit offset is honoured and converted to UTC, a naive one is UTC),
 `binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,
 `camera`, `instrument`, `classification_rule`.
 
-An error in the manifest itself (a file that is not UTF-8 CSV, a missing `source` column
-or an unknown one, a bad glob, an `extension` that is not a number, a value that does not
-parse, such as `targets` naming something that is not a telescope unit) stops the run
-before any frame is reduced: `quicklook` prints one line on stderr naming the file or the
-row, e.g. `FAILED: manifest row 2: bad glob 'frame[9-0].fits': …`, and exits with
-status 2.
+An error in the manifest itself (a path that cannot be read, such as a folder; a file
+that is not UTF-8 CSV; rows with more cells than the header, as a trailing comma on every
+row gives; a missing `source` column or an unknown one; a bad glob; an `extension` that
+is not a number; a value that does not parse, such as `targets` naming something that is
+not a telescope unit) stops the run before any frame is reduced: `quicklook` prints one
+line on stderr naming the file or the row, e.g. `FAILED: manifest row 2: bad glob
+'frame[9-0].fits': …`, and exits with status 2. A manifest that does not exist is
+reported the same way.
 
 ## Layouts
 

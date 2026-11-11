@@ -265,8 +265,8 @@ skipped; one whose key changed is reduced again; `--force` reduces everything.
 frame's time. Frames the headers cannot classify are skipped with their rule,
 failures are recorded and the run goes on (`--on-error continue`, the default).
 The exit status is 2 when anything failed, when the night folder holds no
-readable frame, when it does not exist, or when the manifest has an error
-(reported in one `FAILED:` line naming the file or the row).
+readable frame, when it or the manifest does not exist, or when the manifest has
+an error (the last three reported in one `FAILED:` line on stderr).
 
 Frame times: the header map declares which instant a time keyword records
 (`reference: start | mid | end`; HighSpec's `DATE-OBS` / `DATE` is the exposure
@@ -294,12 +294,13 @@ a `\` is read as `/`. A row matching no frame is reported among the skipped, and
 a row naming a file that is not a FITS file is reported there as such. The fields
 are: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`, `background`,
 `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`,
-`target`, `exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless
-it carries an offset), `binning`, `readout_mode`, `detector_temperature`,
-`lamp_state`, `camera`, `instrument`, `classification_rule`. It is how frames
-without instrument keywords, such as the laboratory data, enter the pipeline, and
-how a night names its fiber layout when `--layout` does not (the headers carry
-none):
+`targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for every telescope;
+the older `target` column is read the same way), `exposure_time`, `mid_time`
+(taken as the mid-exposure time, UTC unless it carries an offset), `binning`,
+`readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`, `camera`,
+`instrument`, `classification_rule`. It is how frames without instrument
+keywords, such as the laboratory data, enter the pipeline, and how a night names
+its fiber layout when `--layout` does not (the headers carry none):
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind

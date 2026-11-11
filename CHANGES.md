@@ -8,7 +8,14 @@
     stderr naming the file or the row and exit status 2, instead of a traceback. These
     errors are `io.ingest.ManifestError`, a `ValueError` subclass; a file pandas cannot
     read as UTF-8 CSV and an `extension` that is not an integer are now among them (they
-    were a bare pandas or `int()` error), and a rejected cell's message adds the reason.
+    were a bare pandas or `int()` error), and a rejected cell's message adds the reason;
+  - a manifest whose data rows all have one cell more than the header (a trailing comma on
+    every row, say) is a `ManifestError`; pandas made its first column the index, so
+    `source` held the second cell and the manifest silently matched nothing;
+  - a manifest path that cannot be opened (a folder, say) is a `ManifestError` naming it,
+    not a traceback; a missing manifest stays `FileNotFoundError`;
+  - a missing night folder or manifest file is reported by `quicklook` on stderr, like a
+    manifest error (it was printed on stdout); the exit status is still 2.
 - Provenance, QA and messages (2026-11-11):
   - a frame given the run's `--configuration` (its header, file name and manifest name no
     grating) says so: its science or reference product gains the provenance step
