@@ -435,9 +435,13 @@ designer made, and from the rulings made while the plan was executed.
   flat written before the card existed reads as unset and is **built again once** rather
   than trusted: its provenance holds only the masters' names, which cannot prove the
   content. Since the rebuilt flat's checksum differs, the science masters hash moves and
-  an existing output folder's science products are reduced again once: the accepted
-  price of not trusting names. The rule that a master built in this run forbids reusing
-  the flat stays (it is now redundant but cheap).
+  the science products of the groups whose flat is rebuilt are reduced again once (nights
+  without flats of their own are untouched): the accepted price of not trusting names.
+  The rule that a master built in this run forbids reusing the flat stays (it is now
+  redundant but cheap). A library flat taken by lookup for a night with no flats of its
+  own is deliberately not compared with this night's masters, since it was necessarily
+  calibrated with its own night's; its file checksum enters this night's masters hash,
+  so idempotence holds.
 - **The flat batch is chosen among the frames that survive**, like the other kinds: every
   exposure-time batch is loaded and calibrated, and the one with the most survivors (the
   longer exposure on a tie) is stacked; the losing flat batches are not stacked.

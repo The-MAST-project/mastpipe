@@ -2,6 +2,13 @@
 
 ## 0.0.1 (unreleased)
 
+- Upgrade notes: what re-running `quicklook` into an output folder written by an earlier
+  version costs. A flat master built by an earlier version (no `MPMKH`) is built again
+  once, on the first run that would have reused it, and the science products of that
+  group are reduced again once (the flat's checksum enters their masters hash). Earlier
+  `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
+  map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
+  once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
 - Manifest errors on the command line (2026-11-11):
   - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
     such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on
@@ -20,11 +27,10 @@
   - a frame given the run's `--configuration` (its header, file name and manifest name no
     grating) says so: its science or reference product gains the provenance step
     `configuration <name> from the run's --configuration (none in the header, file name or
-    manifest)`, and the QC
-    of every science frame, full arc and drift arc gains `configuration_origin` (`run`
-    or `frame`). Neither is part of an idempotence key or a reference hash, so no
-    existing product is reduced again; a product keeps its old steps until it is
-    rewritten for another reason;
+    manifest)`, and the QC of every science frame, full arc and drift arc gains
+    `configuration_origin` (`run` or `frame`). Neither is part of an idempotence key or a
+    reference hash, so no existing product is reduced again; a product keeps its old
+    steps until it is rewritten for another reason;
   - a group whose frames name no configuration is labelled `group main/(no
     configuration)` rather than `group main/None`;
   - the anchor-panel PNG of `identify` is written atomically, like the FITS and JSON
@@ -44,11 +50,11 @@
   - a manifest glob class is read as fnmatch reads it: inside `[...]`, a `[`, a doubled
     `&`, `|` or `~`, and a `-` that starts or ends the class are literal (they raised a
     `FutureWarning` from `re`), `[!]]` excludes `]` (it was mistranslated), and a reversed
-    range (`[9-0]`, or `[a--b]`, whose `a--` runs from `a` back to `-`) is a `ValueError`
-    naming the manifest row and the glob, like the manifest's other errors, instead of a
-    bare `re.error`; `names_non_fits_file` is false for a
-    rooted source (`/x`) or one naming a drive (`C:x`), which Python 3.11's `rglob`
-    refuses on Windows;
+    range (`[9-0]`, or `[a--b]`, whose `a--` runs from `a` back to `-`) is a
+    `ManifestError` naming the manifest row and the glob, like the manifest's other
+    errors, instead of a bare `re.error`; `names_non_fits_file` is false for a rooted
+    source (`/x`) or one naming a drive (`C:x`), which Python 3.11's `rglob` refuses on
+    Windows;
   - documented: constructing a `CalibLibrary` creates its folder and lock file (write
     access needed), and `find_reference` reads the index without the lock, like `find`.
 - Ingest, time and metadata fixes (2026-11-11):
@@ -95,7 +101,9 @@
     merely the same file names; a flat written before this change carries no `MPMKH` and
     is built again once, on the first run that would have reused it. The rebuilt flat's
     file checksum changes, and with it the masters hash (`MPMKH`) of the science key, so
-    every science product of an existing output folder is reduced again once;
+    the science products of the groups whose flat is rebuilt are reduced again once;
+    nights without flats of their own, or using a library flat found by lookup, are
+    untouched;
   - the flat batch (one exposure time) is chosen among the frames that survive loading
     and calibration, as for the other kinds, not by its raw frame count; every flat batch
     is now loaded and calibrated, so an unusable frame of a batch that is not chosen is
