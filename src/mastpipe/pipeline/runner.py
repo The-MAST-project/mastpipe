@@ -79,9 +79,14 @@ Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is l
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
 its group with a recorded failure; with ``"raise"`` it propagates. A night folder that is
 not a directory raises ``FileNotFoundError`` before anything is written; one without a
-readable frame records a failure for the night. The ``mastpipe`` logger writes
-``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both handlers are
-removed when it ends.
+readable frame records a failure for the night; an error in the manifest raises
+:class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. The ``mastpipe``
+logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
+handlers are removed when it ends.
+
+The constants ``NO_FRAMES`` and ``TIME_POLICIES`` and the classes ``RunOptions`` and
+``RunSummary`` (the run's options and summary) re-exported here are documented in
+:mod:`mastpipe.pipeline.group`.
 """
 
 from __future__ import annotations

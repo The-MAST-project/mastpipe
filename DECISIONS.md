@@ -398,14 +398,14 @@ designer made, and from the rulings made while the plan was executed.
 - **Frames of another readout than their group are dropped per frame**: the readout key
   is `READMODE`/`OUTPTAMP` (`image/em`), the group follows the most common key among its
   science and not-yet-resolved `light` frames (as for the binning). A calibration frame
-  with another key (a bias, dark, background or flat, or a full arc competing as the
-  trace source) is left out and recorded in `skipped` with both keys, not as a failure:
-  it belongs to another set (an EM bias series beside conventional science), and
-  `build_master` refuses mixed amplifiers and would otherwise fail the whole group. A
-  science, `light` or arc frame with another key, or another binning, is a failure,
-  since it would be reduced with masters and noise of another readout. A night mixing
-  frames with and without those cards loses the uncarded ones when the group's key is
-  known.
+  with another key (a bias, dark, background or flat, or an arc competing as the trace
+  source: one called full, else one of unknown kind) is left out and recorded in
+  `skipped` with both keys, not as a failure: it belongs to another set (an EM bias
+  series beside conventional science), and `build_master` refuses mixed amplifiers and
+  would otherwise fail the whole group. A science, `light` or arc frame with another key,
+  or another binning, is a failure, since it would be reduced with masters and noise of
+  another readout. A night mixing frames with and without those cards loses the uncarded
+  ones when the group's key is known.
 - **The simulator's default jitter and gradient are deliberately small**
   (`dispersion_jitter_px = 0.3`, `drift_gradient_px = 0.05`), below what the end-to-end
   tolerances could detect, so the fixture nights reduce with stable tolerances.

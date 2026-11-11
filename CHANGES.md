@@ -28,16 +28,18 @@
     tolerance, `callib.TEMPERATURE_TOLERANCE_C`);
   - clearer messages: a science product's `MPDUSE` comment names the test an unusable
     drift model failed (`write_spectra(..., drift_reason=)`); the quick-look warning for
-    an unusable drift arc gives the fiber count once (`...: <reason>; N arc fibers`); a grating block with a foreign name
-    is reported with its file name; the simulator's `load_truth` names an array missing
-    from an older `truth.npz` (`ValueError`), `SimTruth.trace_shifts` raises `KeyError`
-    naming an unknown file, and `SimTruth.row_of` raises `ValueError` naming a trace id
-    found on several layout rows (it was a `KeyError` saying there was none);
-  - a manifest glob class is read as fnmatch reads it: `[`, a doubled `&`, `|`, `~` or `-`
-    inside `[...]` are literal (they raised a `FutureWarning` from `re`), `[!]]` excludes
-    `]` (it was mistranslated), and a class `re` cannot compile (a reversed range,
-    `[9-0]`) is a `ValueError` naming the manifest row and the glob, like the manifest's
-    other errors, instead of a bare `re.error`; `names_non_fits_file` is false for a
+    an unusable drift arc gives the fiber count once (`...: <reason>; N arc fibers`); a
+    grating block with a foreign name is reported with its file name; the simulator's
+    `load_truth` names an array missing from an older `truth.npz` (`ValueError`),
+    `SimTruth.trace_shifts` raises `KeyError` naming an unknown file, and
+    `SimTruth.row_of` raises `ValueError` naming a trace id found on several layout rows
+    (it was a `KeyError` saying there was none);
+  - a manifest glob class is read as fnmatch reads it: inside `[...]`, a `[`, a doubled
+    `&`, `|` or `~`, and a `-` that starts or ends the class are literal (they raised a
+    `FutureWarning` from `re`), `[!]]` excludes `]` (it was mistranslated), and a reversed
+    range (`[9-0]`, or `[a--b]`, whose `a--` runs from `a` back to `-`) is a `ValueError`
+    naming the manifest row and the glob, like the manifest's other errors, instead of a
+    bare `re.error`; `names_non_fits_file` is false for a
     rooted source (`/x`) or one naming a drive (`C:x`), which Python 3.11's `rglob`
     refuses on Windows;
   - documented: constructing a `CalibLibrary` creates its folder and lock file (write
@@ -45,12 +47,13 @@
 - Ingest, time and metadata fixes (2026-11-11):
   - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
     `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`,
-    and its frames are labelled `utc` rather than `UTC` / `Etc/UTC`. The label is part of the science idempotence key, so a science product
-    reduced under such a custom map is reduced again once (its `MPTZ` becomes `utc`); the
-    shipped HighSpec map uses `assume-utc`, whose labels (`utc` for a stamp with an
-    offset, `assumed-utc` otherwise) do not change, so no HighSpec product is reduced
-    again. The label logic lives in `core.times` (`read_time`, `zone_label`, and
-    `ASSUMED_UTC`, still importable from `io.ingest`); a frame's stamp is parsed once;
+    and its frames are labelled `utc` rather than `UTC` / `Etc/UTC`. The label is part of
+    the science idempotence key, so a science product reduced under such a custom map is
+    reduced again once (its `MPTZ` becomes `utc`); the shipped HighSpec map uses
+    `assume-utc`, whose labels (`utc` for a stamp with an offset, `assumed-utc`
+    otherwise) do not change, so no HighSpec product is reduced again. The label logic
+    lives in `core.times` (`read_time`, `zone_label`, and `ASSUMED_UTC`, still importable
+    from `io.ingest`); a frame's stamp is parsed once;
   - the simulator reads `night_start` with `core.times.to_utc`: a start with an offset is
     converted to UTC instead of being written into the truth and headers with its offset;
   - a manifest `source` with `\` folder separators (written on Windows) now matches;
@@ -183,10 +186,10 @@
   night is still reduced. A calibration frame of another readout (a full-arc trace
   candidate included) is left out and recorded in `skipped`, not as a failure; a
   science, `light` or arc frame of another binning or readout fails. A failing full-arc
-  candidate is recorded and skipped. Products, masters, references, indexes and QC files are written
-  atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>` temporary moved into place),
-  and the calibration library's index is read and updated under a lock on `index.lock`
-  (`io.atomic.locked`).
+  candidate is recorded and skipped. Products, masters, references, indexes and QC files
+  are written atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>-<random>`
+  temporary moved into place), and the calibration library's index is read and updated
+  under a lock on `index.lock` (`io.atomic.locked`).
 - Idempotence: a science product's key covers the frame's checksum, the configuration
   hash (time policy and every override included), the reference solution's hash
   (`MPWREFH`), the drift arcs' checksums, the layout preset and its file's hash
@@ -306,9 +309,9 @@
   shift between two position combs), `match_layout` (global shift, one-to-one assignment by
   distance, `missing`/`extra`), `trace_source` (flat, else full arc), `classify_arc` (`full` /
   `calfiber` / `unknown` from the traces lit above a noise floor and a fraction of the
-  brightest, after a spatial running-median baseline) and `relative_throughput`; `TraceParams.collapse`
-  (`median` / `mean` / `percentile`) picks the band statistic, the percentile seeing a
-  line-only arc when there is no flat.
+  brightest, after a spatial running-median baseline) and `relative_throughput`;
+  `TraceParams.collapse` (`median` / `mean` / `percentile`) picks the band statistic, the
+  percentile seeing a line-only arc when there is no flat.
 - Extraction step (`mastpipe.steps.extract`): `aperture_weights` (`round`, `floor` and
   `subpixel` apertures carrying `2·hw + 1` rows of weight), `extract_aperture` (weighted sum
   or mean per column along each trace with its propagated error; a column is masked below

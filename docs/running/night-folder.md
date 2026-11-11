@@ -67,9 +67,9 @@ image/conventional`); it belongs to another set and does not change the exit
 status. A calibration frame binned otherwise, and a science, `light` or arc
 frame binned or read out otherwise, is dropped and recorded as a failure with
 the reason. A night that mixes frames with and without the `READMODE` and
-`OUTPTAMP` cards therefore loses the frames without them (their readout is `unknown/unknown`) whenever the group's
-own readout is known; give such frames their readout through the manifest
-(`readout_mode`, `amplifier`) to keep them.
+`OUTPTAMP` cards therefore loses the frames without them (their readout is
+`unknown/unknown`) whenever the group's own readout is known; give such frames
+their readout through the manifest (`readout_mode`, `amplifier`) to keep them.
 
 ## What the headers must say
 

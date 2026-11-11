@@ -18,7 +18,8 @@ notebook for the three-fiber laboratory layout. If your full arc matches that
 setup, one command does it:
 
 ```bash
-mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg --stored-anchors
+mastpipe identify night/arc_full.fits --out out --instrument highspec --configuration Mg \
+    --stored-anchors
 #   reference highspec_Mg_lab3_20260909T113659: 3 fibers solved
 #   written: out/calib/highspec_Mg_lab3_20260909T113659_wref.fits
 ```
@@ -55,7 +56,8 @@ mastpipe identify night/arc_full.fits --out out --instrument highspec --configur
 :alt: Anchor panels: the Th-Ar template above, the measured arc spectrum below, strongest lines numbered in each
 :width: 100%
 
-The anchor panels for a simulated full arc. Template pair 2 and measured pair 3 are the same line, as are 4 and 6.
+The anchor panels for a simulated full arc. Template pair 2 and measured pair 3 are
+the same line, as are 4 and 6.
 ```
 
 The figure shows the Th-Ar template (the Murphy et al. atlas convolved to the

@@ -218,9 +218,9 @@ match the arc's camera, binning, readout and temperature (the flat its
 configuration too) are applied, the nearest in time, and the log names them
 (`masters applied: ...`); a master that matches in all but temperature (more than
 2 °C away) is named in a warning rather than left out silently. Traces come from
-the flat master when there is one and from the arc itself otherwise. `fiber_agreement.csv` beside the
-reference lists, per catalogue line, how far the independent per-fiber
-solutions disagree.
+the flat master when there is one and from the arc itself otherwise.
+`fiber_agreement.csv` beside the reference lists, per catalogue line, how far the
+independent per-fiber solutions disagree.
 
 ### `solve` — re-solve a full arc from the previous reference
 
@@ -260,12 +260,13 @@ and telluric stages, written with provenance and QC, and combined per target.
 A product already on disk with the same idempotence key (input checksum,
 configuration hash, reference solution's hash, drift-arc checksums, layout
 preset and its file's hash, the masters' checksums, the time zone) is
-skipped; one whose key changed is reduced again; `--force` reduces everything. `--reference ID` pins one reference solution instead of the one
-valid at each frame's time. Frames the headers cannot classify are skipped
-with their rule, failures are recorded and the run goes on (`--on-error
-continue`, the default). The exit status is 2 when anything failed, when the
-night folder holds no readable frame, when it does not exist, or when the
-manifest has an error (reported in one `FAILED:` line naming the file or the row).
+skipped; one whose key changed is reduced again; `--force` reduces everything.
+`--reference ID` pins one reference solution instead of the one valid at each
+frame's time. Frames the headers cannot classify are skipped with their rule,
+failures are recorded and the run goes on (`--on-error continue`, the default).
+The exit status is 2 when anything failed, when the night folder holds no
+readable frame, when it does not exist, or when the manifest has an error
+(reported in one `FAILED:` line naming the file or the row).
 
 Frame times: the header map declares which instant a time keyword records
 (`reference: start | mid | end`; HighSpec's `DATE-OBS` / `DATE` is the exposure
@@ -290,15 +291,15 @@ path (`highspec/acquisition-0001/exposure-001.fits`), a glob pattern on it
 (`highspec/acquisition-0001/*.fits`; `*` stays within a folder, `**` crosses
 folders) or a bare file name that only one frame has (two or more is an error);
 a `\` is read as `/`. A row matching no frame is reported among the skipped, and
-a row naming a file that is not a FITS file is reported there as such. The fields are: `exposure_type`
-(`bias`, `dark`, `flat`, `arc`, `science`, `background`, `unknown`),
-`arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`, `target`,
-`exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless it
-carries an offset), `binning`,
-`readout_mode`, `detector_temperature`, `lamp_state`, `camera`, `instrument`,
-`classification_rule`. It is how frames without instrument keywords, such as
-the laboratory data, enter the pipeline, and how a night names its fiber layout
-when `--layout` does not (the headers carry none):
+a row naming a file that is not a FITS file is reported there as such. The fields
+are: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`, `background`,
+`unknown`), `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`,
+`target`, `exposure_time`, `mid_time` (taken as the mid-exposure time, UTC unless
+it carries an offset), `binning`, `readout_mode`, `detector_temperature`,
+`lamp_state`, `camera`, `instrument`, `classification_rule`. It is how frames
+without instrument keywords, such as the laboratory data, enter the pipeline, and
+how a night names its fiber layout when `--layout` does not (the headers carry
+none):
 
 ```csv
 source,exposure_type,configuration,fiber_preset,arc_kind

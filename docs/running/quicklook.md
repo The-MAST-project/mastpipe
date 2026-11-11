@@ -44,12 +44,15 @@ Per camera and grating found in the folder:
   against the frame's reference, and within `drift.max_age_hours` (default 12)
   qualify. With none, the frame gets status `reference`.
 
-`--configuration Mg | Halpha | Ca`
+`--configuration Mg`
 : The grating of frames whose header does not name it (no `GRATING` card and
-  no grating alias in the file name). The control software writes no such card
-  today, so a night from the site needs this option; without it those frames
-  are not reduced and their group, `group main/(no configuration)`, fails with
-  the list of the instrument's configurations. A frame that names its grating
+  no grating alias in the file name). HighSpec ships one configuration today,
+  `Mg`; the fleet also names `Halpha` and `Ca`, which become valid here once their
+  grating files are added under `instruments/highspec/gratings/`. The control
+  software writes no such card today, so a night from the site needs this
+  option; without it those frames are not reduced and their group,
+  `group main/(no configuration)`, fails with the list of the instrument's
+  configurations. A frame that names its grating
   (in its header, its file name or a manifest row) keeps it, even a grating
   other than this one; one that does not takes this one, and its products,
   masters and library entries are named by it. Such a frame's product records

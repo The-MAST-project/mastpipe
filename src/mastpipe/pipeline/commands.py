@@ -88,8 +88,9 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
 
 def quicklook_command(args: argparse.Namespace) -> int:
     """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed, the
-    night folder does not exist or the manifest is bad (a :class:`~mastpipe.io.ingest.ManifestError`, reported
-    in one ``FAILED:`` line on stderr)."""
+    night folder does not exist or the manifest is bad (a
+    :class:`~mastpipe.io.ingest.ManifestError`, reported in one ``FAILED:`` line on
+    stderr)."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
