@@ -120,7 +120,7 @@ def night(sim_night, highspec_effective) -> SimpleNamespace:
         truth=truth,
         traces=traces,
         spectra=spectra,
-        throughput={i: float(t) for i, t in enumerate(truth.throughput)},
+        throughput={spectrum.fiber: float(truth.throughput[truth.row_of(spectrum.fiber)]) for spectrum in spectra},
         line_px=line_px,
     )
 

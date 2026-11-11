@@ -13,7 +13,7 @@ unknown status fails at the boundary, not three steps later.
   header's start time), binning, readout mode, output amplifier (`readout_key` joins the two, e.g.
   `image/em`), temperature, lamp state, fiber
   preset, targets (`(telescope, target)` pairs, or one `("*", target)` pair for
-  every fiber; `target_for(telescope)` reads them), arc kind (`full`, `calfiber`), checksum, source file name,
+  every fiber, each telescope at most once; `target_for(telescope)` reads them), arc kind (`full`, `calfiber`), checksum, source file name,
   extension, the fields left unresolved, and the classification rule that
   decided the type. Frozen.
 

@@ -44,7 +44,10 @@ A science product's **key** is the input checksum, the configuration hash
 (every `--set` override and `--time-policy` included), the reference
 solution's hash (`MPWREFH`), the sorted drift-arc checksums, the layout preset
 and the hash of its CSV file (`MPLAYOUT`, `MPLAYH`), a hash of the masters'
-file checksums (`MPMKH`) and the frame's time zone (`MPTZ`). A quick-look run
+file checksums (`MPMKH`) and the frame's time zone (`MPTZ`: `utc`, `assumed-utc`
+or the IANA zone its clock was read in). A product built from a group of frames
+(a master, a trace set) whose times were read in different zones records their
+labels sorted and joined by commas, such as `assumed-utc,utc`. A quick-look run
 skips a product whose key matches and redoes one whose key changed — which is
 how early-night frames reduced before the first calibration-fiber arc are
 upgraded from `reference` to `transferred` once the arc lands, and how an
@@ -56,20 +59,23 @@ Masters are idempotent through their inputs: the library records the
 checksums of the frames each master was stacked from and a hash of the
 stacking parameters (`calib`) and the detector definition, and a run whose
 frames and stacking are the same reuses the library's master instead of
-building and overwriting it (a flat only when it was calibrated with the same
-masters). Other stacking parameters build the masters again; `--force`
-rebuilds them regardless.
+building and overwriting it. A flat is reused only when it was calibrated
+with masters of the same content: it records the hash of their file checksums
+(`MPMKH`), so a bias rewritten under the same file name builds the flat again;
+a flat written before that card existed is built again once. Other stacking
+parameters build the masters again; `--force` rebuilds them regardless.
 
 ## Names
 
 ```text
 {instrument}_{configuration}_{camera}_{YYYYmmddTHHMMSS}_{checksum}_{kind}.fits   masters, traces, spec, comb_<target>
-{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits              reference solutions
+{instrument}_{configuration}_{preset}_{YYYYmmddTHHMMSS}_wref.fits                reference solutions
 ```
 
 Times are the exposure's UTC mid-time, derived by ingest from the header's
 start time and the exposure time (`notime` without one). `checksum` is the first
-six hex digits of the input frame's SHA-256 (for a master or trace set, its
-first input frame's), so two exposures with the same mid-time never share a
-name; a trace set built from a library flat has no input frame and carries
-`nosum`. Raw file names never appear in product names.
+six hex digits of the input frame's SHA-256 (for a master, its first input
+frame's; for a trace set, the full arc's or the flat's first input frame's), so
+two exposures with the same mid-time never share a name, nor do two trace sets
+of one stamp built on flats stacked from different frames. Raw file names never
+appear in product names.

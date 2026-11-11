@@ -324,11 +324,18 @@ def test_two_processes_add_to_one_library(tmp_path):
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(2)
     workers = [context.Process(target=add_biases, args=(str(tmp_path), name, barrier)) for name in ("a", "b")]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=120)
-    assert [worker.exitcode for worker in workers] == [0, 0]
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=120)
+        assert [worker.exitcode for worker in workers] == [0, 0]  # None: still running at the timeout
+    finally:
+        # A worker hung on the lock must not outlive the test (or keep pytest waiting).
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=10)
     assert len(CalibLibrary(tmp_path).list("bias")) == 2 * N_PER_WORKER
     index = json.loads((tmp_path / INDEX_FILE).read_text(encoding="utf-8"))
     assert len(index) == 2 * N_PER_WORKER

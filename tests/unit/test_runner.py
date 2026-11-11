@@ -3,6 +3,9 @@ paired with (those fitted against its own reference), the blend of two drift mod
 under the ``interpolate`` policy, the group's binning and the per-frame isolation of the
 calibration frames."""
 
+import logging
+import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,18 +24,20 @@ from mastpipe.core.model import (
     ReferenceSolution,
 )
 from mastpipe.instruments.registry import load_instrument
+from mastpipe.io.products import read_master, write_master
+from mastpipe.pipeline import masters
 from mastpipe.pipeline.arcs import pair_arcs
-from mastpipe.pipeline.runner import (
-    RunOptions,
-    _arc_weights,
-    _arcs_for,
-    _blend_drifts,
+from mastpipe.pipeline.callib import CalibLibrary
+from mastpipe.pipeline.group import (
     _calibrated,
+    _configuration_origin,
+    _configuration_steps,
     _group_binning,
     _group_readout,
-    _usable_frames,
-    run_quicklook,
 )
+from mastpipe.pipeline.masters import _masters_hash, _usable_frames
+from mastpipe.pipeline.runner import RunOptions, RunSummary, run_quicklook
+from mastpipe.pipeline.science import _arc_weights, _arcs_for, _blend_drifts
 from mastpipe.vocab import GRATING_NAMES
 
 N_PIX = 1598
@@ -184,6 +189,91 @@ def test_blend_drifts_weights_two_models():
     assert _arc_weights([(first, 0.3), (second, 0.7)], ["aaa", "bbb"]) == pytest.approx([0.3, 0.7])
 
 
+@pytest.mark.parametrize(
+    ("usable", "scatter", "reason"),
+    [
+        ([True, True, False], 0.02, "2 usable arc fibers, min_fibers is 3"),
+        ([True, True, True], 0.5, "scatter 0.500 px exceeds max_scatter_px 0.05"),
+    ],
+)
+def test_unusable_drift_warning_counts_the_fibers_once(monkeypatch, caplog, usable, scatter, reason):
+    """A drift model that is not usable is warned about once per arc: the gate's reason
+    (with its own number, usable fibers or scatter) once, then how many arc fibers there
+    were, and no number repeated."""
+    from mastpipe.pipeline import arc_stage
+
+    fibers = {fiber: (0.2, 1e-5, 20, 0.02, ok) for fiber, ok in zip((0, 20, 44), usable, strict=True)}
+    drift = make_drift("aaa", "2026-10-01T20:00:00", [0.2], [1e-5], fibers, scatter_px=scatter, usable=False)
+    arc_traces = [SimpleNamespace(index=fiber) for fiber in fibers]
+    traceset = SimpleNamespace(by_role=lambda role: arc_traces, shape=(400, N_PIX))
+    group = SimpleNamespace(
+        effective=None,
+        layout=None,
+        out_dir=None,
+        preset="survey45",
+        traces=lambda: traceset,
+        injected_masters=dict,
+        drift_params=DriftParams(max_scatter_px=0.05),
+        arcs=[],
+        run_configured=frozenset(),
+    )
+    monkeypatch.setattr(arc_stage, "_reference_for", lambda group, at_time: make_reference("r1", "2026-10-01T18:00:00"))
+    monkeypatch.setattr(arc_stage, "TraceSet", lambda **kwargs: None)
+    monkeypatch.setattr(arc_stage, "_arc_lines", lambda *args, **kwargs: SimpleNamespace(tables=[None] * len(fibers)))
+    monkeypatch.setattr(arc_stage, "fit_drift", lambda *args: drift)
+    monkeypatch.setattr(arc_stage, "_write_qc", lambda *args: None)
+    ref = FrameRef(path=Path("aaa.fits"), extension=0, meta=make_meta("2026-10-01T20:00:00", "aaa"))
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        arc_stage._cal_arc(group, ref)
+    (message,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert message.startswith("drift arc aaa.fits: model not usable: ")
+    assert message.count(reason) == 1 and message.endswith("; 3 arc fibers")
+    assert message.count("usable arc fibers") == (1 if "min_fibers" in reason else 0)
+    assert message.count("scatter ") == (1 if "max_scatter" in reason else 0)  # the scatter value
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_full_arc_records_where_its_configuration_came_from(monkeypatch, configured):
+    """A full arc given ``--configuration`` by the run carries the provenance step on the
+    reference it is solved into, and ``configuration_origin`` ``run`` in its ``wref`` QC;
+    one whose header named its grating carries no step and ``frame``."""
+    from mastpipe.pipeline import arc_stage
+
+    meta = make_meta("2026-10-01T20:00:00", "aaa", "arc")
+    previous = make_reference("r1", "2026-10-01T18:00:00")
+    added, qc = [], []
+    library = SimpleNamespace(
+        reference_for_source=lambda *args: None,
+        find_reference=lambda *args: previous,
+        add_reference=lambda solution, prov, camera: added.append(prov) or Path("new_wref.fits"),
+    )
+    group = SimpleNamespace(
+        effective=SimpleNamespace(instrument="highspec", configuration="Mg", camera="main"),
+        library=library,
+        options=SimpleNamespace(force=False),
+        layout=None,
+        out_dir=None,
+        preset="survey45",
+        traces=lambda: None,
+        injected_masters=dict,
+        summary=RunSummary(),
+        run_configured=frozenset({(meta.source, meta.extension)}) if configured else frozenset(),
+    )
+    lines = SimpleNamespace(traceset=[])
+    solution = SimpleNamespace(identifier="r2", valid_from="2026-10-01T20:00:00", solutions={})
+    monkeypatch.setattr(arc_stage, "_arc_lines", lambda *args, **kwargs: lines)
+    monkeypatch.setattr(arc_stage, "_solve_and_package", lambda *args: solution)
+    monkeypatch.setattr(arc_stage, "_provenance", lambda effective, lines, steps, layout: SimpleNamespace(steps=steps))
+    monkeypatch.setattr(arc_stage, "_write_qc", lambda group, name, stage, values: qc.append((stage, values)))
+    arc_stage._full_arc(group, FrameRef(path=Path("aaa.fits"), extension=0, meta=meta))
+    (prov,) = added
+    step = "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
+    assert (step in prov.steps) is configured
+    assert prov.steps[-1] == "wavecal seeded by reference r1"
+    ((stage, values),) = qc
+    assert stage == "reference" and values["configuration_origin"] == ("run" if configured else "frame")
+
+
 # ------------------------------------------------------------- no silent configuration
 
 
@@ -202,10 +292,45 @@ def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_pa
     fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
     message = "configuration unknown; pass --configuration one of ['Mg']"
-    assert summary.failed == [("group main/None", message)]
+    assert summary.failed == [("group main/(no configuration)", message)]
     assert sorted(load_instrument("highspec").configurations) == ["Mg"]
     assert set(GRATING_NAMES) - {"Mg"}  # names the fleet knows but highspec cannot reduce
     assert summary.products == [] and summary.qc == []
+
+
+def test_configuration_option_leaves_a_frame_naming_another_grating_alone(sim_night, tmp_path):
+    """``--configuration`` names the grating of a frame whose header names none; a frame
+    whose GRATING card names another grating keeps its own and is grouped under it (here a
+    grating HighSpec does not define, so that group fails on its own)."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    with fits.open(sim_dir / "sim_bias_00.fits") as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    header["GRATING"] = "Ca"
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_ca.fits")
+    del header["GRATING"]
+    fits.PrimaryHDU(data, header).writeto(folder / "frame_none.fits")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg"))
+    failed = dict(summary.failed)
+    assert sorted(failed) == ["group main/Ca", "group main/Mg"]
+    assert "'Ca'" in failed["group main/Ca"]
+
+
+def test_configuration_steps_name_the_run_option_only_for_frames_it_configured():
+    """The provenance step and the QC origin of a frame given ``--configuration`` by the
+    run (:func:`~mastpipe.pipeline.group._configuration_steps`), and of one whose header or
+    manifest named its grating."""
+    configured = make_meta("2026-10-01T20:00:00", "aaa", "science")
+    named = make_meta("2026-10-01T20:00:00", "bbb", "science")
+    group = SimpleNamespace(run_configured=frozenset({(configured.source, configured.extension)}))
+    assert _configuration_steps(group, configured) == [
+        "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
+    ]
+    assert _configuration_origin(group, configured) == "run"
+    assert _configuration_steps(group, named) == []
+    assert _configuration_origin(group, named) == "frame"
 
 
 # ------------------------------------------------------------------ assumed time zone
@@ -324,9 +449,25 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
     summary = run_quicklook(folder, tmp_path / "out", options)
     assert summary.skipped == [
         "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
-        "manifest row 0: nothing.fits: matches no frame",
+        "manifest row 0 (nothing.fits): matches no frame",
     ]
-    assert [source for source, _ in summary.failed] == ["group main/None"]
+    assert [source for source, _ in summary.failed] == ["group main/(no configuration)"]
+
+
+def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_path):
+    """A row naming a file that exists but is not a FITS file name is skipped as such, not
+    as matching no frame."""
+    sim_dir, _ = sim_night
+    folder = tmp_path / "night"
+    folder.mkdir()
+    shutil.copy(sim_dir / "sim_bias_00.fits", folder / "sim_bias_00.fits")
+    (folder / "notes.txt").write_text("bias taken with the dome closed\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("source,lamp_state\nnotes.txt,off\nnothing.fits,off\n", encoding="utf-8")
+    summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", manifest=manifest))
+    assert "manifest row 0 (notes.txt): not a FITS file (.fits, .fit, .fits.fz)" in summary.skipped
+    assert "manifest row 1 (nothing.fits): matches no frame" in summary.skipped
+    assert not any(row.startswith("manifest row 0") and "matches no frame" in row for row in summary.skipped)
 
 
 # ------------------------------------------------------------ calibration frames, binning
@@ -495,3 +636,94 @@ def test_background_master_without_exposure_time_is_not_subtracted(tmp_path):
     frame, steps = _calibrated(group, ref)
     assert steps[0] == "bias" and steps[1].startswith("background x 0.5")
     assert np.allclose(frame.data, 500.0 - 30.0 * 0.5)
+
+
+# ------------------------------------------------------------------- masters and library
+
+CALIB_OPTIONS = RunOptions("highspec", layout="survey45")
+
+
+def calibration_night(sim_dir: Path, folder: Path, kinds: tuple[str, ...] = ("bias", "flat")) -> Path:
+    """A night folder holding only the simulated night's frames of ``kinds``: the masters
+    and the traces are reduced, nothing else."""
+    folder.mkdir()
+    for kind in kinds:
+        for path in sorted(sim_dir.glob(f"sim_{kind}_*.fits")):
+            shutil.copy(path, folder / path.name)
+    return folder
+
+
+def library_master(out: Path, kind: str) -> Path:
+    (entry,) = CalibLibrary(out / "calib").list(kind=kind)
+    return out / "calib" / entry["path"]
+
+
+def test_library_flat_is_reused_only_with_the_same_masters_content(sim_night, tmp_path):
+    """A library flat records the hash of the checksums of the masters it was calibrated
+    with (``MPMKH``) and is reused only when the group's masters hash the same: a bias
+    rewritten under the same name rebuilds it, and so does, once, a flat written before
+    the hash was recorded. The trace set built on the flat carries the checksum of the
+    flat's first input frame in its name, as the flat does, not ``nosum``."""
+    folder = calibration_night(sim_night[0], tmp_path / "night")
+    out = tmp_path / "out"
+    first = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert first.failed == []
+    bias_path, flat_path = library_master(out, "bias"), library_master(out, "flat")
+    bias, _ = read_master(bias_path)
+    flat, flat_prov = read_master(flat_path)
+    assert flat_prov.masters_hash == _masters_hash({"bias": (bias, bias_path)})
+    (traces,) = (out / "calib").glob("*_traces.fits")
+    assert traces.name.split("_")[4] == flat_path.name.split("_")[4] == flat.provenance["inputs"][0][:6]
+
+    # nothing changed: the flat is reused
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+
+    # another bias under the same file name (and the same index entry): the bias is
+    # reused as it stands, the flat calibrated with the old one is built again
+    _, bias_prov = read_master(bias_path)
+    write_master(bias_path, replace(bias, data=bias.data + 1.0), bias_prov)
+    changed = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert changed.failed == []
+    assert bias_path not in changed.products and flat_path in changed.products
+    assert read_master(flat_path)[1].masters_hash == _masters_hash({"bias": (bias, bias_path)})
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+
+    # a flat written before the masters hash was recorded is built again once
+    with fits.open(flat_path, mode="update") as hdul:
+        del hdul[0].header["MPMKH"]
+    assert flat_path in run_quicklook(folder, out, CALIB_OPTIONS).products
+    assert flat_path not in run_quicklook(folder, out, CALIB_OPTIONS).products
+    # every run, rebuild or reuse, wrote the flat's trace set under the one name
+    assert list((out / "calib").glob("*_traces.fits")) == [traces]
+
+
+def test_flat_batch_is_chosen_among_the_frames_that_survive(sim_night, tmp_path, monkeypatch):
+    """The flats are batched by exposure time and the batch with the most frames that load
+    and calibrate is stacked, as for the other kinds: three 5 s flats of which two fail
+    their calibration lose to two 8 s flats. A flat whose calibration raises is recorded
+    in ``failed`` with the error."""
+    sim_dir, _ = sim_night
+    folder = calibration_night(sim_dir, tmp_path / "night")
+    for k, source in enumerate(("sim_flat_00.fits", "sim_flat_01.fits")):
+        with fits.open(sim_dir / source) as hdul:
+            data, header = hdul[0].data.copy(), hdul[0].header.copy()
+        header["EXPOSURE"] = 8.0
+        header["DATE-OBS"] = f"2026-10-01T20:0{k}:00"
+        fits.PrimaryHDU(data, header).writeto(folder / f"sim_flat_long_{k}.fits")
+    real = masters.calibrate_frame
+
+    def calibrate(frame, *args, **kwargs):
+        if frame.meta.source in ("sim_flat_00.fits", "sim_flat_01.fits"):
+            raise RuntimeError("calibration refused")
+        return real(frame, *args, **kwargs)
+
+    monkeypatch.setattr(masters, "calibrate_frame", calibrate)
+    out = tmp_path / "out"
+    summary = run_quicklook(folder, out, CALIB_OPTIONS)
+    assert summary.failed == [
+        ("sim_flat_00.fits", "RuntimeError: calibration refused"),
+        ("sim_flat_01.fits", "RuntimeError: calibration refused"),
+    ]
+    flat, prov = read_master(library_master(out, "flat"))
+    assert flat.validity["exposure_time"] == 8.0
+    assert flat.n_frames == 2 and len(prov.inputs) == 2

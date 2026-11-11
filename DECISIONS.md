@@ -398,17 +398,77 @@ designer made, and from the rulings made while the plan was executed.
 - **Frames of another readout than their group are dropped per frame**: the readout key
   is `READMODE`/`OUTPTAMP` (`image/em`), the group follows the most common key among its
   science and not-yet-resolved `light` frames (as for the binning). A calibration frame
-  with another key (a bias, dark, background or flat, or a full arc competing as the
-  trace source) is left out and recorded in `skipped` with both keys, not as a failure:
-  it belongs to another set (an EM bias series beside conventional science), and
-  `build_master` refuses mixed amplifiers and would otherwise fail the whole group. A
-  science, `light` or arc frame with another key, or another binning, is a failure,
-  since it would be reduced with masters and noise of another readout. A night mixing
-  frames with and without those cards loses the uncarded ones when the group's key is
-  known.
+  with another key (a bias, dark, background or flat, or an arc competing as the trace
+  source: one called full, else one of unknown kind) is left out and recorded in
+  `skipped` with both keys, not as a failure: it belongs to another set (an EM bias
+  series beside conventional science), and `build_master` refuses mixed amplifiers and
+  would otherwise fail the whole group. A science, `light` or arc frame with another key,
+  or another binning, is a failure, since it would be reduced with masters and noise of
+  another readout. A night mixing frames with and without those cards loses the uncarded
+  ones when the group's key is known.
 - **The simulator's default jitter and gradient are deliberately small**
   (`dispersion_jitter_px = 0.3`, `drift_gradient_px = 0.05`), below what the end-to-end
   tolerances could detect, so the fixture nights reduce with stable tolerances.
   Sensitivity to fiber-identity and drift-row mistakes is proven by dedicated tests
   instead: the end-to-end swap test at a jitter of 1 px and the drift-fit test at a
   2 px gradient, which a drift flat in `y` fails.
+
+## 2026-11-10 — Tidy-up after Plan 1.5
+
+- **The quick-look runner is split into stage modules**, moved without any change of
+  logic: `pipeline.group` (run options and summary, the per-group state `_Group`, the
+  folder and policy constants, the logger and the helpers shared by the stages and the
+  runner), `pipeline.masters`, `pipeline.traces`, `pipeline.arc_stage` and
+  `pipeline.science`; `pipeline.runner` keeps the recipe's description, the group loop
+  and `run_quicklook`, and re-exports the public names. **A stage module imports
+  `pipeline.group`, never another stage or `pipeline.runner`**: a helper two stages need
+  moves to `group`.
+- **One length for every short hash**: the configuration, calibration, layout, masters
+  and reference hashes keep the first `core.hashing.HASH_LENGTH` (12) hex characters of
+  a SHA-256. `core.hashing` imports nothing, so `config`, `instruments`, `steps` and
+  `pipeline` all use it without a cycle. (Frame checksums keep their own
+  `io.ingest.CHECKSUM_LENGTH`: they identify files, not configurations.)
+- **A library flat is reused by the content of its masters, compared by checksum**: the
+  flat records `MPMKH`, the hash of the file checksums of the masters it was calibrated
+  with (`_masters_hash`, the same hash a science key carries), and is reused only when
+  the group's masters hash the same, no longer when their file names merely match. A
+  flat written before the card existed reads as unset and is **built again once** rather
+  than trusted: its provenance holds only the masters' names, which cannot prove the
+  content. Since the rebuilt flat's checksum differs, the science masters hash moves and
+  the science products of the groups whose flat is rebuilt are reduced again once (nights
+  without flats of their own are untouched): the accepted price of not trusting names.
+  The rule that a master built in this run forbids reusing the flat stays (it is now
+  redundant but cheap). A library flat taken by lookup for a night with no flats of its
+  own is deliberately not compared with this night's masters, since it was necessarily
+  calibrated with its own night's; its file checksum enters this night's masters hash,
+  so idempotence holds.
+- **The flat batch is chosen among the frames that survive**, like the other kinds: every
+  exposure-time batch is loaded and calibrated, and the one with the most survivors (the
+  longer exposure on a tie) is stacked; the losing flat batches are not stacked.
+- **A flat-derived trace set is named with the flat's first input checksum** (the one in
+  the flat's own name), through `_master_meta`, rather than `nosum`, so trace sets of one
+  stamp built on flats stacked from different frames get different names.
+- **`DriftModel.n_usable` stays `int | None`**: an omitted count is derived from
+  `per_fiber["usable"]` in `__post_init__`, which test fixtures and the reading of products
+  written before `MPDNUSE` rely on; a default of 0 would silently report zero usable
+  fibers instead, so the two `or 0` reads stay.
+- **A zone name for UTC is the `utc` keyword**: `core.times.check_timezone` reads the UTC
+  names (`core.times.UTC_NAMES`: `UTC`, `Etc/UTC`, `UCT`, `Universal`, `Zulu` and their
+  `Etc/` forms) as `utc`, and the `FrameMeta.timezone` label is computed in one place
+  (`core.times.zone_label`), so two spellings of the same clock cannot give two
+  idempotence keys. `GMT` and the `Etc/GMT` zones are deliberately left alone: they are
+  accepted as IANA zones and still label as themselves. The C2 rule (every time field
+  declares `utc`, an IANA zone or `assume-utc`) is unchanged.
+- **A `\` in a manifest `source` is always a folder separator**, so a manifest written on
+  Windows matches. The accepted loss: a file whose name contains a backslash (legal on
+  POSIX) can no longer be named in a manifest, by path or by glob.
+- **`targets` is not unresolved on a calibration frame**: a bias, dark, flat, arc or
+  background frame has no target, so listing it as unresolved was noise. A `light` or
+  `science` frame still lists it. `targets` must be a `per_unit` field of the header map
+  (ingest reads it as unit–target pairs); one value for every fiber is `target`.
+- **A manifest error is a user error, reported apart from the run's own errors**: what
+  `read_manifest` and `apply_manifest` reject in a manifest's content is an
+  `io.ingest.ManifestError` (a `ValueError` subclass, so existing callers are unchanged),
+  and `quicklook` catches that class only, printing one `FAILED:` line on stderr and
+  exiting 2. A plain `ValueError` from the reduction still ends in a traceback, since it
+  is a programming error, not the user's input.

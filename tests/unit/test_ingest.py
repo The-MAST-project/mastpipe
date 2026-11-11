@@ -2,7 +2,8 @@
 
 import csv
 import hashlib
-from pathlib import Path
+from dataclasses import replace
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 import pandas as pd
@@ -14,10 +15,12 @@ from mastpipe.core.model import FrameMeta, FrameRef
 from mastpipe.instruments.registry import load_header_map, load_instrument
 from mastpipe.io.headers import HeaderMap
 from mastpipe.io.ingest import (
+    ManifestError,
     apply_manifest,
     expected_shape,
     file_checksum,
     load_frame,
+    names_non_fits_file,
     read_manifest,
     scan_folder,
 )
@@ -48,11 +51,6 @@ def make_detector(**overrides) -> DetectorConfig:
     }
     fields.update(overrides)
     return DetectorConfig(**fields)
-
-
-@pytest.fixture
-def highspec_map() -> HeaderMap:
-    return HeaderMap.from_dict(load_header_map("highspec"))
 
 
 @pytest.fixture
@@ -105,7 +103,8 @@ def test_scan_folder_builds_refs_with_checksums(night: Path, highspec_map: Heade
     assert bias.mid_time == "2026-10-01T18:00:00"  # a zero-second exposure: start is mid
     assert bias.binning == (2, 1)  # VBIN absent: the missing axis defaults to 1
     assert bias.targets == () and bias.arc_kind is None
-    assert "targets" in bias.unresolved and "exposure_time" not in bias.unresolved
+    # a calibration frame has no target: targets is not unresolved
+    assert "targets" not in bias.unresolved and "exposure_time" not in bias.unresolved
     assert "target" not in bias.unresolved
 
     sci = refs[1].meta
@@ -199,6 +198,25 @@ def test_frame_meta_records_the_timezone_used(tmp_path: Path, highspec_map: Head
     write_manifest(manifest, [{"source": "frame.fits", "mid_time": "2026-09-09T12:00:00"}])
     (ref,) = scan_folder(tmp_path, "highspec", highspec_map, pattern="frame.fits", manifest=manifest)
     assert ref.meta.mid_time == "2026-09-09T12:00:00" and ref.meta.timezone == "utc"
+
+
+@pytest.mark.parametrize("zone", ["UTC", "Etc/UTC"])
+def test_a_utc_zone_name_labels_frames_utc(tmp_path: Path, zone: str):
+    """A map naming UTC by its IANA name labels its frames ``utc``, as ``utc`` itself does:
+    the label is part of a science product's idempotence key, so the two spellings must
+    not reduce a frame differently."""
+    write_fits(tmp_path / "frame.fits", BLANK, {"IMAGETYP": "light", "EXPOSURE": 60.0, "FRAME": "2026-09-09T11:35:24"})
+    raw = load_header_map("highspec")
+    raw["fields"]["mid_time"] = {**raw["fields"]["mid_time"], "timezone": zone}
+    (ref,) = scan_folder(tmp_path, "highspec", HeaderMap.from_dict(raw))
+    assert ref.meta.mid_time == "2026-09-09T11:35:54" and ref.meta.timezone == "utc"
+
+
+def test_assumed_utc_label_is_importable_from_ingest_and_times():
+    from mastpipe.core import times
+    from mastpipe.io import ingest
+
+    assert ingest.ASSUMED_UTC is times.ASSUMED_UTC
 
 
 def test_scan_folder_rejects_a_missing_folder(tmp_path: Path, highspec_map: HeaderMap):
@@ -478,21 +496,24 @@ def test_manifest_matches_relative_path_glob_and_unique_name(nested: Path, highs
     write_manifest(
         path,
         [
-            {"source": "highspec/acquisition-0001/*.fits", "target": "", "arc_kind": "full"},
-            {"source": "exposure-002.fits", "target": "flat lamp", "arc_kind": ""},
+            {"source": "highspec/acquisition-0001/*.fits", "target": "", "arc_kind": "full", "lamp_state": ""},
+            {"source": "exposure-002.fits", "target": "flat lamp", "arc_kind": "", "lamp_state": ""},
             {
                 "source": "highspec/acquisition-0002/exposure-001.fits",
                 "target": "star",
                 "arc_kind": "",
+                "lamp_state": "",
             },
-            {"source": "*.fits", "target": "top level only", "arc_kind": ""},
-            {"source": "**/exposure-00[12].fits", "target": "", "arc_kind": ""},
+            {"source": "*.fits", "target": "top level only", "arc_kind": "", "lamp_state": ""},
+            {"source": "**/exposure-00[12].fits", "target": "", "arc_kind": "", "lamp_state": "on"},
         ],
     )
     unmatched: list[str] = []
     new = apply_manifest(refs, read_manifest(path), unmatched)
     assert [ref.meta.arc_kind for ref in new] == ["full", None, None]
     assert [ref.meta.target_for(None) for ref in new] == [None, "star", "flat lamp"]
+    # "**/" crosses folders and "[12]" is a character class: every exposure file matches
+    assert [ref.meta.lamp_state for ref in new] == ["on", "on", "on"]
     # "*" does not cross "/": the fourth row matches nothing at the top level
     assert unmatched == ["manifest row 3: *.fits"]
 
@@ -606,3 +627,238 @@ def test_manifest_overrides_clear_unresolved(tmp_path: Path):
     # a row that overrides nothing of the unresolved fields leaves the list as it is
     other = pd.DataFrame([{"source": "x.fits", "exposure_time": "3"}], dtype=str)
     assert apply_manifest([ref], other)[0].meta.unresolved == ref.meta.unresolved
+
+
+# ------------------------------------------------- ingest and manifest fixes (tidy-up)
+
+
+def test_backslash_sources_match_as_folder_separators(nested: Path, highspec_map: HeaderMap, tmp_path: Path):
+    """A manifest written on Windows separates folders with ``\\``: it matches as ``/``,
+    for a relative path and for a glob alike."""
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    write_manifest(
+        path,
+        [
+            {"source": "highspec\\acquisition-0001\\*.fits", "lamp_state": "on"},
+            {"source": "highspec\\acquisition-0002\\exposure-002.fits", "lamp_state": "off"},
+        ],
+    )
+    unmatched: list[str] = []
+    new = apply_manifest(refs, read_manifest(path), unmatched)
+    assert unmatched == []
+    assert [ref.meta.lamp_state for ref in new] == ["on", None, "off"]
+
+
+def test_scan_folder_reports_unmatched_manifest_rows(night: Path, highspec_map: HeaderMap, tmp_path: Path):
+    """``scan_folder(manifest=...)`` fills ``unmatched`` as :func:`apply_manifest` does."""
+    path = tmp_path / "manifest.csv"
+    write_manifest(path, [{"source": "a_bias.fits", "lamp_state": "off"}, {"source": "nothing.fits", "lamp_state": "on"}])
+    unmatched: list[str] = []
+    refs = scan_folder(night, "highspec", highspec_map, manifest=path, unmatched=unmatched)
+    assert unmatched == ["manifest row 1: nothing.fits"]
+    assert refs[0].meta.lamp_state == "off"
+
+
+def test_object_zero_is_a_target(tmp_path: Path, highspec_map: HeaderMap):
+    """Only a missing card or a blank string names no target: ``OBJECT = 0`` is target ``0``."""
+    write_fits(tmp_path / "science.fits", np.ones((2, 3), dtype=np.uint16), {"EXPOSURE": 300.0, "OBJECT": 0})
+    (ref,) = scan_folder(tmp_path, "highspec", highspec_map)
+    assert ref.meta.targets == (("*", "0"),)
+    assert "targets" not in ref.meta.unresolved
+
+
+def odd_name_refs(tmp_path: Path, names: list[str]) -> list[FrameRef]:
+    meta = FrameMeta(instrument="highspec", camera="main", exposure_type="bias")
+    return [FrameRef(path=tmp_path / name, extension=0, meta=replace(meta, source=name)) for name in names]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "matched"),
+    [
+        ("f[[]1.fits", ["f[1.fits"]),
+        ("f[a&&b].fits", ["f&.fits", "fa.fits"]),
+        ("f[a||b].fits", ["f|.fits", "fa.fits"]),
+        ("f[a~~b].fits", ["f~.fits", "fa.fits"]),
+        ("f[--1].fits", ["f-.fits", "f1.fits"]),
+        ("f[!]]1.fits", ["f[1.fits"]),
+        ("f[]]1.fits", ["f]1.fits"]),
+        ("f[0-9].fits", ["f1.fits"]),
+    ],
+)
+def test_manifest_glob_classes_are_literal_where_fnmatch_is(tmp_path: Path, pattern: str, matched: list[str]):
+    """Inside ``[...]`` the characters ``re`` treats specially (``[``, a doubled ``&``,
+    ``|``, ``~``, ``-``) are literal and a leading ``]`` is a member, as in fnmatch; no
+    FutureWarning from ``re`` (an error under this suite's warning filter)."""
+    names = ["f[1.fits", "f]1.fits", "f&.fits", "f|.fits", "f~.fits", "f-.fits", "f1.fits", "fa.fits"]
+    manifest = pd.DataFrame([{"source": pattern, "lamp_state": "on"}], dtype=str)
+    new = apply_manifest(odd_name_refs(tmp_path, names), manifest)
+    assert sorted(ref.meta.source for ref in new if ref.meta.lamp_state == "on") == sorted(matched)
+
+
+def test_manifest_glob_with_a_reversed_range_names_the_row(tmp_path: Path):
+    """A class ``re`` cannot compile (a reversed range) is a ``ValueError`` naming the row
+    and the glob, like the manifest's other errors, not a bare ``re.error``."""
+    manifest = pd.DataFrame(
+        [{"source": "x.fits", "lamp_state": "on"}, {"source": "frame[9-0].fits", "lamp_state": "on"}], dtype=str
+    )
+    with pytest.raises(ValueError, match=r"manifest row 1: bad glob 'frame\[9-0\]\.fits'"):
+        apply_manifest(odd_name_refs(tmp_path, ["frame1.fits"]), manifest)
+
+
+@pytest.mark.parametrize(
+    ("rows", "match"),
+    [
+        ([{"source": "frame1.fits", "exposure": "1"}], r"unknown manifest columns \['exposure'\]"),
+        ([{"file": "frame1.fits", "lamp_state": "on"}], "needs a 'source' column"),
+        ([{"source": "frame1.fits", "targets": "1=x"}], "manifest row 0: bad targets value '1=x'"),
+        ([{"source": "frame[9-0].fits", "lamp_state": "on"}], r"manifest row 0: bad glob 'frame\[9-0\]\.fits'"),
+        ([{"source": "frame[a--b].fits", "lamp_state": "on"}], r"manifest row 0: bad glob 'frame\[a--b\]\.fits'"),
+        ([{"source": "frame1.fits", "extension": "first"}], "manifest row 0: bad extension 'first'"),
+        ([{"source": "", "lamp_state": "on"}], "manifest row 0: empty source"),
+        ([{"source": "frame1.fits", "exposure_type": "lamp"}], "manifest row 0: exposure_type"),
+        ([{"source": "twice.fits", "lamp_state": "on"}], "manifest row 0: 'twice.fits' names several files"),
+    ],
+)
+def test_manifest_errors_are_manifest_errors(tmp_path: Path, rows: list[dict], match: str):
+    """Every error in a manifest's content is a :class:`ManifestError` (a ``ValueError``)
+    naming the file or the row, so a command can report it apart from other errors."""
+    path = tmp_path / "frames.csv"
+    write_manifest(path, rows)
+    refs = odd_name_refs(tmp_path, ["frame1.fits", "a/twice.fits", "b/twice.fits"])
+    with pytest.raises(ManifestError, match=match) as excinfo:
+        apply_manifest(refs, read_manifest(path))
+    assert isinstance(excinfo.value, ValueError)
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (b"", "frames.csv: not a readable UTF-8 CSV file"),
+        (b"source,lamp_state\nframe1.fits,on\nframe2.fits,on,extra\n", "frames.csv: .*Expected 2 fields"),
+        (b"source,lamp_state\nframe\xe9.fits,on\n", "frames.csv: .*utf-8"),
+    ],
+)
+def test_unreadable_manifest_is_a_manifest_error(tmp_path: Path, content: bytes, match: str):
+    """A manifest pandas cannot read as UTF-8 CSV (empty, a later row with more cells than
+    the header, not UTF-8) is a :class:`ManifestError` naming the file; a missing one stays
+    ``FileNotFoundError``."""
+    path = tmp_path / "frames.csv"
+    path.write_bytes(content)
+    with pytest.raises(ManifestError, match=match):
+        read_manifest(path)
+    with pytest.raises(FileNotFoundError):
+        read_manifest(tmp_path / "missing.csv")
+
+
+def test_manifest_rows_longer_than_the_header_are_a_manifest_error(tmp_path: Path):
+    """When every data row has one cell more than the header (a trailing comma, say),
+    pandas would make the first column the index and shift the others, so that ``source``
+    holds the second cell and the manifest silently matches nothing: an error instead."""
+    path = tmp_path / "frames.csv"
+    path.write_text("source,lamp_state\nframe1.fits,on,\nframe2.fits,off,\n", encoding="utf-8")
+    with pytest.raises(ManifestError, match="frames.csv: rows have more cells than the header"):
+        read_manifest(path)
+
+
+def test_manifest_path_that_cannot_be_read_is_a_manifest_error(tmp_path: Path):
+    """A manifest path that is a folder (or otherwise cannot be opened) is a
+    :class:`ManifestError` naming it; a missing file stays ``FileNotFoundError``."""
+    folder = tmp_path / "frames.csv"
+    folder.mkdir()
+    with pytest.raises(ManifestError, match="frames.csv: cannot be read"):
+        read_manifest(folder)
+
+
+def test_logical_object_card_names_no_target(tmp_path: Path, highspec_map: HeaderMap):
+    """A logical card (``OBJECT = F``, ``OBJ01 = T``) is not a target name: the frame
+    has no target, and ``targets`` stays unresolved."""
+    write_fits(tmp_path / "science.fits", BLANK, {"EXPOSURE": 300.0, "OBJECT": False})
+    write_fits(tmp_path / "unit.fits", BLANK, {"EXPOSURE": 300.0, "OBJ01": True})
+    metas = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    for source in ("science.fits", "unit.fits"):
+        assert metas[source].targets == (), source
+        assert "targets" in metas[source].unresolved, source
+
+
+def test_calibration_frames_do_not_list_targets_as_unresolved(tmp_path: Path, highspec_map: HeaderMap):
+    """A calibration frame has no target to resolve; a science or ``light`` frame without
+    one still lists ``targets``."""
+    for name, imagetyp in (("bias", "Bias"), ("dark", "Dark"), ("flat", "Flat"), ("arc", "Arc"), ("light", "Light")):
+        write_fits(tmp_path / f"{name}.fits", BLANK, {"IMAGETYP": imagetyp, "EXPOSURE": 5.0})
+    metas = {ref.meta.source: ref.meta for ref in scan_folder(tmp_path, "highspec", highspec_map)}
+    assert [metas[f"{name}.fits"].exposure_type for name in ("bias", "dark", "flat", "arc", "light")] == [
+        "bias",
+        "dark",
+        "flat",
+        "arc",
+        "light",
+    ]
+    for name in ("bias", "dark", "flat", "arc"):
+        assert "targets" not in metas[f"{name}.fits"].unresolved, name
+    assert "targets" in metas["light.fits"].unresolved
+    # a manifest row that makes the frame a calibration frame clears it too
+    manifest = pd.DataFrame([{"source": "light.fits", "exposure_type": "flat"}], dtype=str)
+    (flat,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "light.fits"], manifest
+    )
+    assert flat.meta.exposure_type == "flat" and "targets" not in flat.meta.unresolved
+    # and one that makes a calibration frame a science frame without a target lists it,
+    # as a header-classified science frame does
+    manifest = pd.DataFrame([{"source": "bias.fits", "exposure_type": "science"}], dtype=str)
+    (science,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "bias.fits"], manifest
+    )
+    assert science.meta.exposure_type == "science" and science.meta.unresolved.count("targets") == 1
+    # a row that also names the target leaves nothing to resolve
+    manifest = pd.DataFrame([{"source": "bias.fits", "exposure_type": "science", "target": "HD 1"}], dtype=str)
+    (science,) = apply_manifest(
+        [ref for ref in scan_folder(tmp_path, "highspec", highspec_map) if ref.meta.source == "bias.fits"], manifest
+    )
+    assert "targets" not in science.meta.unresolved
+
+
+def test_other_instrument_mef_is_skipped_once_per_file(tmp_path: Path, highspec_map: HeaderMap):
+    primary = fits.PrimaryHDU()
+    primary.header["INSTRUME"] = "Deepspec"
+    hdus = [fits.ImageHDU(BLANK, name=band) for band in ("I", "G", "R", "U")]
+    fits.HDUList([primary, *hdus]).writeto(tmp_path / "deepspec.fits")
+    skipped: list[tuple[str, str]] = []
+    assert scan_folder(tmp_path, "highspec", highspec_map, skipped=skipped) == []
+    assert skipped == [("deepspec.fits", "instrument 'deepspec' is not 'highspec'")]
+
+
+def test_manifest_row_naming_a_file_that_is_not_scanned(nested: Path, highspec_map: HeaderMap, tmp_path: Path, monkeypatch):
+    """:func:`apply_manifest` reads no file: every row matching no frame is in
+    ``unmatched``. :func:`names_non_fits_file` tells the rows naming an existing file
+    whose name is not a FITS file name (so the scan never read it) from those naming
+    nothing; a hidden file, a glob and a source outside the folder name none."""
+    (nested / "highspec" / "acquisition-0001" / "exposure-001.fts").write_bytes(b"")
+    (nested / ".notes.txt").write_bytes(b"")
+    refs = scan_folder(nested, "highspec", highspec_map)
+    path = tmp_path / "manifest.csv"
+    sources = [
+        "highspec/acquisition-0001/exposure-001.fts",
+        "exposure-001.fts",
+        "seq.txt",
+        "nothing.fits",
+        "highspec/acquisition-0001/exposure-001.fits",
+    ]
+    write_manifest(path, [{"source": source, "lamp_state": "on"} for source in sources[:4]])
+    unmatched: list[str] = []
+    apply_manifest(refs, read_manifest(path), unmatched)
+    assert unmatched == [f"manifest row {index}: {source}" for index, source in enumerate(sources[:4])]
+    assert [names_non_fits_file(nested, source) for source in sources] == [True, True, True, False, False]
+    assert names_non_fits_file(nested, "highspec\\acquisition-0001\\exposure-001.fts")  # a Windows separator
+    # hidden, a glob, outside the folder, rooted, or naming a drive: none names a file of
+    # the folder. Python 3.11 on Windows refuses a drive in an rglob pattern; simulated here
+    rglob = Path.rglob
+
+    def windows_rglob(self, pattern):
+        if PureWindowsPath(pattern).drive:
+            raise NotImplementedError("Non-relative patterns are unsupported")
+        return rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", windows_rglob)
+    for source in (".notes.txt", "*.fts", "../night/seq.txt", "/seq.txt", "\\seq.txt", "C:seq.txt", "C:/seq.txt"):
+        assert not names_non_fits_file(nested, source), source

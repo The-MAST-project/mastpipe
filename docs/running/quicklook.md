@@ -44,13 +44,23 @@ Per camera and grating found in the folder:
   against the frame's reference, and within `drift.max_age_hours` (default 12)
   qualify. With none, the frame gets status `reference`.
 
-`--configuration Mg | Halpha | Ca`
+`--configuration Mg`
 : The grating of frames whose header does not name it (no `GRATING` card and
-  no grating alias in the file name). The control software writes no such card
-  today, so a night from the site needs this option; without it those frames
-  are not reduced and the run fails with the list of the instrument's
-  configurations. A frame that names its grating keeps it; one that does not
-  takes this one, and its products, masters and library entries are named by it.
+  no grating alias in the file name). HighSpec ships one configuration today,
+  `Mg`; the fleet also names `Halpha` and `Ca`, which become valid here once their
+  grating files are added under `instruments/highspec/gratings/`. The control
+  software writes no such card today, so a night from the site needs this
+  option; without it those frames are not reduced and their group,
+  `group main/(no configuration)`, fails with the list of the instrument's
+  configurations. A frame that names its grating
+  (in its header, its file name or a manifest row) keeps it, even a grating
+  other than this one; one that does not takes this one, and its products,
+  masters and library entries are named by it. Such a frame's product records
+  where its grating came from: the provenance step `configuration Mg from the
+  run's --configuration (none in the header, file name or manifest)`, and
+  `configuration_origin` in its QC file (`run`, or `frame` for a grating the
+  frame itself named; in the QC of every science frame, full arc and drift
+  arc).
 
 `--manifest file.csv`
 : Metadata overrides by relative path, glob pattern or file name; see
@@ -85,8 +95,9 @@ included), the reference solution's hash, the sorted checksums of the drift
 arcs it would use, the layout preset and the hash of its CSV file, a hash of
 the masters used and the frame's time zone. A product whose key changed is
 reduced again. Masters the calibration library already holds, stacked from
-the same frames with the same `calib` parameters and detector, are reused
-rather than rebuilt; `--force` rebuilds them. The case this is built for: the
+the same frames with the same `calib` parameters and detector (and, for a
+flat, calibrated with masters of the same content), are reused rather than
+rebuilt; `--force` rebuilds them. The case this is built for: the
 first science frames of a night are reduced before any calibration-fiber arc
 exists and get status `reference`; when the night's first arc lands and the
 quick-look runs again, those frames are reduced once more and become
@@ -97,7 +108,10 @@ quick-look runs again, those frames are reduced once more and become
 The console shows one line per product and a summary; the log in `out/logs/`
 has everything with timestamps. The exit status is 0 when every frame was
 reduced or skipped as up to date, 2 when anything failed, when the folder held
-no readable frame, or when it does not exist. Skipped frames and failures are
+no readable frame, when it or the manifest does not exist, or when the manifest
+has an error. The last three stop the run with one `FAILED:` line on stderr
+naming the folder, the file or the row (see
+[The manifest](night-folder.md#the-manifest)). Skipped frames and failures are
 listed with their reasons; see [Troubleshooting](troubleshooting.md).
 
 ## Running on a laptop afterwards

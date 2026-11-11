@@ -2,6 +2,117 @@
 
 ## 0.0.1 (unreleased)
 
+- Upgrade notes: what re-running `quicklook` into an output folder written by an earlier
+  version costs. A flat master built by an earlier version (no `MPMKH`) is built again
+  once, on the first run that would have reused it, and the science products of that
+  group are reduced again once (the flat's checksum enters their masters hash). Earlier
+  `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
+  map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
+  once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- Manifest errors on the command line (2026-11-11):
+  - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
+    such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on
+    stderr naming the file or the row and exit status 2, instead of a traceback. These
+    errors are `io.ingest.ManifestError`, a `ValueError` subclass; a file pandas cannot
+    read as UTF-8 CSV and an `extension` that is not an integer are now among them (they
+    were a bare pandas or `int()` error), and a rejected cell's message adds the reason;
+  - a manifest whose data rows all have one cell more than the header (a trailing comma on
+    every row, say) is a `ManifestError`; pandas made its first column the index, so
+    `source` held the second cell and the manifest silently matched nothing;
+  - a manifest path that cannot be opened (a folder, say) is a `ManifestError` naming it,
+    not a traceback; a missing manifest stays `FileNotFoundError`;
+  - a missing night folder or manifest file is reported by `quicklook` on stderr, like a
+    manifest error (it was printed on stdout); the exit status is still 2.
+- Provenance, QA and messages (2026-11-11):
+  - a frame given the run's `--configuration` (its header, file name and manifest name no
+    grating) says so: its science or reference product gains the provenance step
+    `configuration <name> from the run's --configuration (none in the header, file name or
+    manifest)`, and the QC of every science frame, full arc and drift arc gains
+    `configuration_origin` (`run` or `frame`). Neither is part of an idempotence key or a
+    reference hash, so no existing product is reduced again; a product keeps its old
+    steps until it is rewritten for another reason;
+  - a group whose frames name no configuration is labelled `group main/(no
+    configuration)` rather than `group main/None`;
+  - the anchor-panel PNG of `identify` is written atomically, like the FITS and JSON
+    products: a temporary next to it moved into place, so a failed drawing leaves no
+    partial file;
+  - `identify` and `solve` log the library masters they applied (file names) and warn
+    when a library master matches in all but detector temperature (beyond the 2 °C
+    tolerance, `callib.TEMPERATURE_TOLERANCE_C`);
+  - clearer messages: a science product's `MPDUSE` comment names the test an unusable
+    drift model failed (`write_spectra(..., drift_reason=)`); the quick-look warning for
+    an unusable drift arc gives the fiber count once (`...: <reason>; N arc fibers`); a
+    grating block with a foreign name is reported with its file name; the simulator's
+    `load_truth` names an array missing from an older `truth.npz` (`ValueError`),
+    `SimTruth.trace_shifts` raises `KeyError` naming an unknown file, and
+    `SimTruth.row_of` raises `ValueError` naming a trace id found on several layout rows
+    (it was a `KeyError` saying there was none);
+  - a manifest glob class is read as fnmatch reads it: inside `[...]`, a `[`, a doubled
+    `&`, `|` or `~`, and a `-` that starts or ends the class are literal (they raised a
+    `FutureWarning` from `re`), `[!]]` excludes `]` (it was mistranslated), and a reversed
+    range (`[9-0]`, or `[a--b]`, whose `a--` runs from `a` back to `-`) is a
+    `ManifestError` naming the manifest row and the glob, like the manifest's other
+    errors, instead of a bare `re.error`; `names_non_fits_file` is false for a rooted
+    source (`/x`) or one naming a drive (`C:x`), which Python 3.11's `rglob` refuses on
+    Windows;
+  - documented: constructing a `CalibLibrary` creates its folder and lock file (write
+    access needed), and `find_reference` reads the index without the lock, like `find`.
+- Ingest, time and metadata fixes (2026-11-11):
+  - a header-map `timezone` naming UTC by one of its IANA names (`UTC`, `Etc/UTC`, `UCT`,
+    `Universal`, `Zulu` and their `Etc/` forms; `GMT` is left alone) is read as `utc`,
+    and its frames are labelled `utc` rather than `UTC` / `Etc/UTC`. The label is part of
+    the science idempotence key, so a science product reduced under such a custom map is
+    reduced again once (its `MPTZ` becomes `utc`); the shipped HighSpec map uses
+    `assume-utc`, whose labels (`utc` for a stamp with an offset, `assumed-utc`
+    otherwise) do not change, so no HighSpec product is reduced again. The label logic
+    lives in `core.times` (`read_time`, `zone_label`, and `ASSUMED_UTC`, still importable
+    from `io.ingest`); a frame's stamp is parsed once;
+  - the simulator reads `night_start` with `core.times.to_utc`: a start with an offset is
+    converted to UTC instead of being written into the truth and headers with its offset;
+  - a manifest `source` with `\` folder separators (written on Windows) now matches;
+  - `scan_folder(manifest=..., unmatched=[...])` reports the manifest rows matching no
+    frame, as `apply_manifest` does (the runner's own path is unchanged);
+  - a manifest row naming an existing file that is not a FITS file is skipped as
+    `manifest row N (name): not a FITS file (.fits, .fit, .fits.fz)` rather than as
+    matching no frame (`io.ingest.names_non_fits_file`; `apply_manifest` reads no file);
+    a row matching no frame is skipped as `manifest row N (name): matches no frame`
+    (was `manifest row N: name: matches no frame`);
+  - a manifest row that makes a calibration frame a science (or any non-calibration)
+    frame without a target lists `targets` among its unresolved fields, as ingest does
+    for such a header;
+  - a multi-extension file of another instrument is skipped once, not once per HDU;
+  - `OBJECT = 0` is the target `0`: only a missing card, a blank string or a logical card
+    (`OBJECT = F`, likewise an `OBJnn`) names no target;
+  - a calibration frame (bias, dark, flat, arc, background, from its header or a manifest
+    row) no longer lists `targets` among its unresolved fields; a header map whose
+    `targets` field is not `per_unit` is rejected when it is loaded;
+  - a `FrameMeta` naming one telescope twice in `targets` is rejected (ingest and the
+    manifest never produce one; a hand-built one made `target_for` take the last entry);
+  - `calibrate_frame` raises on the dark path for a hand-built `CalibrationSet` with a
+    `dark_rate_variance` but no `t_dark`, instead of dropping the dark variance;
+  - `vocab.is_unit_name` and `unit_number` accept ASCII digits only and take the same
+    optional `project` argument (default `vocab.PROJECT`, `mast`) as `unit_name`.
+- Internal restructuring, no behaviour change: the quick-look runner is split into stage
+  modules (`pipeline.group`, `masters`, `traces`, `arc_stage`, `science`); the public names
+  stay importable from `mastpipe.pipeline.runner`.
+- Masters and library fixes (2026-11-10):
+  - a library flat is reused only when the masters it was calibrated with have the same
+    content (the hash of their file checksums, now recorded in the flat as `MPMKH`), not
+    merely the same file names; a flat written before this change carries no `MPMKH` and
+    is built again once, on the first run that would have reused it. The rebuilt flat's
+    file checksum changes, and with it the masters hash (`MPMKH`) of the science key, so
+    the science products of the groups whose flat is rebuilt are reduced again once;
+    nights without flats of their own, or using a library flat found by lookup, are
+    untouched;
+  - the flat batch (one exposure time) is chosen among the frames that survive loading
+    and calibration, as for the other kinds, not by its raw frame count; every flat batch
+    is now loaded and calibrated, so an unusable frame of a batch that is not chosen is
+    recorded in `failed` (as for darks and backgrounds);
+  - a trace set built on a flat is named with the flat's first input checksum instead of
+    `nosum`, so two trace sets of one stamp no longer share a name; an output folder's
+    earlier `calib/*_nosum_traces.fits` and `qa/*_nosum_traces.json` files stay beside the
+    new ones (the rename alone reduces no science product again: the trace set's name is
+    not part of the science key).
 - Review fixes (2026-11-08):
   - a background master whose inputs carried no exposure time no longer fails every
     frame of the group with "background subtraction requested ..."; the frames take the
@@ -90,10 +201,10 @@
   night is still reduced. A calibration frame of another readout (a full-arc trace
   candidate included) is left out and recorded in `skipped`, not as a failure; a
   science, `light` or arc frame of another binning or readout fails. A failing full-arc
-  candidate is recorded and skipped. Products, masters, references, indexes and QC files are written
-  atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>` temporary moved into place),
-  and the calibration library's index is read and updated under a lock on `index.lock`
-  (`io.atomic.locked`).
+  candidate is recorded and skipped. Products, masters, references, indexes and QC files
+  are written atomically (`io.atomic.atomic_write`, a `<name>.tmp-<pid>-<random>`
+  temporary moved into place), and the calibration library's index is read and updated
+  under a lock on `index.lock` (`io.atomic.locked`).
 - Idempotence: a science product's key covers the frame's checksum, the configuration
   hash (time policy and every override included), the reference solution's hash
   (`MPWREFH`), the drift arcs' checksums, the layout preset and its file's hash
@@ -213,9 +324,9 @@
   shift between two position combs), `match_layout` (global shift, one-to-one assignment by
   distance, `missing`/`extra`), `trace_source` (flat, else full arc), `classify_arc` (`full` /
   `calfiber` / `unknown` from the traces lit above a noise floor and a fraction of the
-  brightest, after a spatial running-median baseline) and `relative_throughput`; `TraceParams.collapse`
-  (`median` / `mean` / `percentile`) picks the band statistic, the percentile seeing a
-  line-only arc when there is no flat.
+  brightest, after a spatial running-median baseline) and `relative_throughput`;
+  `TraceParams.collapse` (`median` / `mean` / `percentile`) picks the band statistic, the
+  percentile seeing a line-only arc when there is no flat.
 - Extraction step (`mastpipe.steps.extract`): `aperture_weights` (`round`, `floor` and
   `subpixel` apertures carrying `2·hw + 1` rows of weight), `extract_aperture` (weighted sum
   or mean per column along each trace with its propagated error; a column is masked below

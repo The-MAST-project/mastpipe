@@ -425,13 +425,14 @@ def test_drift_n_usable_round_trips_and_mpduse_says_why(tmp_path):
     )
     drift = replace(make_drift(), usable=False, n_usable=2)
     path = tmp_path / product_name(META, "spec")
-    write_spectra(path, es, make_provenance(), drift)
+    write_spectra(path, es, make_provenance(), drift, drift_reason="2 usable arc fibers, min_fibers is 3")
     _, _, back = read_spectra(path)
     assert back is not None and back.n_usable == 2 and back.usable is False
     with fits.open(path, mode="update") as hdul:
         header = hdul["DRIFT"].header
         assert header["MPDNUSE"] == 2 and header["MPDUSE"] is False
-        assert "2 usable arc fibers" in header.comments["MPDUSE"]
+        # the comment names the gate that failed (the thresholds are in the drift QC)
+        assert header.comments["MPDUSE"] == "2 usable arc fibers, min_fibers is 3"
         del header["MPDNUSE"]
     # a product written before the card existed derives the count from the fiber table
     _, _, back = read_spectra(path)

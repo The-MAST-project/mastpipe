@@ -1,6 +1,8 @@
 """Tests for the synthetic-night simulator, checked against the truth it writes."""
 
 import re
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -167,6 +169,23 @@ def test_simulate_night_writes_expected_frames(sim_night, highspec_effective):
     assert dict(science_meta.targets) == expected
     arc_header = fits.getheader(frame_path(out_dir, truth, "arc"))
     assert not any(f"OBJ{n:02d}" in arc_header for n in range(1, 21))
+
+
+def test_truth_errors_name_what_is_missing(sim_night, tmp_path):
+    """A truth file written before an array existed names the array; an unknown frame and
+    a trace id on several layout rows are named too."""
+    out_dir, truth = sim_night
+    shutil.copy(out_dir / "truth.json", tmp_path / "truth.json")
+    with np.load(out_dir / "truth.npz") as arrays:
+        kept = {name: arrays[name] for name in arrays.files if name != "B_per_trace"}
+    np.savez(tmp_path / "truth.npz", **kept)
+    with pytest.raises(ValueError, match="truth.npz: no array 'B_per_trace'"):
+        load_truth(tmp_path)
+    with pytest.raises(KeyError, match="no frame 'nothing.fits' in the truth"):
+        truth.trace_shifts("nothing.fits")
+    doubled = replace(truth, layout=truth.layout.assign(trace=0))
+    with pytest.raises(ValueError, match="trace id 0 is on 45 layout rows"):
+        doubled.row_of(0)
 
 
 def test_truth_roundtrip(sim_night, highspec_effective):
@@ -391,7 +410,8 @@ def test_simulated_traces_have_distinct_dispersions(sim_night, highspec_effectiv
             geometry,
         )
         np.testing.assert_allclose(truth.line_pixels[i], expected, atol=1e-9)
-    # the per-trace maps differ by up to twice the jitter on the chip
+    # on the chip each trace's map is within twice the jitter of the nominal one (centre
+    # plus edge), so two traces' maps differ by up to four times the jitter
     on = truth.lines_on_chip
     spread = np.ptp(truth.line_pixels[:, on], axis=0)
     assert spread.max() <= 4 * jitter and spread.min() > 0.1
@@ -502,3 +522,14 @@ def test_swapped_fibers_swap_their_spectra_not_the_truth(tmp_path, highspec_effe
         np.testing.assert_array_equal(fits.getdata(tmp_path / "d" / name), fits.getdata(out_dir / name), err_msg=name)
     with pytest.raises(ValueError, match="swap_fibers"):
         simulate_night(highspec_effective, renumbered, mg_lines, tmp_path / "e", swap_fibers=(1, 3), **kwargs)
+
+
+def test_night_start_with_an_offset_is_converted_to_utc(tmp_path, highspec_effective, survey_layout, mg_lines):
+    """``night_start`` is read as every time is (``core.times.to_utc``): UTC unless it
+    carries an offset, which is honoured; the truth and the headers stay naive UTC."""
+    kwargs = dict(seed=1, n_bias=1, n_dark=0, n_flat=0, n_full_arc=0, n_cal_arc=0, n_science=0, n_background=0)
+    truth = simulate_night(
+        highspec_effective, survey_layout, mg_lines, tmp_path, night_start="2026-10-01T20:00:00+02:00", **kwargs
+    )
+    assert truth.frames.mid_time.tolist() == ["2026-10-01T18:00:00"]
+    assert fits.getheader(tmp_path / truth.frames.file.iloc[0])["DATE-OBS"] == "2026-10-01T18:00:00"

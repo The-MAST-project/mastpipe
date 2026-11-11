@@ -14,7 +14,14 @@ meet and what to do.
 
 "no readable frame in the night folder" / "night folder … is not a directory"
 : The path is wrong, or the folder has no FITS astropy can open. The command
-  exits with status 2.
+  exits with status 2 (a missing folder is reported on stderr, before the run
+  starts).
+
+"FAILED: frames.csv: …" / "FAILED: manifest row N: …"
+: The manifest given with `--manifest` has an error: the file is not UTF-8 CSV, a
+  column is missing or unknown, or row N has a bad source, glob, extension or value.
+  Nothing is reduced and the command exits with status 2. Fix the file or the row
+  named (see [The manifest](night-folder.md#the-manifest)).
 
 "FAILED <file>: …"
 : An exception in that frame's reduction; the traceback is in the log. The

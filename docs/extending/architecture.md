@@ -55,12 +55,16 @@ pipeline's vocabulary; nothing downstream sees a raw header. `io.products`
 writes and reads every product as FITS with provenance cards and gives back
 the same dataclasses the steps produce. `io.qa` draws figures.
 
-`pipeline.runner` chains the steps per recipe, holds the per-group state
-(masters, traces, drift models), decides what to reduce and what to skip, and
-writes. `pipeline.callib` is the calibration library on disk. `pipeline.arcs`
-pairs science frames with drift arcs by time. `pipeline.identify` is the
-attended bootstrap of a reference. `pipeline.provenance` builds the header
-cards. `pipeline.commands` registers the CLI sub-commands.
+`pipeline.runner` chains the stages per recipe, decides what to reduce and what
+to skip, and writes. The quick-look's stages live in their own modules —
+`pipeline.masters`, `pipeline.traces`, `pipeline.arc_stage` and
+`pipeline.science` — over the per-group state (masters, traces, drift models)
+and shared helpers of `pipeline.group`; a stage module imports `pipeline.group`,
+never another stage or the runner. `pipeline.callib` is the calibration library
+on disk. `pipeline.arcs` pairs science frames with drift arcs by time.
+`pipeline.identify` is the attended bootstrap of a reference.
+`pipeline.provenance` builds the header cards. `pipeline.commands` registers the
+CLI sub-commands.
 
 ## Configuration layering
 

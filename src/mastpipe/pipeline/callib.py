@@ -55,6 +55,8 @@ LOCK_FILE = "index.lock"
 """The advisory lock file next to the index, taken for every read-modify-write of it."""
 REFERENCE_KIND = "reference"
 """The ``kind`` of a reference entry; masters carry their ``MasterCalib.kind``."""
+TEMPERATURE_TOLERANCE_C = 2.0
+"""Default of :meth:`CalibLibrary.find`'s ``temperature_tolerance``, degrees C."""
 
 
 def registry_geometry(camera: str) -> Any:
@@ -79,7 +81,12 @@ def _entry_readout_key(entry: dict[str, Any]) -> str:
 
 
 class CalibLibrary:
-    """Masters and references under ``root``, indexed in ``root/index.json``."""
+    """Masters and references under ``root``, indexed in ``root/index.json``.
+
+    Constructing one creates ``root`` (with its parents) and its lock file ``index.lock``
+    when they are missing, even only to look something up: it needs write access to the
+    folder. Code that must not create a library checks that ``root`` is a folder first.
+    """
 
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
@@ -180,7 +187,7 @@ class CalibLibrary:
         readout_key: str,
         configuration: str | None = None,
         temperature: float | None = None,
-        temperature_tolerance: float = 2.0,
+        temperature_tolerance: float = TEMPERATURE_TOLERANCE_C,
         near_time: str | None = None,
     ) -> tuple[MasterCalib, Path] | None:
         """The master of ``kind`` that applies, read back, with its path; ``None`` without one.
@@ -319,7 +326,10 @@ class CalibLibrary:
         otherwise the one with the latest ``valid_from`` at or before ``at_time``, or the
         latest overall when ``at_time`` is ``None``. ``None`` when no reference qualifies.
         The file is read once per library instance (``ValueError`` from
-        :func:`~mastpipe.io.products.read_reference` when it does not verify).
+        :func:`~mastpipe.io.products.read_reference` when it does not verify). Reads this
+        instance's view of the index without the lock, like :meth:`find`: a reference
+        another process added since is not seen until this instance next writes or is
+        re-created.
         """
         entries = self._reference_entries(instrument, configuration, fiber_preset)
         if identifier is not None:

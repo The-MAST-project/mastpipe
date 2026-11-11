@@ -169,6 +169,37 @@ def test_plot_anchor_panels_writes_png_and_numbers_both_panels(tmp_path):
 # ---------------------------------------------------------------------------- identify
 
 
+def test_plot_anchor_panels_writes_through_a_temporary(tmp_path, monkeypatch):
+    """The PNG is written to a temporary and moved into place: a drawing that fails part-way
+    leaves no partial file at the final name (an earlier figure there stays as it was), and
+    a successful one leaves no temporary behind."""
+    from matplotlib.figure import Figure
+
+    wave = np.linspace(513.0, 527.5, 400)
+    usable = pd.DataFrame({"wavelength": [516.0, 520.0], "usable": [True, True]})
+    obs_lines = pd.DataFrame({"x_center": [10.0, 50.0], "height": [5.0, 6.0], "use_x": [True, True]})
+    args = (wave, np.ones_like(wave), usable, np.ones(100), obs_lines, (513.0, 527.5))
+    out = tmp_path / "anchor_panels.png"
+    plot_anchor_panels(*args, out=out)
+    assert out.read_bytes().startswith(b"\x89PNG")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["anchor_panels.png"]
+    earlier = out.read_bytes()
+
+    def broken_savefig(self, fname, **kwargs):
+        Path(fname).write_bytes(b"\x89PNG partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Figure, "savefig", broken_savefig)
+    with pytest.raises(OSError, match="disk full"):
+        plot_anchor_panels(*args, out=out)
+    assert out.read_bytes() == earlier
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["anchor_panels.png"]
+    fresh = tmp_path / "new" / "anchor_panels.png"
+    with pytest.raises(OSError, match="disk full"):
+        plot_anchor_panels(*args, out=fresh)
+    assert list(fresh.parent.iterdir()) == []
+
+
 def test_identify_without_anchors_writes_panels_and_candidates(arc, survey_effective, tmp_path):
     out_dir = tmp_path / "out"
     ref, png = run_identify(arc.path, survey_effective, "survey45", out_dir, anchor_trace=0)
@@ -322,6 +353,36 @@ def test_arc_lines_reads_the_given_library(sim_night_lab3, highspec_effective, l
     assert lines.calibrations == [names["bias image/em"]]
     assert _arc_lines(ref, highspec_effective, lab3_layout, out_dir).calibrations == []
     assert not out_dir.exists()
+
+
+def test_library_masters_are_logged_and_a_bias_too_far_in_temperature_is_named(
+    sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog
+):
+    """``identify`` and ``solve`` log the masters they applied (file names), and warn when a
+    library bias is left out only because its detector temperature is beyond the tolerance."""
+    night_dir, truth = sim_night_lab3
+    names = _readout_library(night_dir, highspec_effective, tmp_path / "calib")
+    ref = _readout_ref(night_dir, truth, "em")
+    with caplog.at_level(logging.INFO, logger="mastpipe"):
+        _arc_lines(ref, highspec_effective, lab3_layout, tmp_path)
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert f"{ref.meta.source}: masters applied: {names['bias image/em']}" in infos, infos
+
+    (entry,) = [e for e in CalibLibrary(tmp_path / "calib").list("bias") if e["path"] == names["bias image/em"]]
+    stored = float(entry["detector_temperature"])
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        near = identify._library_masters(
+            tmp_path / "calib", highspec_effective, replace(ref.meta, detector_temperature=stored + 1.0)
+        )
+    assert near["bias"][1] == names["bias image/em"] and not caplog.records
+    with caplog.at_level(logging.WARNING, logger="mastpipe"):
+        far = identify._library_masters(
+            tmp_path / "calib", highspec_effective, replace(ref.meta, detector_temperature=stored + 5.0)
+        )
+    assert "bias" not in far
+    (message,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert names["bias image/em"] in message and "temperature" in message and "tolerance 2" in message, message
 
 
 def test_arc_lines_warns_of_an_unlisted_amplifier(sim_night_lab3, highspec_effective, lab3_layout, tmp_path, caplog):

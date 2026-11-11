@@ -9,6 +9,8 @@ Generated from the docstrings. Modules are grouped by layer; the *steps* are pur
 
 mastpipe
 mastpipe-core-model
+mastpipe-core-hashing
+mastpipe-core-times
 mastpipe-config-models
 mastpipe-config-loader
 mastpipe-instruments-registry
@@ -56,6 +58,11 @@ mastpipe-pipeline-callib
 mastpipe-pipeline-arcs
 mastpipe-pipeline-identify
 mastpipe-pipeline-runner
+mastpipe-pipeline-group
+mastpipe-pipeline-masters
+mastpipe-pipeline-traces
+mastpipe-pipeline-arc-stage
+mastpipe-pipeline-science
 mastpipe-pipeline-commands
 mastpipe-cli
 ```

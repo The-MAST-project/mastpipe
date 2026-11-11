@@ -94,6 +94,17 @@ def test_frame_meta_rejects_malformed_targets():
         make_meta(targets=(("mast01", 3),))
 
 
+def test_frame_meta_rejects_a_telescope_named_twice():
+    """Ingest and the manifest never name a telescope twice, but a hand-built (or
+    ``replace``-d) ``FrameMeta`` could, and ``target_for`` would then silently take the
+    last entry: it is rejected instead."""
+    with pytest.raises(ValueError, match="mast01.*twice"):
+        make_meta(targets=(("mast01", "a"), ("mast02", "b"), ("mast01", "c")))
+    with pytest.raises(ValueError, match="twice"):
+        make_meta(targets=(("*", "a"), ("*", "b")))
+    assert make_meta(targets=(("*", "a"), ("mast01", "a"))).target_for("mast01") == "a"
+
+
 def test_frame_rejects_shape_mismatch():
     data = np.zeros((4, 5), dtype=np.float32)
     with pytest.raises(ValueError, match="variance"):

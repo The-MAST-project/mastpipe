@@ -267,7 +267,8 @@ def calibrate_frame(
     calibration set's master variances, ``(1 - s)² bias_variance + s² background_variance``
     with background subtraction (``s = t / t_bkg``) and ``(1 - t / t_dark)² bias_variance +
     t² dark_rate_variance`` without (``bias_variance`` alone when the set has no
-    ``t_dark``); each absent variance counts as zero; the mask
+    ``t_dark``, and ``ValueError`` when it has a ``dark_rate_variance`` but no ``t_dark``,
+    rather than dropping that variance); each absent variance counts as zero; the mask
     marks pixels at or above ``saturation`` in the raw frame, the bias or the background
     master (when a level is given), non-finite output values and whatever ``frame.mask``
     already marks. The dark master is held as a rate, so a pixel saturated in it is not
@@ -320,6 +321,11 @@ def _master_variance(calib: CalibrationSet, t: float, subtract_background: bool)
         s = t / float(calib.t_background)  # type: ignore[arg-type]
         return (1.0 - s) ** 2 * bias + s**2 * known(calib.background_variance)
     if not calib.t_dark:
+        if calib.dark_rate_variance is not None:
+            raise ValueError(
+                "the calibration set has a dark_rate_variance but no t_dark: the dark variance cannot be "
+                "weighed (s = t / t_dark); give t_dark, the dark master's exposure time"
+            )
         return bias
     s = t / float(calib.t_dark)
     return (1.0 - s) ** 2 * bias + t**2 * known(calib.dark_rate_variance)

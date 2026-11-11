@@ -64,7 +64,7 @@ def test_theta_outside_grating_range_raises(mg: GratingGeometry):
 def test_nominal_solution_centres_lambda_center(highspec_effective, mg: GratingGeometry):
     g = mg
     x_c, B = nominal_solution(g, N_PIX)
-    assert pytest.approx(g.B_nom) == B
+    assert B == pytest.approx(g.B_nom)
     assert grating_x(g.lambda_center, x_c, B, g.alpha_rad, g) == pytest.approx(N_PIX / 2)
     # wavelength increases with x for these constants
     assert grating_x(520.0, x_c, B, g.alpha_rad, g) > grating_x(516.0, x_c, B, g.alpha_rad, g)
@@ -72,6 +72,6 @@ def test_nominal_solution_centres_lambda_center(highspec_effective, mg: GratingG
     flipped_config: GeometryConfig = highspec_effective.geometry.model_copy(update={"dispersion_sign": -1})
     flipped = grating_geometry(flipped_config, highspec_effective.detector.pixel_size_um)
     x_c2, B2 = nominal_solution(flipped, N_PIX)
-    assert pytest.approx(-g.B_nom) == B2
+    assert B2 == pytest.approx(-g.B_nom)
     assert grating_x(g.lambda_center, x_c2, B2, g.alpha_rad, g) == pytest.approx(N_PIX / 2)
     assert grating_x(520.0, x_c2, B2, g.alpha_rad, g) < grating_x(516.0, x_c2, B2, g.alpha_rad, g)

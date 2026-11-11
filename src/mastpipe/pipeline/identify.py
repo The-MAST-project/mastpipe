@@ -61,7 +61,7 @@ from mastpipe.io import products
 from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import load_frame, scan_folder
 from mastpipe.io.qa import plot_anchor_panels
-from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
+from mastpipe.pipeline.callib import TEMPERATURE_TOLERANCE_C, CalibLibrary, registry_geometry
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.atlas import (
     catalogue_arrays,
@@ -125,24 +125,35 @@ def _library_masters(root: Path, effective: EffectiveConfig, meta: FrameMeta) ->
     Each is :meth:`~mastpipe.pipeline.callib.CalibLibrary.find` on ``effective``'s camera and
     the frame's binning, readout key, detector temperature and mid-time (the nearest wins),
     as the runner chooses them; the flat must also belong to ``effective``'s configuration.
-    Empty when ``root`` is not a folder (the lookup does not create one).
+    A master left out only because its detector temperature is beyond the library's
+    tolerance (:data:`~mastpipe.pipeline.callib.TEMPERATURE_TOLERANCE_C`) is named in a
+    warning. Empty when ``root`` is not a folder (the lookup does not create one).
     """
     if not root.is_dir():
         return {}
     library = CalibLibrary(root)
     found: dict[str, tuple[MasterCalib, str]] = {}
     for kind in MASTER_KINDS:
+        keys = (kind, effective.camera, meta.binning, meta.readout_key)
+        configuration = effective.configuration if kind == "flat" else None
         match = library.find(
-            kind,
-            effective.camera,
-            meta.binning,
-            meta.readout_key,
-            configuration=effective.configuration if kind == "flat" else None,
-            temperature=meta.detector_temperature,
-            near_time=meta.mid_time,
+            *keys, configuration=configuration, temperature=meta.detector_temperature, near_time=meta.mid_time
         )
         if match is not None:
             found[kind] = (match[0], match[1].name)
+        elif meta.detector_temperature is not None:
+            # the same lookup without the temperature: a match now was rejected for it alone
+            other = library.find(*keys, configuration=configuration, near_time=meta.mid_time)
+            if other is not None:
+                log.warning(
+                    "library %s %s not used: its detector temperature %.1f C is beyond the tolerance %g C "
+                    "of the frame's %.1f C",
+                    kind,
+                    other[1].name,
+                    float(other[0].validity["detector_temperature"]),
+                    TEMPERATURE_TOLERANCE_C,
+                    meta.detector_temperature,
+                )
     return found
 
 
@@ -272,6 +283,8 @@ def _arc_lines(
         traceset = layout_indexed(matched)
     if len(traceset) == 0:
         raise ValueError(f"{ref.meta.source}: no trace found on the {source.replace('_', ' ')}")
+    if masters is None:
+        log.info("%s: masters applied: %s", ref.meta.source, ", ".join(calibrations) or "none")
     dropped = f", {len(traceset.extra)} extra dropped" if traceset.extra else ""
     steps.append(f"traces {source} ({len(traceset)} found, {len(traceset.missing)} missing{dropped})")
 

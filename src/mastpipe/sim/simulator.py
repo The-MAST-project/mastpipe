@@ -51,7 +51,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig, EffectiveConfig
+from mastpipe.core.times import to_utc
 from mastpipe.io.atomic import atomic_write
 from mastpipe.io.ingest import expected_shape as oriented_shape
 from mastpipe.steps.geometry import (
@@ -204,16 +205,23 @@ class SimTruth:
 
     def row_of(self, trace_id: int) -> int:
         """The layout row (the index into the truth arrays) of the fiber with trace id
-        ``trace_id``; ``KeyError`` when the layout has no such fiber."""
+        ``trace_id``; ``KeyError`` when the layout has no such fiber, ``ValueError`` naming
+        the id when several rows have it."""
         rows = np.flatnonzero(self.layout["trace"].to_numpy(dtype=int) == int(trace_id))
-        if rows.size != 1:
+        if rows.size == 0:
             raise KeyError(f"no layout row has trace id {trace_id}")
+        if rows.size > 1:
+            raise ValueError(f"trace id {trace_id} is on {rows.size} layout rows {rows.tolist()}")
         return int(rows[0])
 
     def trace_shifts(self, file: str) -> np.ndarray:
         """The shift (px) of every trace's content on frame ``file``, by layout row: its
-        ``shift_px`` plus ``gradient_px (y_i - ny/2) / ny``, ``y_i`` the trace's centre row."""
-        row = self.frames.loc[self.frames["file"] == file].iloc[0]
+        ``shift_px`` plus ``gradient_px (y_i - ny/2) / ny``, ``y_i`` the trace's centre row;
+        ``KeyError`` naming ``file`` when the truth has no such frame."""
+        rows = self.frames.loc[self.frames["file"] == file]
+        if rows.empty:
+            raise KeyError(f"no frame {file!r} in the truth")
+        row = rows.iloc[0]
         ny, n_pix = self.extras["shape"]
         y_center = np.array([np.polyval(c, n_pix / 2.0) for c in self.trace_coeffs])
         return trace_shift(float(row["shift_px"]), float(row["gradient_px"]), y_center, ny)
@@ -640,8 +648,9 @@ def simulate_night(
     """Write a synthetic night into ``out_dir`` and return (and save) its truth.
 
     Frames are ``sim_<type>_<nn>.fits`` at ``detector.shape``, one every ``cadence_min``
-    minutes from ``night_start`` in the order bias, dark, flat, full arc, background, then
-    one calibration-fiber arc followed by its share of the science frames, repeated
+    minutes from ``night_start`` (ISO-8601, read by :func:`~mastpipe.core.times.to_utc`:
+    UTC unless it carries an offset) in the order bias, dark, flat, full arc, background,
+    then one calibration-fiber arc followed by its share of the science frames, repeated
     ``n_cal_arc`` times (``no_cal_arcs`` writes the science frames with no such arc). The
     cadence sets each frame's mid-time (the truth table's ``mid_time``); the header's
     ``DATE-OBS`` is the exposure start, half the exposure time earlier, as the control
@@ -677,7 +686,7 @@ def simulate_night(
     lit = scene.swapped(swap_rows)
     y_center = scene.y_center
     schedule = _schedule(n_bias, n_dark, n_background, n_flat, n_full_arc, 0 if no_cal_arcs else n_cal_arc, n_science)
-    start = datetime.fromisoformat(night_start)
+    start = to_utc(night_start).tz_convert(None).to_pydatetime()  # naive UTC, like every mid_time
     kinds = [kind for _, kind in schedule]
     origin_seconds = (kinds.index("full") if "full" in kinds else 0) * cadence_min * 60.0
     end_seconds = (len(schedule) - 1) * cadence_min * 60.0
@@ -834,11 +843,15 @@ def save_truth(out_dir: Path | str, truth: SimTruth) -> None:
 
 
 def load_truth(out_dir: Path | str) -> SimTruth:
-    """Read back what :func:`save_truth` wrote."""
+    """Read back what :func:`save_truth` wrote; ``ValueError`` naming the first missing
+    array of a ``truth.npz`` written by an older simulator (simulate the night again)."""
     out_dir = Path(out_dir)
     with (out_dir / "truth.json").open(encoding="utf-8") as handle:
         payload = json.load(handle)
     with np.load(out_dir / "truth.npz") as arrays:
+        missing = [name for name in TRUTH_ARRAYS if name not in arrays.files]
+        if missing:
+            raise ValueError(f"truth.npz: no array {missing[0]!r} (written by an older simulator; simulate again)")
         loaded = {name: arrays[name] for name in TRUTH_ARRAYS}
     crop = payload["crop"]
     return SimTruth(

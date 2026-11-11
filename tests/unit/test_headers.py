@@ -201,8 +201,11 @@ def test_timezone_option_is_validated():
         return HeaderMap.from_dict(raw).fields["mid_time"]
 
     assert spec().timezone == "utc"
-    for zone in ("utc", "assume-utc", "Asia/Jerusalem", "UTC"):
+    for zone in ("utc", "assume-utc", "Asia/Jerusalem"):
         assert spec(timezone=zone).timezone == zone
+    # an IANA name for UTC is the utc keyword (core.times.check_timezone)
+    for zone in ("UTC", "Etc/UTC"):
+        assert spec(timezone=zone).timezone == "utc"
     for bad in ("Mars/Olympus", "", "../etc", 3):
         with pytest.raises(ValueError, match="timezone"):
             spec(timezone=bad)
@@ -221,11 +224,6 @@ def test_lt_on_a_non_numeric_value_does_not_match():
 
 
 # ------------------------------------------------------------- the provisional light type
-
-
-@pytest.fixture
-def highspec_map() -> HeaderMap:
-    return HeaderMap.from_dict(load_header_map("highspec"))
 
 
 def test_light_is_provisional_and_rules_refine_it(highspec_map):
@@ -333,3 +331,30 @@ def test_amplifier_is_read_and_keyed(tmp_path, highspec_map):
     assert refs["conv.fits"].readout_key == "image/conventional"
     assert refs["bare.fits"].amplifier is None
     assert refs["bare.fits"].readout_key == "image/unknown"
+
+
+def test_an_undefined_card_counts_as_absent():
+    """A FITS card with no value holds astropy's ``Undefined`` (an astropy ``Header`` hands
+    it out as ``None``, a mapping built from the cards as is): either way it is absent, the
+    next keyword is tried, and a field with nothing else is unresolved."""
+    hmap = HeaderMap.from_dict(SYNTHETIC_MAP)
+    exposure = fits.Card.fromstring("EXPOSURE=".ljust(80))
+    blank_object = fits.Card.fromstring("OBJECT  =".ljust(80))
+    assert isinstance(exposure.value, fits.card.Undefined)
+    cards = {card.keyword: card.value for card in (exposure, blank_object)}
+    header = fits.Header([exposure, blank_object, ("EXPTIME", 5.0)])
+    for mapping in ({**cards, "EXPTIME": 5.0}, header):
+        fields, unresolved = hmap.resolve(mapping, "x.fits")
+        assert fields["exposure_time"] == 5.0
+        assert fields["target"] is None and "target" in unresolved
+
+
+def test_targets_must_be_read_per_unit():
+    """Ingest reads ``targets`` as ``(unit, target)`` pairs, so a map that declares it with
+    ``keys`` (one value for the frame) is rejected when it is loaded; ``target`` is the
+    field for that."""
+    with pytest.raises(ValueError, match="targets.*per_unit"):
+        HeaderMap.from_dict({"fields": {"targets": {"keys": ["OBJECT"]}}})
+    with pytest.raises(ValueError, match="targets.*per_unit"):
+        HeaderMap.from_dict({"fields": {"targets": {"default": "sky"}}})
+    assert HeaderMap.from_dict({"fields": {"targets": {"per_unit": "OBJ{nn}"}}}).fields["targets"].per_unit

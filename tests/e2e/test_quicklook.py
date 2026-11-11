@@ -21,7 +21,7 @@ import pytest
 from astropy.io import fits
 
 from mastpipe.cli import main
-from mastpipe.config.loader import build_effective
+from mastpipe.config.loader import build_effective, parse_override
 from mastpipe.instruments import registry
 from mastpipe.instruments.registry import layout_hash, load_instrument
 from mastpipe.io.ingest import file_checksum
@@ -356,9 +356,10 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     tmp_path, night, survey_layout, mg_lines, identified, monkeypatch
 ):
     """Every part of the idempotence key reduces the night again when it changes: the time
-    policy (in the configuration hash), the layout CSV, the reference under the same
-    identifier and the masters (rebuilt by ``force`` or under other stacking parameters);
-    otherwise masters are reused."""
+    policy or a ``--set`` override (in the configuration hash), the layout CSV, the
+    reference under the same identifier and the masters (rebuilt by ``force`` or under
+    other stacking parameters); otherwise, a non-calibration override included, masters
+    are reused."""
     folder = no_cal_night(tmp_path, night, survey_layout, mg_lines, identified)
     out = tmp_path / "out"
     first = run_quicklook(folder, out, options())
@@ -382,11 +383,21 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     assert master_files(out) == masters
     assert not any(path.name in masters for path in again.products)
 
-    # (b) another time policy is another configuration: every science frame again
+    # (b) another time policy is another configuration: every science frame again, with
+    # the masters reused untouched (the calibration hash does not cover it)
     plain = config_hashes(out)
     nearest = run_quicklook(folder, out, options(time_policy="nearest"))
     assert nearest.failed == [] and sorted(nearest.reduced_again) == sources
     assert len(config_hashes(out)) == 1 and config_hashes(out) != plain
+    assert master_files(out) == masters
+    # a --set override outside `calib` likewise: the science again, the masters reused
+    nearest_hashes = config_hashes(out)
+    clip = run_quicklook(folder, out, options(parse_override("combine.clip_sigma=5")))
+    assert clip.failed == [] and sorted(clip.reduced_again) == sources
+    assert len(config_hashes(out)) == 1 and config_hashes(out) not in (plain, nearest_hashes)
+    assert master_files(out) == masters
+    assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
+    assert not any(path.name in masters for path in clip.products)
     back = run_quicklook(folder, out, options())
     assert sorted(back.reduced_again) == sources and config_hashes(out) == plain
 
@@ -422,7 +433,6 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     rehashed = run_quicklook(folder, out, options())
     assert rehashed.failed == [] and sorted(rehashed.reduced_again) == sources
     assert all(read_spectra(path)[1].reference_hash == resolved.hash for path in spec_products(out))
-    index = (out / "calib" / "index.json").read_text(encoding="utf-8")
     assert master_files(out) == masters
 
     # (e) --force rebuilds the masters (and so reduces everything again)
@@ -709,7 +719,8 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     assert not (tmp_path / "out").exists()  # nothing is written for a mistyped path
     argv = ["quicklook", str(nowhere), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
     assert main(argv) == 2
-    assert "nowhere" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == f"FAILED: night folder {nowhere} is not a directory\n"
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -723,6 +734,59 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
     assert [source for source, _ in summary.failed] == ["junk.fits", "night empty"]
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ("source,exposure\nx.fits,1\n", "frames.csv: unknown manifest columns ['exposure']"),
+        ("source,targets\nx.fits,1=x\n", "manifest row 0: bad targets value '1=x'"),
+        ("source,lamp_state\nframe[9-0].fits,on\n", "manifest row 0: bad glob 'frame[9-0].fits'"),
+    ],
+)
+def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest, message):
+    """An error in the manifest's content ends ``quicklook`` with exit code 2 and one
+    ``FAILED:`` line on stderr naming the file or the row (after the run's opening log
+    line), not a traceback."""
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    path = tmp_path / "frames.csv"
+    path.write_text(manifest, encoding="utf-8")
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--manifest", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
+    assert failed == [captured.err.splitlines()[-1]] and message in failed[0], captured.err
+
+
+def test_quicklook_reports_a_missing_manifest_on_stderr(tmp_path, capsys):
+    """A ``--manifest`` file that does not exist is reported like a missing night folder:
+    one ``FAILED:`` line on stderr, exit code 2."""
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Traceback" not in captured.err
+    failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
+    assert failed == [captured.err.splitlines()[-1]] and "missing.csv" in failed[0], captured.err
+
+
+def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
+    """Only the manifest's errors are reported as a user error: a ``ValueError`` from the
+    reduction itself still propagates."""
+
+    def broken(*args, **kwargs):
+        raise ValueError("a programming error")
+
+    monkeypatch.setattr("mastpipe.pipeline.commands.run_quicklook", broken)
+    night_dir = tmp_path / "night"
+    night_dir.mkdir()
+    argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with pytest.raises(ValueError, match="a programming error"):
+        main(argv)
 
 
 def test_unknown_frames_are_skipped_with_reason(tmp_path):
@@ -988,6 +1052,9 @@ def test_resolve_light_sorts_frames_by_content(tmp_path, night):
         rules[es.meta.source] = qc.values["classification_rule"]
         if es.meta.source != declared:
             assert any("content:continuum" in step for step in prov.steps)
+        # the GRATING card names the configuration: nothing came from the run
+        assert qc.values["configuration_origin"] == "frame"
+        assert not any("--configuration" in step for step in prov.steps)
     assert rules.pop(declared) == "manifest"
     assert set(rules.values()) == {"content:continuum"}
     log = next((out / "logs").glob("quicklook_*.log")).read_text(encoding="utf-8")
@@ -1050,6 +1117,8 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         site_night.dir, out, RunOptions("highspec", configuration="Mg", layout="survey45", library=library)
     )
     assert summary.failed == []
+    drift_qc = [read_qc(path) for path in summary.qc if path.name.endswith("_drift.json")]
+    assert drift_qc and all(qc.values["configuration_origin"] == "run" for qc in drift_qc)
     products = spec_products(out)
     assert len(products) == N_SCIENCE
     # --configuration names the grating of every frame, so nothing is filed under noconf
@@ -1065,7 +1134,7 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         labelled[site_of[es.meta.source]] = es
     site_files = site_night.truth.frames
     background = site_files.loc[site_files["exposure_type"] == "background", "file"].iloc[0]
-    assert any(item.startswith(f"{background}: ") and "content:" in item for item in summary.skipped)
+    assert any(item.startswith(f"{background}: ") and "content:no_signal" in item for item in summary.skipped)
     assert not any(background in str(p) for p in summary.products)
 
     worst = 0.0
@@ -1074,6 +1143,10 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         assert es.wavelength_status == prov.wavelength_status == "transferred"
         qc = read_qc(out / "qa" / path.with_suffix(".json").name)
         assert qc.values["classification_rule"] == "content:continuum"
+        # no GRATING card: the configuration came from the run, and both records say so
+        assert qc.values["configuration_origin"] == "run"
+        step = "configuration Mg from the run's --configuration (none in the header, file name or manifest)"
+        assert step in prov.steps
         reference = labelled.pop(es.meta.source)
         assert sorted(s.fiber for s in es.spectra) == sorted(s.fiber for s in reference.spectra)
         by_fiber = {s.fiber: s for s in reference.spectra}

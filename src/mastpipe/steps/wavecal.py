@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from mastpipe.config.models import WavecalParams
+from mastpipe.core.hashing import HASH_LENGTH
 from mastpipe.core.model import (
     LINE_COLUMNS,
     ReferenceSolution,
@@ -52,8 +53,6 @@ LINE_SET_DECIMALS = 6
 """Wavelength rounding (nm) when comparing the identified line sets of two passes."""
 HASH_DECIMALS = 9
 """Rounding of the parameters and line positions that enter the reference hash."""
-HASH_LENGTH = 12
-"""Hex digits of the reference hash."""
 AGREEMENT_COLUMNS = ("wavelength", "n_fibers", "spread_px")
 GEOMETRY_KEYS = ("d_nm", "alpha_rad", "order", "B_nom")
 """The grating constants a :class:`WavelengthSolution` records for provenance."""
@@ -369,8 +368,9 @@ def solve_full_arc(
 
 
 def solutions_hash(solutions: dict[int, WavelengthSolution]) -> str:
-    """SHA-256 (:data:`HASH_LENGTH` hex) over every solution's fiber, parameters and line
-    positions and wavelengths, rounded to :data:`HASH_DECIMALS` decimals, in fiber order."""
+    """SHA-256 (:data:`~mastpipe.core.hashing.HASH_LENGTH` hex) over every solution's fiber,
+    parameters and line positions and wavelengths, rounded to :data:`HASH_DECIMALS`
+    decimals, in fiber order."""
     digest = hashlib.sha256()
     for fiber in sorted(solutions):
         solution = solutions[fiber]

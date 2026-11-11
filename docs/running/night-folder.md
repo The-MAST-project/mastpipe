@@ -32,7 +32,8 @@ not settled yet; any acquisition folder under the root is read.
 The folder is scanned **recursively**. A FITS file is any file whose name ends
 in `.fits`, `.fit` or `.fits.fz`, in any case; files and folders whose name
 starts with `.` are ignored, and other files (`seq.txt`, logs, notes) are not
-scanned at all. A file with a FITS name that cannot be opened is recorded as a
+scanned at all. A symbolic link to a folder is not descended into (a linked
+FITS file is read). A file with a FITS name that cannot be opened is recorded as a
 **failure** (`unreadable FITS file`), and the run's exit status is 2.
 
 Every frame is known by its path **relative to the night folder**, with forward
@@ -66,9 +67,9 @@ image/conventional`); it belongs to another set and does not change the exit
 status. A calibration frame binned otherwise, and a science, `light` or arc
 frame binned or read out otherwise, is dropped and recorded as a failure with
 the reason. A night that mixes frames with and without the `READMODE` and
-`OUTPTAMP` cards therefore loses the frames without them (their readout is `unknown/unknown`) whenever the group's
-own readout is known; give such frames their readout through the manifest
-(`readout_mode`, `amplifier`) to keep them.
+`OUTPTAMP` cards therefore loses the frames without them (their readout is
+`unknown/unknown`) whenever the group's own readout is known; give such frames
+their readout through the manifest (`readout_mode`, `amplifier`) to keep them.
 
 ## What the headers must say
 
@@ -137,6 +138,8 @@ ingest adds half the exposure time to reach the mid-time.
 
 Each time field carries a `timezone` option saying how a stamp without an
 offset is read: `utc`, an IANA zone name (`Asia/Jerusalem`), or `assume-utc`.
+An IANA name of UTC itself (`UTC`, `Etc/UTC`) is the same as `utc`, and its
+frames are labelled `utc`.
 A stamp with an explicit offset is honoured whatever the option says. Under
 `assume-utc` a naive stamp is taken as UTC, the run logs one warning, and
 every product records the assumption in its `MPTZ` card (`assumed-utc`).
@@ -156,7 +159,11 @@ suffix (`2026-10-01T18:02:30`).
   together select the gain and read noise and are matched by the library;
 - the targets, one per telescope: the cards `OBJ01`…`OBJ20` when the control
   software writes them (none does yet), else one `OBJECT` card that applies to
-  every science fiber.
+  every science fiber. Only a missing card, a blank one or a logical one
+  (`OBJECT = F`) names no target (`OBJECT = 0` is the target `0`); a
+  calibration frame (bias, dark, flat, arc, background) does not list its
+  targets as unresolved, and any other frame without a target does, whether
+  its type comes from the header or from a manifest row.
 
 ## The manifest
 
@@ -181,23 +188,44 @@ A row's `source` is one of:
 
 - a **relative path** from the night folder (`acquisition-0012/exposure-003.fits`);
 - a **glob pattern** over relative paths (`acquisition-0012/*.fits`;
-  `*` and `?` stay within one folder, `**` crosses folders);
+  `*` and `?` stay within one folder, `**` crosses folders; `[0-9]` and `[!0-9]`
+  are character classes, read as Python's `fnmatch` reads them, and a class
+  that cannot be read, such as the reversed range `[9-0]`, is an error naming
+  the row);
 - a **bare file name**, which matches the one file of that name anywhere in the
   tree; a name that several files share is an error that lists them.
 
+A `\` in a source is read as a folder separator, so a manifest written on
+Windows (`acquisition-0012\exposure-003.fits`) matches as well.
+
 An `extension` column restricts a row to one HDU of a multi-extension file.
 Rows apply in order, so a later row wins over an earlier one for the frames
-both name. A row that matches no frame is listed under *skipped*, never
-dropped silently.
+both name. A row that matches no frame is listed under *skipped* as
+`manifest row 3 (exposure-009.fits): matches no frame`, never dropped
+silently; a row naming a file that exists but is not a FITS file (a `.txt`, a
+`.fts`) is listed there as `not a FITS file`, since the scan never reads it.
 
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `light`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
-every telescope; the older `target` column is still read that way),
+every telescope; `;` separates entries and the first `=` separates the unit
+from the target, so no target name can contain `;`, and a bare name cannot
+contain `=`), the older `target` column (still read: the whole cell is one
+target name for every telescope, with no per-unit syntax, so `;` and `=` are
+part of the name),
 `exposure_time`, `mid_time` (taken as the mid-exposure time; a stamp with an
 explicit offset is honoured and converted to UTC, a naive one is UTC),
 `binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,
 `camera`, `instrument`, `classification_rule`.
+
+An error in the manifest itself (a path that cannot be read, such as a folder; a file
+that is not UTF-8 CSV; rows with more cells than the header, as a trailing comma on every
+row gives; a missing `source` column or an unknown one; a bad glob; an `extension` that
+is not a number; a value that does not parse, such as `targets` naming something that is
+not a telescope unit) stops the run before any frame is reduced: `quicklook` prints one
+line on stderr naming the file or the row, e.g. `FAILED: manifest row 2: bad glob
+'frame[9-0].fits': …`, and exits with status 2. A manifest that does not exist is
+reported the same way.
 
 ## Layouts
 

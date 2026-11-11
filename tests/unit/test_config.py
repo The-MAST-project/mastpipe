@@ -201,6 +201,13 @@ def test_calib_hash_follows_stacking_parameters_and_detector_only():
     other = make_instrument()
     other = other.model_copy(update={"cameras": {"main": make_detector(gain=2.0)}})
     assert calib_hash(build_effective(other, "g518", "main")) != a
+    # the per-amplifier gain and read noise calibrate the frames: part of the detector too
+    em_hashes = set()
+    for read_noise in (40.0, 45.0):
+        readouts = {"em": {"gain": 0.2, "read_noise": read_noise}}
+        em = make_instrument().model_copy(update={"cameras": {"main": make_detector(readouts=readouts)}})
+        em_hashes.add(calib_hash(build_effective(em, "g518", "main")))
+    assert len(em_hashes) == 2 and a not in em_hashes
     # other steps change the configuration hash but not the masters'
     drift = build_effective(inst, "g518", "main", overrides=[{"drift": {"time_policy": "nearest"}}])
     assert config_hash(drift) != config_hash(plain) and calib_hash(drift) == a
