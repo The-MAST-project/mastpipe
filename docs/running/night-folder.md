@@ -208,9 +208,11 @@ silently; a row naming a file that exists but is not a FITS file (a `.txt`, a
 Fields you can set: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `light`, `science`,
 `background`, `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`,
 `fiber_preset`, `targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for
-every telescope; the older `target` column is still read that way; `;`
-separates entries and the first `=` separates the unit from the target, so no
-target name can contain `;`, and a bare name cannot contain `=`),
+every telescope; `;` separates entries and the first `=` separates the unit
+from the target, so no target name can contain `;`, and a bare name cannot
+contain `=`), the older `target` column (still read: the whole cell is one
+target name for every telescope, with no per-unit syntax, so `;` and `=` are
+part of the name),
 `exposure_time`, `mid_time` (taken as the mid-exposure time; a stamp with an
 explicit offset is honoured and converted to UTC, a naive one is UTC),
 `binning`, `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`,

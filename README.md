@@ -294,8 +294,9 @@ a `\` is read as `/`. A row matching no frame is reported among the skipped, and
 a row naming a file that is not a FITS file is reported there as such. The fields
 are: `exposure_type` (`bias`, `dark`, `flat`, `arc`, `science`, `background`,
 `unknown`), `arc_kind` (`full`, `calfiber`), `configuration`, `fiber_preset`,
-`targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for every telescope;
-the older `target` column is read the same way), `exposure_time`, `mid_time`
+`targets` (`mast01=HD 1234;mast02=HD 5678`, or a bare name for every telescope),
+the older `target` column (the whole cell is one target name for every
+telescope; it has no per-unit syntax), `exposure_time`, `mid_time`
 (taken as the mid-exposure time, UTC unless it carries an offset), `binning`,
 `readout_mode`, `amplifier`, `detector_temperature`, `lamp_state`, `camera`,
 `instrument`, `classification_rule`. It is how frames without instrument
