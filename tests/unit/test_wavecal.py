@@ -169,7 +169,7 @@ def test_solve_fiber_from_anchor_on_simulated_full_arc(arc, anchor):
     err = np.abs(model.wavelength(x) - truth0.wavelength(x)) / truth0.dispersion(x)
     assert err.max() < MAX_MAP_ERROR_DISP
     assert model.x_c == pytest.approx(arc.truth.x_c_per_trace[0], abs=0.5)
-    assert pytest.approx(arc.truth.B_per_trace[0], rel=2e-3) == model.B
+    assert model.B == pytest.approx(arc.truth.B_per_trace[0], rel=2e-3)
 
 
 def test_solve_fiber_gives_up_below_min_lines(arc, anchor):

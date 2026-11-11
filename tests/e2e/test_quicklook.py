@@ -433,7 +433,6 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     rehashed = run_quicklook(folder, out, options())
     assert rehashed.failed == [] and sorted(rehashed.reduced_again) == sources
     assert all(read_spectra(path)[1].reference_hash == resolved.hash for path in spec_products(out))
-    index = (out / "calib" / "index.json").read_text(encoding="utf-8")
     assert master_files(out) == masters
 
     # (e) --force rebuilds the masters (and so reduces everything again)
@@ -1081,7 +1080,7 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         labelled[site_of[es.meta.source]] = es
     site_files = site_night.truth.frames
     background = site_files.loc[site_files["exposure_type"] == "background", "file"].iloc[0]
-    assert any(item.startswith(f"{background}: ") and "content:" in item for item in summary.skipped)
+    assert any(item.startswith(f"{background}: ") and "content:no_signal" in item for item in summary.skipped)
     assert not any(background in str(p) for p in summary.products)
 
     worst = 0.0

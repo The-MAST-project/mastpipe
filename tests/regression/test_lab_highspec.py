@@ -71,16 +71,18 @@ PRESET = "lab3"
 # The notebook's numbers on the same frames.
 NOTEBOOK_Y_CENTERS = (17.40, 188.96, 360.72)
 """Trace centres at the detector centre column, cropped frame, px."""
-NOTEBOOK_RMS_PX = (0.016, 0.038, 0.010)
 NOTEBOOK_N_LINES = (23, 25, 19)
+"""Lines in each fiber's solution (its rms: 0.016 / 0.038 / 0.010 px)."""
 NOTEBOOK_COVERAGE_NM = (513.498, 527.315)
 
 Y_CENTER_TOL_PX = 0.3
 TRACE_RMS_MAX_PX = 0.01
 SOLUTION_RMS_MAX_PX = 0.05
+"""Above the notebook's worst fiber (0.038 px)."""
 COVERAGE_NM = (513.50, 527.32)
 COVERAGE_TOL_NM = 0.03
-MIN_LINES = 19
+MIN_LINES = min(NOTEBOOK_N_LINES)
+"""As many lines as the notebook's poorest fiber, in every solution and in the agreement."""
 SPREAD_MEDIAN_MAX_PX = 0.03
 SELF_DRIFT_MAX_PX = 0.01
 

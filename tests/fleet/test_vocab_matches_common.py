@@ -30,9 +30,25 @@ SIBLING_LAYOUT = (
     "MAST_common is not importable as 'common': check it out as a sibling folder "
     "named 'common' and put the parent folder on PYTHONPATH"
 )
-common_spec = (
-    importlib.import_module("common.spec") if REQUIRED else pytest.importorskip("common.spec", reason=SIBLING_LAYOUT)
-)
+
+
+def _import_common_spec():
+    """``common.spec``, or a module-level skip naming the module that is missing.
+
+    ``pytest.importorskip`` would give the sibling-layout reason even when ``common`` is
+    found and one of its own dependencies (``pydantic``, ``rich``) is the missing one.
+    """
+    try:
+        return importlib.import_module("common.spec")
+    except ModuleNotFoundError as exc:
+        if REQUIRED:
+            raise
+        if exc.name in ("common", "common.spec"):
+            pytest.skip(SIBLING_LAYOUT, allow_module_level=True)
+        pytest.skip(f"MAST_common is found but needs {exc.name!r}, which is not installed", allow_module_level=True)
+
+
+common_spec = _import_common_spec()
 
 
 def _literal_values(alias) -> tuple[str, ...]:
@@ -42,9 +58,9 @@ def _literal_values(alias) -> tuple[str, ...]:
 
 def _config_list(text: str, name: str) -> set[str]:
     """The string items of a ``name = [...]`` list literal found in ``text``."""
-    match = re.search(rf"{name} = \[(.*?)\]", text)
+    match = re.search(rf"{name} = \[(.*?)\]", text, re.S)
     assert match is not None, f"{name} not found in common/config/specs.py"
-    return set(match.group(1).replace('"', "").replace(" ", "").split(","))
+    return set(re.findall(r"[\"']([^\"']*)[\"']", match.group(1)))
 
 
 def test_frame_types_match():

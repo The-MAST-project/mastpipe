@@ -41,7 +41,7 @@ def test_model_from_config_is_nominal(geom: GratingGeometry, nominal: GratingMod
     assert nominal.kind == "grating"
     assert nominal.n_pix == N_PIX
     assert nominal.x_c == pytest.approx(x_c)
-    assert pytest.approx(B) == nominal.B
+    assert nominal.B == pytest.approx(B)
     assert nominal.alpha == pytest.approx(geom.alpha_rad)
     assert nominal.poly is None
     np.testing.assert_allclose(nominal.params, [x_c, B, geom.alpha_rad])
@@ -198,7 +198,7 @@ def test_fit_model_recovers_params_from_lines(geom: GratingGeometry, nominal: Gr
     assert isinstance(fitted, GratingModel)
     assert resid.shape == (25,)
     assert fitted.x_c == pytest.approx(truth.x_c, abs=0.05)
-    assert pytest.approx(truth.B, rel=1e-4) == fitted.B
+    assert fitted.B == pytest.approx(truth.B, rel=1e-4)
     assert fitted.alpha == truth.alpha  # alpha held
     assert fitted.poly is None
     assert np.sqrt(np.mean(resid**2)) < 0.03
@@ -256,13 +256,13 @@ def test_anchor_model_two_pairs(geom: GratingGeometry, nominal: GratingModel):
     model = anchor_model(pairs, geom, N_PIX)
     assert isinstance(model, GratingModel)
     assert model.x_c == pytest.approx(truth.x_c, abs=1e-6)
-    assert pytest.approx(truth.B, rel=1e-9) == model.B
+    assert model.B == pytest.approx(truth.B, rel=1e-9)
     assert model.alpha == geom.alpha_rad
     assert model.poly is None
     assert model.n_pix == N_PIX
     # one pair fixes x_c at the nominal B
     single = anchor_model(pairs[:1], geom, N_PIX)
-    assert pytest.approx(nominal.B) == single.B
+    assert single.B == pytest.approx(nominal.B)
     assert single.pixel(waves[0]) == pytest.approx(pairs[0][1], abs=1e-9)
     # three pairs: least squares through all of them
     three = pairs + [(520.0, truth.pixel(520.0))]

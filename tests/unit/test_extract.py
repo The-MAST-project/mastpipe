@@ -230,7 +230,7 @@ def test_extract_recovers_simulated_flux(night):
     assert 0.8 < np.median(pulls) < 1.5
     # sky fibers carry the sky spectrum, not the science one
     sky = [s for s in spectra if s.role == "sky"][0]
-    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux[sky.fiber])
+    assert np.median(sky.flux) < 0.5 * np.median(truth.science_flux[truth.row_of(sky.fiber)])
 
 
 def test_masked_pixel_masks_column():

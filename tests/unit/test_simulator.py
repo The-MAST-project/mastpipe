@@ -410,7 +410,8 @@ def test_simulated_traces_have_distinct_dispersions(sim_night, highspec_effectiv
             geometry,
         )
         np.testing.assert_allclose(truth.line_pixels[i], expected, atol=1e-9)
-    # the per-trace maps differ by up to twice the jitter on the chip
+    # on the chip each trace's map is within twice the jitter of the nominal one (centre
+    # plus edge), so two traces' maps differ by up to four times the jitter
     on = truth.lines_on_chip
     spread = np.ptp(truth.line_pixels[:, on], axis=0)
     assert spread.max() <= 4 * jitter and spread.min() > 0.1
