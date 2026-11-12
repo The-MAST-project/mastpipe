@@ -78,11 +78,17 @@ of the key existed is reduced again once.
 Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is logged and
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
 its group with a recorded failure; with ``"raise"`` it propagates. A night folder that is
-not a directory raises ``FileNotFoundError`` before anything is written; one without a
-readable frame logs one warning (``frames_scanned`` is then 0); an error in the manifest raises
-:class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. The ``mastpipe``
-logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
-handlers are removed when it ends.
+not a directory raises :class:`~mastpipe.core.errors.InputMissingError` (a
+``FileNotFoundError``) before anything is written; one without a readable frame logs one
+warning (``frames_scanned`` is then 0); an error in the manifest raises
+:class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. An ``--out``, log
+or calibration library that cannot be created raises
+:class:`~mastpipe.core.errors.OutputUnwritableError`; a library that is busy or whose index
+is invalid raises its own :class:`~mastpipe.core.errors.RunError`. The ``mastpipe`` logger
+writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both handlers
+are removed when it ends. An exception that ends the run is written to the log file only
+(``run failed: ...``, with the traceback when it is not a ``RunError``), and the summary
+handed to :func:`run_quicklook` keeps what the run gathered, with its ``finished`` time.
 
 The constant ``TIME_POLICIES`` and the classes ``RunOptions``, ``RunSummary``, ``Skipped``
 and ``Failure`` (the run's options, its summary and the summary's items) re-exported here
@@ -103,6 +109,7 @@ import numpy as np
 from mastpipe.__version__ import __version__
 from mastpipe.config.loader import build_effective, calib_hash, config_hash
 from mastpipe.config.models import InstrumentConfig
+from mastpipe.core.errors import InputMissingError, OutputUnwritableError, RunError
 from mastpipe.core.model import FrameRef
 from mastpipe.core.times import ASSUMED_UTC
 from mastpipe.instruments.registry import layout_hash, load_header_map, load_instrument, load_layout
@@ -268,19 +275,67 @@ def _warn_earlier_products(spec_dir: Path) -> None:
         )
 
 
-def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOptions) -> RunSummary:
-    """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring)."""
+def _start_output(out_dir: Path) -> tuple[list[logging.Handler], int]:
+    """Create ``out_dir`` and start the run's log (:func:`_start_logging`);
+    :class:`~mastpipe.core.errors.OutputUnwritableError` for an ``OSError`` doing so."""
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return _start_logging(out_dir)
+    except OSError as error:
+        raise OutputUnwritableError(f"cannot write the output folder {out_dir}: {error}") from error
+
+
+def _open_library(root: Path) -> CalibLibrary:
+    """The calibration library at ``root``. Its own :class:`~mastpipe.core.errors.RunError`
+    (busy, invalid index) propagates; any other ``OSError`` is an
+    :class:`~mastpipe.core.errors.OutputUnwritableError`."""
+    try:
+        return CalibLibrary(root)
+    except RunError:
+        raise
+    except OSError as error:
+        raise OutputUnwritableError(f"cannot open the calibration library {root}: {error}") from error
+
+
+def _log_run_failure(handlers: list[logging.Handler], error: BaseException) -> None:
+    """Write the exception leaving the run to the log file only: the console handler is
+    removed first (stderr is the command layer's). Nothing is written when the log has not
+    started."""
+    if not handlers:
+        return
+    for handler in handlers:
+        if not isinstance(handler, logging.FileHandler):
+            log.removeHandler(handler)
+    if isinstance(error, RunError):
+        log.error("run failed: %s", error)
+    else:
+        log.exception("run failed", exc_info=error)
+
+
+def run_quicklook(
+    night_dir: Path | str,
+    out_dir: Path | str,
+    options: RunOptions,
+    summary: RunSummary | None = None,
+) -> RunSummary:
+    """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring).
+
+    The run is recorded in ``summary`` (a new :class:`RunSummary` when not given), so a
+    caller that hands one in still has what the run gathered when it raises."""
     night_dir, out_dir = Path(night_dir), Path(out_dir)
     if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
         raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
     if options.on_error not in ("continue", "raise"):
         raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
     if not night_dir.is_dir():
-        raise FileNotFoundError(f"night folder {night_dir} is not a directory")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    summary = RunSummary(started=_utc_now())
-    handlers, level = _start_logging(out_dir)
+        raise InputMissingError(f"night folder {night_dir} is not a directory")
+    if summary is None:
+        summary = RunSummary()
+    summary.started = _utc_now()
+    handlers: list[logging.Handler] = []
+    level = log.level
     try:
+        handlers, level = _start_output(out_dir)
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
         _warn_earlier_products(out_dir / SPEC_FOLDER)
         instrument = load_instrument(options.instrument)
@@ -320,7 +375,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             )
         if not refs:
             log.warning("no frames of %s in %s", options.instrument, night_dir)
-        library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
+        library = _open_library(Path(options.library or out_dir / CALIB_FOLDER))
         summary.library = library.root
         default_conf = options.configuration
         groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
@@ -370,6 +425,9 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             len(summary.reduced_again),
             len(summary.failed),
         )
+    except BaseException as error:
+        _log_run_failure(handlers, error)
+        raise
     finally:
         summary.finished = _utc_now()
         for handler in handlers:

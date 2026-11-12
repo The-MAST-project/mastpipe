@@ -24,6 +24,14 @@ meet and what to do.
   Nothing is reduced and the command exits with status 2. Fix the file or the row
   named (see [The manifest](night-folder.md#the-manifest)).
 
+"run failed: …" (in the log)
+: Something stopped the whole run before or outside the per-frame handling: the
+  manifest is missing or wrong, the instrument name is unknown, the calibration
+  library cannot be written, its `index.json` is not a JSON list (fix or restore
+  it), or another process held the library's lock past its timeout (run again
+  later). The cause is the last entry of the log under `out/logs/`; the
+  traceback follows it when the error was unexpected.
+
 "FAILED <file>: …"
 : An exception in that frame's reduction; the traceback is in the log. The
   other frames are unaffected. A failure in the masters or trace finding fails

@@ -15,6 +15,7 @@ import pytest
 from astropy.io import fits
 
 from mastpipe.config.models import DriftParams
+from mastpipe.core.errors import LibraryInvalidError, OutputUnwritableError
 from mastpipe.core.model import (
     PER_FIBER_COLUMNS,
     CalibrationSet,
@@ -756,3 +757,26 @@ def test_flat_batch_is_chosen_among_the_frames_that_survive(sim_night, tmp_path,
     flat, prov = read_master(library_master(out, "flat"))
     assert flat.validity["exposure_time"] == 8.0
     assert flat.n_frames == 2 and len(prov.inputs) == 2
+
+
+def test_run_error_leaves_the_summary_and_the_log(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    out = tmp_path / "out"
+    (out / "calib").mkdir(parents=True)
+    (out / "calib" / "index.json").write_text("{not json", encoding="utf-8")
+    summary = RunSummary()
+    with pytest.raises(LibraryInvalidError):
+        run_quicklook(night, out, RunOptions("highspec"), summary)
+    assert summary.frames_scanned == 0 and summary.finished is not None
+    (log_file,) = (out / "logs").glob("quicklook_*.log")
+    assert "run failed" in log_file.read_text(encoding="utf-8")
+    assert "run failed" not in capsys.readouterr().err  # stderr is the command's
+
+
+def test_out_that_is_a_file_is_output_unwritable(tmp_path):
+    night = tmp_path / "night"
+    night.mkdir()
+    (tmp_path / "out").write_text("a file", encoding="utf-8")
+    with pytest.raises(OutputUnwritableError):
+        run_quicklook(night, tmp_path / "out", RunOptions("highspec"))

@@ -22,6 +22,7 @@ import pandas as pd
 
 from mastpipe.__version__ import __version__
 from mastpipe.config.models import DriftParams, EffectiveConfig, InstrumentConfig, StepParams
+from mastpipe.core.errors import RunError
 from mastpipe.core.model import (
     CalibrationSet,
     DriftModel,
@@ -268,13 +269,17 @@ def fail(
     kind: str | None = None,
 ) -> None:
     """Record in ``summary`` that ``source`` failed, and log it (with the traceback when
-    ``error`` is an exception). An exception gives the message ``prefix + str(error)`` and
-    its class name as ``error_type``; a string is the message itself. ``kind`` defaults to
-    ``"error"``."""
+    ``error`` is an exception). An exception gives the message ``prefix + str(error)``
+    (its class name when ``str(error)`` is empty) and its class name as ``error_type``; a
+    string is the message itself, without ``prefix``. An explicit ``kind`` wins; else a
+    :class:`~mastpipe.core.errors.RunError` gives its own ``kind``; else ``"error"``."""
+    if kind is None:
+        kind = error.kind if isinstance(error, RunError) else "error"
     if isinstance(error, BaseException):
-        item = Failure(scope, source, prefix + str(error), kind or "error", type(error).__name__)
+        message = prefix + (str(error) or type(error).__name__)
+        item = Failure(scope, source, message, kind, type(error).__name__)
     else:
-        item = Failure(scope, source, prefix + error, kind or "error")
+        item = Failure(scope, source, error, kind)
     summary.failed.append(item)
     log.error(
         "failed %s: %s",

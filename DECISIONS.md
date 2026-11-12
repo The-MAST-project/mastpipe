@@ -486,3 +486,16 @@ designer made, and from the rulings made while the plan was executed.
   `CLAUDE.md`; reverses "same model throughout"): an approved plan carries the design, so
   implementation goes to implementer subagents on Opus, and planning, design and code
   review stay with the model the user is working with.
+
+## 2026-11-12 — The caller contract of `quicklook`
+
+- **Run-stopping causes are one exception family in `core/errors.py`**: `RunError`
+  carries a `kind` (`input_missing`, `manifest_missing`, `manifest_invalid`,
+  `instrument_unknown`, `library_busy`, `library_invalid`, `output_unwritable`;
+  `unexpected` for the base) and `retryable` (true only for `library_busy`), so a caller
+  can branch on the cause without parsing messages. Each class keeps the builtin base its
+  cause raised before (`FileNotFoundError`, `KeyError`, `TimeoutError`, `ValueError`,
+  `OSError`), so existing `except` clauses still hold. `ManifestError` joins the family
+  where it is defined (`io/ingest.py`). Only an unknown instrument is an
+  `UnknownInstrumentError`; the registry's `KeyError`s for an unknown layout or
+  configuration stay plain. The family lives in `core/` because every layer raises it.

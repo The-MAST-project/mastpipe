@@ -9,6 +9,19 @@
   `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
   map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
   once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- Run errors (2026-11-12): what stops a run is one exception family,
+  `mastpipe.core.errors.RunError`, each class with a `kind` and `retryable`, and each
+  keeping its builtin base: a missing night folder is `InputMissingError` (a
+  `FileNotFoundError`), a missing manifest `ManifestMissingError` (a `FileNotFoundError`),
+  `ManifestError` has kind `manifest_invalid`, an unknown instrument is
+  `UnknownInstrumentError` (a `KeyError`, its message no longer quoted), a calibration
+  library whose lock is held past the timeout is `LibraryBusyError` (a `TimeoutError`, the
+  one retryable kind), an `index.json` that is not UTF-8 JSON holding a list is
+  `LibraryInvalidError` (a `ValueError`; a JSON or decoding error before), and an `--out`,
+  log or library that cannot be created is `OutputUnwritableError` (an `OSError`).
+  `run_quicklook` takes an optional `summary` that keeps what the run gathered when it
+  raises, and writes the exception that ends a run to the log file (`run failed: ...`),
+  not to the console. A failure recorded from a `RunError` takes its kind.
 - Run summary (2026-11-12): `RunSummary.skipped` and `RunSummary.failed` hold
   `Skipped(scope, source, reason)` and `Failure(scope, source, message, kind, error_type)`
   items (scope `frame`, `group`, `manifest` or `run`) instead of strings and pairs, and the

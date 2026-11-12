@@ -28,12 +28,14 @@ re-created, which is acceptable for finding calibrations.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError
 from mastpipe.core.model import MasterCalib, ReferenceSolution, readout_key
 from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
@@ -86,6 +88,9 @@ class CalibLibrary:
     Constructing one creates ``root`` (with its parents) and its lock file ``index.lock``
     when they are missing, even only to look something up: it needs write access to the
     folder. Code that must not create a library checks that ``root`` is a folder first.
+    :class:`~mastpipe.core.errors.LibraryBusyError` when the lock is not free in time
+    (here and on every write), :class:`~mastpipe.core.errors.LibraryInvalidError` when
+    ``index.json`` is not UTF-8 JSON holding a list.
     """
 
     def __init__(self, root: Path | str) -> None:
@@ -94,19 +99,35 @@ class CalibLibrary:
         # has open fails, so a reader must not hold it while a writer saves. Readers wait
         # at most one write. The lock helper creates ``root`` and the lock file, so an
         # absent or empty library still opens (with no entries).
-        with locked(self.root / LOCK_FILE):
+        with self._lock():
             self._entries: list[dict[str, Any]] = self._load()
         self._references: dict[str, ReferenceSolution] = {}
 
     # ------------------------------------------------------------------------ the index
 
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        """Hold the lock on ``index.lock``; :class:`~mastpipe.core.errors.LibraryBusyError`
+        when :func:`~mastpipe.io.atomic.locked` cannot take it in time. Only taking the
+        lock is translated: an error inside the block propagates as it is."""
+        stack = ExitStack()
+        try:
+            stack.enter_context(locked(self.root / LOCK_FILE))
+        except TimeoutError as error:
+            raise LibraryBusyError(f"calibration library {self.root} is busy: {error}") from error
+        with stack:
+            yield
+
     def _load(self) -> list[dict[str, Any]]:
         path = self.root / INDEX_FILE
         if not path.is_file():
             return []
-        entries = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise LibraryInvalidError(f"{path}: not a readable UTF-8 JSON index: {error}") from error
         if not isinstance(entries, list):
-            raise ValueError(f"{path}: the index must be a JSON list of entries")
+            raise LibraryInvalidError(f"{path}: the index must be a JSON list of entries")
         return entries
 
     def _save(self) -> None:
@@ -119,10 +140,10 @@ class CalibLibrary:
         """Append ``entry``, dropping any entry whose ``key`` already equals ``value``.
 
         Under the lock on ``index.lock`` the index is re-read from disk first, so entries
-        another process added since this instance loaded it are kept; ``TimeoutError``
-        from :func:`~mastpipe.io.atomic.locked` when the lock is not free in time.
+        another process added since this instance loaded it are kept;
+        :class:`~mastpipe.core.errors.LibraryBusyError` when the lock is not free in time.
         """
-        with locked(self.root / LOCK_FILE):
+        with self._lock():
             self._entries = [e for e in self._load() if e.get(key) != value]
             self._entries.append(entry)
             self._save()
