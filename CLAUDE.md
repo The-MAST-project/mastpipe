@@ -1,8 +1,9 @@
 # mastpipe — Claude project notes
 
 **mastpipe** is the data-reduction pipeline for the MAST fiber-fed
-spectrographs, **HighSpec** (R ≈ 20 000, narrow-band gratings — three today,
-more planned — one detector) and **DeepSpec** (R ≈ 500, four cameras). It takes raw frames to
+spectrographs, **HighSpec** (R ≈ 20 000, narrow-band gratings — three on the
+instrument, of which one, `Mg`, is configured here so far; more planned — one
+detector) and **DeepSpec** (R ≈ 500, four cameras). It takes raw frames to
 wavelength-calibrated, sky-subtracted spectra per fiber, combined spectra per
 target, and quality-assurance products. It runs as an unattended quick-look at
 the observatory and as a manual reduction tool. Developed by the MAST team; the
@@ -20,9 +21,10 @@ approval in the conversation before running Edit/Write on it. A deny rule in
 - **Plan before substantial work** (a new step, a new recipe, a change to the
   data model or products): explore, propose, list open questions, get explicit
   approval. Then implement.
-- **Same model throughout.** Design and implementation are both done with the
-  model the user is working with. Do not switch to a smaller model for
-  implementation unless the user asks.
+- **Plan and review with the session model, implement with Opus.** Planning,
+  design and code review are done with the model the user is working with;
+  code implementation goes to implementer subagents on Opus. Deviate only
+  when the user asks.
 - **Test-first.** Every step function gets unit tests on synthetic arrays
   before or with its implementation. Never claim a step works without running
   its tests.
@@ -30,6 +32,15 @@ approval in the conversation before running Edit/Write on it. A deny rule in
 - Lightweight tasks (a typo, a single small fix) need no ceremony.
 - **Keep `DECISIONS.md` current**: record design decisions (and reversals)
   as part of the change that makes them.
+- **Keep the documentation in sync.** Every code change also updates, in the
+  same change, the `README.md` and the pages under `docs/` that describe it
+  (commands and options, configuration keys, products, behaviour, tutorials)
+  and adds a line to `CHANGES.md`. Build the docs with
+  `sphinx-build -E -W -D nb_execution_mode=force -b html docs <dir>` (`-E`
+  resets the Sphinx environment; `nb_execution_mode=force` runs the tutorial
+  notebooks again, since their execution cache is keyed by the notebook text
+  and would hide an example that a code change broke); a change is not done
+  while it warns.
 
 ## Privacy & data safety
 
@@ -95,9 +106,10 @@ or collaborators.
 ## Stack
 
 Python ≥ 3.11 · numpy · scipy · astropy · pandas · matplotlib · pydantic v2 ·
-pyyaml · tzdata (time zones on Windows). Optional extras: `pypeit` (adapter only), `dev` (pytest, pytest-cov,
-ruff, nbstripout). **No new top-level dependency without telling the user
-what and why first.**
+pyyaml · tzdata (time zones on Windows). Optional extras: `pypeit` (adapter
+only), `dev` (pytest, pytest-cov, ruff, nbstripout). ruff is pinned in the
+`dev` extra and nowhere else; CI reads the pin from `pyproject.toml`. **No new
+top-level dependency without telling the user what and why first.**
 
 ## Commands
 
@@ -112,6 +124,8 @@ mastpipe solve <full-arc.fits> --out <dir> --instrument highspec --configuration
 mastpipe quicklook <night-folder> --out <dir> --instrument highspec [--layout lab3|survey45] [--manifest frames.csv]
 mastpipe quicklook <night-folder> --out <dir> --instrument highspec --configuration Mg --layout survey45   # site form, no manifest
 mastpipe show <product.fits>
+# quicklook exits 0, or 2 when a frame or group failed; a missing night folder or
+# manifest, or a manifest error (`ManifestError`), is one `FAILED:` line on stderr, exit 2.
 # `mastpipe reduce` (manual mode, --force <stage>) and `mastpipe focus` are later plans.
 ```
 
@@ -120,8 +134,15 @@ mastpipe show <product.fits>
 - **Three layers, strictly separated**: `instruments/` (declarative
   configuration only), `steps/` (pure functions: arrays and dataclasses in,
   dataclasses out; no file access, no global state, no config lookups),
-  `pipeline/` + `io/` (ingest, runner, products, QA, CLI). Do not let a step
-  read a file or a config.
+  `pipeline/` + `io/` (ingest, the quick-look runner and its stage modules,
+  the calibration library, products, QA, CLI). Do not let a step read a file
+  or a config. `core/` (the data model, times, the hash length) is imported
+  by every layer and imports none of them.
+- **The quick-look recipe is split by stage.** `pipeline/runner.py` chains
+  the stages and holds `run_quicklook`; `pipeline/group.py` holds the run
+  options, the per-group state and the shared helpers; `masters.py`,
+  `traces.py`, `arc_stage.py` and `science.py` hold one stage each. A stage
+  module imports `pipeline.group`, never another stage or `pipeline.runner`.
 - **No raw header keyword outside `io/ingest.py` and the header maps.**
   Everything downstream uses the pipeline vocabulary in `FrameMeta`.
 - **The fiber layout is an input, never inferred.** Trace finding matches
@@ -154,8 +175,10 @@ mastpipe show <product.fits>
   fixed seeds, no network, no real data.
 - End-to-end tests run the quick-look recipe on a simulated night and compare
   every product with the simulator's truth.
-- Regression tests reproduce the published laboratory numbers (per-fiber
-  wavelength rms, resolving power, best focus) and skip without real data.
+- Regression tests run the laboratory frames and bound the results by the
+  laboratory notebook's (trace centres, per-fiber wavelength rms ≤ 0.05 px,
+  per-fiber line counts); they skip without real data. Resolving power and
+  best focus are not tested: there is no width or focus recipe yet.
 - CI runs on Linux, Windows and macOS; a change is not done until the matrix
   is green.
 
