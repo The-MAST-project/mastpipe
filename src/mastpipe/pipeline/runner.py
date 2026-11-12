@@ -79,14 +79,14 @@ Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is l
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
 its group with a recorded failure; with ``"raise"`` it propagates. A night folder that is
 not a directory raises ``FileNotFoundError`` before anything is written; one without a
-readable frame records a failure for the night; an error in the manifest raises
+readable frame logs one warning (``frames_scanned`` is then 0); an error in the manifest raises
 :class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. The ``mastpipe``
 logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
 handlers are removed when it ends.
 
-The constants ``NO_FRAMES`` and ``TIME_POLICIES`` and the classes ``RunOptions`` and
-``RunSummary`` (the run's options and summary) re-exported here are documented in
-:mod:`mastpipe.pipeline.group`.
+The constant ``TIME_POLICIES`` and the classes ``RunOptions``, ``RunSummary``, ``Skipped``
+and ``Failure`` (the run's options, its summary and the summary's items) re-exported here
+are documented in :mod:`mastpipe.pipeline.group`.
 """
 
 from __future__ import annotations
@@ -111,20 +111,23 @@ from mastpipe.pipeline.arc_stage import _arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (
     LOG_FOLDER,
-    NO_FRAMES,
     SPEC_FOLDER,
     TIME_POLICIES,
+    Failure,
     RunOptions,
     RunSummary,
-    _describe,
+    Skipped,
     _Group,
     _group_binning,
     _group_readout,
     _per_frame,
+    _record_skip,
     _time_key,
     _timezone,
     _unlisted_amplifiers,
+    fail,
     log,
+    skip,
 )
 from mastpipe.pipeline.identify import CALIB_FOLDER
 from mastpipe.pipeline.masters import _masters
@@ -133,10 +136,11 @@ from mastpipe.pipeline.traces import _resolve_light, _traces
 
 __all__ = [
     "EARLIER_PRODUCT",
-    "NO_FRAMES",
     "TIME_POLICIES",
+    "Failure",
     "RunOptions",
     "RunSummary",
+    "Skipped",
     "run_quicklook",
 ]
 
@@ -146,6 +150,11 @@ NO_CONFIGURATION = "(no configuration)"
 
 
 # ---------------------------------------------------------------------------- the run
+
+
+def _utc_now() -> str:
+    """The current time in UTC as ``YYYY-MM-DDTHH:MM:SSZ`` (the run summary's stamps)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _start_logging(out_dir: Path) -> tuple[list[logging.Handler], int]:
@@ -269,8 +278,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
     if not night_dir.is_dir():
         raise FileNotFoundError(f"night folder {night_dir} is not a directory")
     out_dir.mkdir(parents=True, exist_ok=True)
+    summary = RunSummary(started=_utc_now())
     handlers, level = _start_logging(out_dir)
-    summary = RunSummary()
     try:
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
         _warn_earlier_products(out_dir / SPEC_FOLDER)
@@ -286,12 +295,9 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             skipped=other,
         )
         for path in unreadable:
-            source = path.relative_to(night_dir).as_posix()
-            summary.failed.append((source, "unreadable FITS file"))
-            log.error("unreadable FITS file skipped: %s", source)
+            fail(summary, "frame", path.relative_to(night_dir).as_posix(), "unreadable FITS file")
         for source, reason in other:
-            summary.skipped.append(f"{source}: {reason}")
-            log.warning("skipped %s: %s", source, reason)
+            skip(summary, "frame", source, reason)
         if manifest is not None:
             unmatched: list[str] = []
             refs = apply_manifest(refs, manifest, unmatched)
@@ -301,8 +307,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                     reason = f"not a FITS file ({', '.join(FITS_SUFFIXES)})"
                 else:
                     reason = "matches no frame"
-                summary.skipped.append(f"{label} ({source}): {reason}")
-                log.warning("%s (%s): %s", label, source, reason)
+                skip(summary, "manifest", source, f"{label}: {reason}")
+        summary.frames_scanned = len(refs)
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")
@@ -313,18 +319,16 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 ", ".join(unlisted),
             )
         if not refs:
-            summary.failed.append((f"night {night_dir.name}", NO_FRAMES))
-            log.error("%s: %s", night_dir, NO_FRAMES)
+            log.warning("no frames of %s in %s", options.instrument, night_dir)
         library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
+        summary.library = library.root
         default_conf = options.configuration
         groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
         run_configured: set[tuple[str, int]] = set()
         for ref in refs:
             meta = ref.meta
             if meta.exposure_type == "unknown":
-                reason = f"exposure type unknown ({meta.classification_rule})"
-                summary.skipped.append(f"{meta.source}: {reason}")
-                log.warning("skipped %s: %s", meta.source, reason)
+                skip(summary, "frame", meta.source, f"exposure type unknown ({meta.classification_rule})")
                 continue
             if meta.configuration is None and default_conf is not None:
                 # the run's --configuration names the grating of a frame whose header does
@@ -333,15 +337,14 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 run_configured.add((meta.source, meta.extension))
             groups[(meta.camera, ref.meta.configuration)].append(ref)
         for (camera, configuration), group_refs in sorted(groups.items(), key=str):
-            label = f"group {camera}/{NO_CONFIGURATION if configuration is None else configuration}"
+            source = f"{camera}/{NO_CONFIGURATION if configuration is None else configuration}"
             if options.camera is not None and camera != options.camera:
-                summary.skipped.append(f"{label}: not camera {options.camera}")
-                log.info("skipped %s: not camera %s", label, options.camera)
+                _record_skip(summary, "group", source, f"not camera {options.camera}", logging.INFO)
                 continue
             if configuration is None:
                 choices = sorted(instrument.configurations)
-                summary.failed.append((label, f"configuration unknown; pass --configuration one of {choices}"))
-                log.error("%s: configuration unknown, group skipped", label)
+                message = f"configuration unknown; pass --configuration one of {choices}"
+                fail(summary, "group", source, message, kind="configuration_unknown")
                 continue
             try:
                 _run_group(
@@ -358,8 +361,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             except Exception as error:
                 if options.on_error == "raise":
                     raise
-                summary.failed.append((label, _describe(error)))
-                log.exception("%s failed", label)
+                fail(summary, "group", source, error)
         log.info(
             "done: %d products, %d QC files, %d skipped, %d reduced again, %d failed",
             len(summary.products),
@@ -369,6 +371,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             len(summary.failed),
         )
     finally:
+        summary.finished = _utc_now()
         for handler in handlers:
             log.removeHandler(handler)
             handler.close()

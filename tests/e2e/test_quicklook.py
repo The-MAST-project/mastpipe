@@ -36,7 +36,7 @@ from mastpipe.io.products import (
 )
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import run_identify
-from mastpipe.pipeline.runner import NO_FRAMES, RunOptions, RunSummary, run_quicklook
+from mastpipe.pipeline.runner import RunOptions, RunSummary, Skipped, run_quicklook
 from mastpipe.sim.simulator import BIAS_LEVEL_ADU, simulate_night, undrift_x
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.combine import group_by_target
@@ -201,9 +201,9 @@ def test_quicklook_without_reference_gives_nominal(nominal_run, night, out_dir):
         assert all(spectrum.wavelength is not None for spectrum in es.spectra)
         assert prov.inputs == [es.meta.checksum]
     # the full arc cannot be solved and the drift arcs have nothing to drift against
-    assert any(night.full_arc.name in item and "run identify" in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and "run identify" in item.reason for item in summary.skipped)
     for arc in night.cal_arcs:
-        assert any(arc in item and "no reference" in item for item in summary.skipped)
+        assert any(arc in item.source and "no reference" in item.reason for item in summary.skipped)
     # masters, traces and the log are in place
     library = CalibLibrary(out_dir / "calib")
     assert {entry["kind"] for entry in library.list()} == {"bias", "dark", "background", "flat"}
@@ -225,7 +225,7 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
     sources = science_files(truth)
     # the nominal products were reduced again, now against the reference and its arcs
     assert sorted(summary.reduced_again) == sorted(sources)
-    assert any(night.full_arc.name in item and identified.ref.identifier in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and identified.ref.identifier in item.reason for item in summary.skipped)
     products = spec_products(out_dir)
     assert len(products) == N_SCIENCE
     checksums = {name: file_checksum(night.dir / name) for name in night.cal_arcs}
@@ -311,7 +311,7 @@ def test_quicklook_idempotent_then_reduced_again(tmp_path, night, survey_layout,
     # nothing changed: every science product is skipped
     again = run_quicklook(folder, out, options(SHORT_AGE))
     assert again.failed == [] and again.reduced_again == []
-    skipped = [item for item in again.skipped if "already reduced" in item]
+    skipped = [item for item in again.skipped if "already reduced" in item.reason]
     assert len(skipped) == N_SCIENCE
     assert not any(p.name.endswith("_spec.fits") for p in again.products)
 
@@ -331,11 +331,11 @@ def test_quicklook_idempotent_then_reduced_again(tmp_path, night, survey_layout,
     assert sorted(third.reduced_again) == near
     assert all(statuses[s][0] == "transferred" for s in near)
     assert all(statuses[s][0] == "reference" for s in far)
-    assert all(any(s in item and "already reduced" in item for item in third.skipped) for s in far)
+    assert all(any(s in item.source and "already reduced" in item.reason for item in third.skipped) for s in far)
     # and with --force everything is reduced once more
     forced = run_quicklook(folder, out, options(SHORT_AGE, force=True))
     assert forced.failed == []
-    assert not any("already reduced" in item for item in forced.skipped)
+    assert not any("already reduced" in item.reason for item in forced.skipped)
 
 
 MASTERS = ("bias", "dark", "background", "flat")
@@ -378,7 +378,7 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     # (a) nothing changed: nothing is reduced again and the masters are reused untouched
     again = run_quicklook(folder, out, options())
     assert again.failed == [] and again.reduced_again == []
-    assert sum("already reduced" in item for item in again.skipped) == N_SCIENCE
+    assert sum("already reduced" in item.reason for item in again.skipped) == N_SCIENCE
     assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
     assert master_files(out) == masters
     assert not any(path.name in masters for path in again.products)
@@ -653,7 +653,7 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
     plain = run_quicklook(folder, tmp_path / "out_light", RunOptions("highspec"))
     assert plain.failed == [] and spec_products(tmp_path / "out_light") == []
     for source in sources:
-        assert any(item.startswith(source) and "content:no_signal" in item for item in plain.skipped), (
+        assert any(item.source == source and "content:no_signal" in item.reason for item in plain.skipped), (
             source,
             plain.skipped,
         )
@@ -696,10 +696,10 @@ def test_reference_on_another_pixel_grid_is_refused(tmp_path, night, survey_layo
     CalibLibrary(tmp_path / "out" / "calib").add_reference(narrow, identified.prov, "main")
     summary = run_quicklook(folder, tmp_path / "out", options(reference_id=narrow.identifier))
     assert len(summary.failed) == N_SCIENCE
-    for source, reason in summary.failed:
-        assert source.startswith("sim_science_")
-        assert "ValueError" in reason and narrow.identifier in reason
-        assert "1000" in reason and str(night.n_pix) in reason
+    for failure in summary.failed:
+        assert failure.source.startswith("sim_science_")
+        assert failure.error_type == "ValueError" and narrow.identifier in failure.message
+        assert "1000" in failure.message and str(night.n_pix) in failure.message
     assert spec_products(tmp_path / "out") == []
 
 
@@ -725,15 +725,17 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     empty = tmp_path / "empty"
     empty.mkdir()
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
-    assert summary.products == [] and summary.skipped == []
-    assert summary.failed == [("night empty", NO_FRAMES)]
+    assert summary.products == [] and summary.skipped == [] and summary.failed == []
+    assert summary.frames_scanned == 0
     argv = ["quicklook", str(empty), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
-    assert NO_FRAMES in capsys.readouterr().out
+    assert main(argv) == 2  # Task 4
+    captured = capsys.readouterr()
+    assert f"no frames of highspec in {empty}" in captured.out
+    assert "WARNING no frames of highspec" in captured.err
     # a folder whose only file cannot be read is as empty
     (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
-    assert [source for source, _ in summary.failed] == ["junk.fits", "night empty"]
+    assert [item.source for item in summary.failed] == ["junk.fits"] and summary.frames_scanned == 0
 
 
 @pytest.mark.parametrize(
@@ -817,12 +819,12 @@ def test_unknown_frames_are_skipped_with_reason(tmp_path):
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,exposure_type\nweird.fits,unknown\n", encoding="utf-8", newline="")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg", manifest=manifest))
-    assert any("junk.fits" in item and "rule:4" in item for item in summary.skipped)
-    assert any("weird.fits" in item and "manifest" in item for item in summary.skipped)
-    assert not any("sci.fits" in item for item in summary.skipped)
+    assert any("junk.fits" in item.source and "rule:4" in item.reason for item in summary.skipped)
+    assert any("weird.fits" in item.source and "manifest" in item.reason for item in summary.skipped)
+    assert not any("sci.fits" in item.source for item in summary.skipped)
     assert summary.products == []
     # the group has nothing to calibrate with, which is recorded, not raised
-    assert len(summary.failed) == 1 and "bias" in summary.failed[0][1]
+    assert len(summary.failed) == 1 and "bias" in summary.failed[0].message
     with pytest.raises(RuntimeError, match="bias"):
         run_quicklook(
             folder,
@@ -851,7 +853,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     (folder / "sim_science_garbage.fits").write_bytes(b"this is not a FITS file\n" * 200)
 
     summary = run_quicklook(folder, tmp_path / "out", options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert "sim_science_bad.fits" in failed and "shape" in failed["sim_science_bad.fits"]
     assert "sim_science_garbage.fits" in failed
     assert set(failed) == {"sim_science_bad.fits", "sim_science_garbage.fits"}
@@ -886,7 +888,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert set(failed) == {"sim_bias_bad.fits", "sim_flat_bad.fits", "sim_arc_bad.fits"}
     assert "shape" in failed["sim_bias_bad.fits"]
     assert "binning 2x1" in failed["sim_flat_bad.fits"]
@@ -918,7 +920,7 @@ def test_quicklook_skips_a_bias_of_another_amplifier(tmp_path, night):
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
     assert summary.failed == []
-    assert f"{em_bias}: readout image/em is not the group's image/conventional" in summary.skipped
+    assert Skipped("frame", em_bias, "readout image/em is not the group's image/conventional") in summary.skipped
     _, prov = read_master(next((out / "calib").glob("*_bias.fits")))
     assert em_checksum not in prov.inputs and len(prov.inputs) == len(biases) - 1
     assert len(spec_products(out)) == N_SCIENCE
@@ -939,7 +941,7 @@ def test_quicklook_drops_a_science_frame_of_another_amplifier(tmp_path, night):
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert list(failed) == [em_frame]
     assert "image/em" in failed[em_frame] and "image/conventional" in failed[em_frame]
     produced = {read_spectra(p)[0].meta.source for p in spec_products(out)}
@@ -957,7 +959,7 @@ def test_quicklook_fails_a_science_frame_of_another_binning(tmp_path, night):
         hdul[0].header["HBIN"] = 2
 
     summary = run_quicklook(folder, tmp_path / "out", options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert list(failed) == [binned]
     assert "binning 2x1 is not the group's 1x1" in failed[binned]
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
@@ -980,8 +982,9 @@ def test_quicklook_skips_a_full_arc_of_another_amplifier_among_the_trace_candida
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
     assert summary.failed == []
-    reason = "sim_arc_full_em.fits: readout image/em is not the group's image/conventional"
-    assert [item for item in summary.skipped if item.startswith("sim_arc_full_em.fits")] == [reason]
+    reason = "readout image/em is not the group's image/conventional"
+    em_arc = [item for item in summary.skipped if item.source == "sim_arc_full_em.fits"]
+    assert em_arc == [Skipped("frame", "sim_arc_full_em.fits", reason)]
     _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
     assert prov.inputs == [file_checksum(night.full_arc)]
     assert len(spec_products(out)) == N_SCIENCE
@@ -1002,7 +1005,7 @@ def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, nig
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    assert [source for source, _ in summary.failed] == ["sim_arc_full_bad.fits"]
+    assert [item.source for item in summary.failed] == ["sim_arc_full_bad.fits"]
     trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
     assert trace_qc.values["source"] == "arc_full"
     _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
@@ -1039,9 +1042,9 @@ def test_resolve_light_sorts_frames_by_content(tmp_path, night):
     trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
     assert trace_qc.values["source"] == "arc_full"
     # the full arc reached the arc stage (no reference yet), and so did the drift arcs
-    assert any(night.full_arc.name in item and "run identify" in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and "run identify" in item.reason for item in summary.skipped)
     for arc in night.cal_arcs:
-        assert any(arc in item and "no reference" in item for item in summary.skipped)
+        assert any(arc in item.source and "no reference" in item.reason for item in summary.skipped)
     products = spec_products(out)
     assert sorted(read_spectra(p)[0].meta.source for p in products) == sorted(sources)
     rules = {}
@@ -1134,7 +1137,7 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         labelled[site_of[es.meta.source]] = es
     site_files = site_night.truth.frames
     background = site_files.loc[site_files["exposure_type"] == "background", "file"].iloc[0]
-    assert any(item.startswith(f"{background}: ") and "content:no_signal" in item for item in summary.skipped)
+    assert any(item.source == background and "content:no_signal" in item.reason for item in summary.skipped)
     assert not any(background in str(p) for p in summary.products)
 
     worst = 0.0

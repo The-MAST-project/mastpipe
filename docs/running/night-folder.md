@@ -201,7 +201,7 @@ Windows (`acquisition-0012\exposure-003.fits`) matches as well.
 An `extension` column restricts a row to one HDU of a multi-extension file.
 Rows apply in order, so a later row wins over an earlier one for the frames
 both name. A row that matches no frame is listed under *skipped* as
-`manifest row 3 (exposure-009.fits): matches no frame`, never dropped
+`exposure-009.fits: manifest row 3: matches no frame`, never dropped
 silently; a row naming a file that exists but is not a FITS file (a `.txt`, a
 `.fts`) is listed there as `not a FITS file`, since the scan never reads it.
 

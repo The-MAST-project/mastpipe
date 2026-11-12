@@ -29,6 +29,8 @@ from mastpipe.pipeline import masters
 from mastpipe.pipeline.arcs import pair_arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (
+    Failure,
+    Skipped,
     _calibrated,
     _configuration_origin,
     _configuration_steps,
@@ -292,7 +294,7 @@ def test_group_without_configuration_fails_naming_the_gratings(sim_night, tmp_pa
     fits.PrimaryHDU(data, header).writeto(folder / "frame_0001.fits")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec"))
     message = "configuration unknown; pass --configuration one of ['Mg']"
-    assert summary.failed == [("group main/(no configuration)", message)]
+    assert summary.failed == [Failure("group", "main/(no configuration)", message, kind="configuration_unknown")]
     assert sorted(load_instrument("highspec").configurations) == ["Mg"]
     assert set(GRATING_NAMES) - {"Mg"}  # names the fleet knows but highspec cannot reduce
     assert summary.products == [] and summary.qc == []
@@ -313,9 +315,9 @@ def test_configuration_option_leaves_a_frame_naming_another_grating_alone(sim_ni
     del header["GRATING"]
     fits.PrimaryHDU(data, header).writeto(folder / "frame_none.fits")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg"))
-    failed = dict(summary.failed)
+    failed = {item.label: item for item in summary.failed}
     assert sorted(failed) == ["group main/Ca", "group main/Mg"]
-    assert "'Ca'" in failed["group main/Ca"]
+    assert "'Ca'" in failed["group main/Ca"].message
 
 
 def test_configuration_steps_name_the_run_option_only_for_frames_it_configured():
@@ -448,10 +450,10 @@ def test_other_instruments_and_unmatched_manifest_rows_are_skipped(sim_night, tm
     options = RunOptions("highspec", manifest=manifest)
     summary = run_quicklook(folder, tmp_path / "out", options)
     assert summary.skipped == [
-        "deepspec/acquisition-0001/e-001.fits: instrument 'deepspec' is not 'highspec'",
-        "manifest row 0 (nothing.fits): matches no frame",
+        Skipped("frame", "deepspec/acquisition-0001/e-001.fits", "instrument 'deepspec' is not 'highspec'"),
+        Skipped("manifest", "nothing.fits", "manifest row 0: matches no frame"),
     ]
-    assert [source for source, _ in summary.failed] == ["group main/(no configuration)"]
+    assert [item.label for item in summary.failed] == ["group main/(no configuration)"]
 
 
 def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_path):
@@ -465,9 +467,36 @@ def test_manifest_row_naming_a_non_fits_file_has_its_own_reason(sim_night, tmp_p
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,lamp_state\nnotes.txt,off\nnothing.fits,off\n", encoding="utf-8")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", manifest=manifest))
-    assert "manifest row 0 (notes.txt): not a FITS file (.fits, .fit, .fits.fz)" in summary.skipped
-    assert "manifest row 1 (nothing.fits): matches no frame" in summary.skipped
-    assert not any(row.startswith("manifest row 0") and "matches no frame" in row for row in summary.skipped)
+    assert Skipped("manifest", "notes.txt", "manifest row 0: not a FITS file (.fits, .fit, .fits.fz)") in summary.skipped
+    assert Skipped("manifest", "nothing.fits", "manifest row 1: matches no frame") in summary.skipped
+    assert not any(row.reason.startswith("manifest row 0") and "matches no frame" in row.reason for row in summary.skipped)
+
+
+# ------------------------------------------------------------- structured summary items
+
+
+def test_summary_items_are_structured(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
+    assert summary.failed == [Failure("frame", "junk.fits", "unreadable FITS file")]
+    assert summary.frames_scanned == 0
+    assert summary.started is not None and summary.finished is not None
+    assert summary.started.endswith("Z") and summary.started <= summary.finished
+
+
+def test_empty_folder_has_no_failure(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
+    assert summary.failed == [] and summary.skipped == [] and summary.frames_scanned == 0
+
+
+def test_item_labels():
+    assert Skipped("group", "main/Mg", "not camera x").label == "group main/Mg"
+    assert Failure("frame", "a/b.fits", "boom").label == "a/b.fits"
+    assert Failure("run", None, "boom").label == "run"
 
 
 # ------------------------------------------------------------ calibration frames, binning
@@ -551,7 +580,7 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
     group = usable_group()
     frames = _usable_frames(group, refs, calibrate=False)
     assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits", "c.fits"]
-    failed = dict(group.summary.failed)
+    failed = {item.source: item.message for item in group.summary.failed}
     assert list(failed) == ["junk.fits", "binned.fits", "stub.fits"]
     assert "binning 2x1" in failed["binned.fits"] and "1x1" in failed["binned.fits"]
     assert "shape (4, 5)" in failed["stub.fits"] and "(8, 10)" in failed["stub.fits"]
@@ -560,7 +589,7 @@ def test_usable_frames_drops_bad_frames_with_their_reason(tmp_path):
     group = usable_group()
     frames = _usable_frames(group, [refs[4], refs[0], refs[3]], calibrate=False)
     assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
-    assert [source for source, _ in group.summary.failed] == ["stub.fits"]
+    assert [item.source for item in group.summary.failed] == ["stub.fits"]
 
     with pytest.raises(ValueError, match="binning 2x1"):
         _usable_frames(usable_group("raise"), refs[2:], calibrate=False)
@@ -585,7 +614,7 @@ def test_usable_frames_skips_a_frame_of_another_readout(tmp_path):
     frames = _usable_frames(group, refs, calibrate=False)
     assert [frame.meta.source for frame in frames] == ["a.fits", "b.fits"]
     assert group.summary.failed == []
-    assert group.summary.skipped == ["em.fits: readout image/em is not the group's image/conventional"]
+    assert group.summary.skipped == [Skipped("frame", "em.fits", "readout image/em is not the group's image/conventional")]
     group = usable_group("raise")
     group.readout_key = "image/conventional"
     assert [frame.meta.source for frame in _usable_frames(group, refs, calibrate=False)] == ["a.fits", "b.fits"]
@@ -721,8 +750,8 @@ def test_flat_batch_is_chosen_among_the_frames_that_survive(sim_night, tmp_path,
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, CALIB_OPTIONS)
     assert summary.failed == [
-        ("sim_flat_00.fits", "RuntimeError: calibration refused"),
-        ("sim_flat_01.fits", "RuntimeError: calibration refused"),
+        Failure("frame", "sim_flat_00.fits", "calibration refused", error_type="RuntimeError"),
+        Failure("frame", "sim_flat_01.fits", "calibration refused", error_type="RuntimeError"),
     ]
     flat, prov = read_master(library_master(out, "flat"))
     assert flat.validity["exposure_time"] == 8.0

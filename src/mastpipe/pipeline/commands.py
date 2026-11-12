@@ -114,13 +114,15 @@ def quicklook_command(args: argparse.Namespace) -> int:
         f"{len(summary.skipped)} skipped, {len(summary.reduced_again)} reduced again, "
         f"{len(summary.failed)} failed"
     )
+    if summary.frames_scanned == 0:
+        print(f"no frames of {options.instrument} in {args.night_dir}")
     for item in summary.skipped:
-        print(f"  skipped {item}")
+        print(f"  skipped {item.label}: {item.reason}")
     for source in summary.reduced_again:
         print(f"  reduced again {source}")
-    for source, why in summary.failed:
-        print(f"  FAILED {source}: {why}")
-    return 0 if not summary.failed else 2
+    for failure in summary.failed:
+        print(f"  FAILED {failure.label}: {failure.message}")
+    return 0 if not summary.failed and summary.frames_scanned != 0 else 2
 
 
 # ---------------------------------------------------------------------------------- solve

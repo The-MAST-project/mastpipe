@@ -9,6 +9,16 @@
   `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
   map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
   once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- Run summary (2026-11-12): `RunSummary.skipped` and `RunSummary.failed` hold
+  `Skipped(scope, source, reason)` and `Failure(scope, source, message, kind, error_type)`
+  items (scope `frame`, `group`, `manifest` or `run`) instead of strings and pairs, and the
+  summary records the run's `started` and `finished` (UTC), `frames_scanned` and
+  `library`. A failure's message no longer starts with the exception's class name (that is
+  `error_type`); a group without a configuration fails with kind `configuration_unknown`.
+  An unmatched manifest row is listed as `<source>: manifest row N: matches no frame`. A
+  night folder with no frame of the instrument is no longer a failure item (`NO_FRAMES` is
+  gone): the run logs `no frames of <instrument> in <folder>` as a warning and `quicklook`
+  prints that line; its exit status is still 2.
 - Manifest errors on the command line (2026-11-11):
   - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
     such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on
