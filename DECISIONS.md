@@ -474,8 +474,15 @@ designer made, and from the rulings made while the plan was executed.
   is a programming error, not the user's input.
 - **The documentation changes with the code** (workflow rule, now in `CLAUDE.md`): every
   code change updates the `README.md`, the pages under `docs/` that describe it and
-  `CHANGES.md` in the same change, and the docs are built with `sphinx-build -E -W`
-  (`-E` because the notebook execution cache hid two broken builds during Plan 1.5).
+  `CHANGES.md` in the same change, and the docs are built with
+  `sphinx-build -E -W -D nb_execution_mode=force`: stale build state hid two broken
+  builds during Plan 1.5, `-E` resets the Sphinx environment, and
+  `nb_execution_mode=force` runs the notebooks again, because their execution cache is
+  keyed by the notebook text and does not notice a change in the package code.
   `CLAUDE.md` was also brought up to date with the tidy-up: the stage modules of
   `pipeline/` and their import rule, `core/` beside the three layers, the one grating
   configured so far, what the regression tests bound, and the `quicklook` exit codes.
+- **Plan and review with the session model, implement with Opus** (workflow rule in
+  `CLAUDE.md`; reverses "same model throughout"): an approved plan carries the design, so
+  implementation goes to implementer subagents on Opus, and planning, design and code
+  review stay with the model the user is working with.

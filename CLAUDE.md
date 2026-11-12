@@ -21,9 +21,10 @@ approval in the conversation before running Edit/Write on it. A deny rule in
 - **Plan before substantial work** (a new step, a new recipe, a change to the
   data model or products): explore, propose, list open questions, get explicit
   approval. Then implement.
-- **Same model throughout.** Design and implementation are both done with the
-  model the user is working with. Do not switch to a smaller model for
-  implementation unless the user asks.
+- **Plan and review with the session model, implement with Opus.** Planning,
+  design and code review are done with the model the user is working with;
+  code implementation goes to implementer subagents on Opus. Deviate only
+  when the user asks.
 - **Test-first.** Every step function gets unit tests on synthetic arrays
   before or with its implementation. Never claim a step works without running
   its tests.
@@ -35,8 +36,11 @@ approval in the conversation before running Edit/Write on it. A deny rule in
   same change, the `README.md` and the pages under `docs/` that describe it
   (commands and options, configuration keys, products, behaviour, tutorials)
   and adds a line to `CHANGES.md`. Build the docs with
-  `sphinx-build -E -W -b html docs <dir>` (`-E`: the notebook execution cache
-  can hide a broken build); a change is not done while it warns.
+  `sphinx-build -E -W -D nb_execution_mode=force -b html docs <dir>` (`-E`
+  resets the Sphinx environment; `nb_execution_mode=force` runs the tutorial
+  notebooks again, since their execution cache is keyed by the notebook text
+  and would hide an example that a code change broke); a change is not done
+  while it warns.
 
 ## Privacy & data safety
 
