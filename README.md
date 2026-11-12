@@ -334,7 +334,7 @@ out/
   calib/   masters, trace sets, reference solutions, fiber_agreement.csv, index.json
   spec/    per-exposure spectra and per-target combined spectra
   qa/      one QC JSON per trace set, reference, drift arc and science frame
-  logs/    quicklook_<UTC stamp>.log, one per run
+  logs/    quicklook_<UTC stamp>_<6 hex>.log, one per run
 ```
 
 `out/calib` is also the **calibration library**: `index.json` lists every

@@ -85,10 +85,15 @@ warning (``frames_scanned`` is then 0); an error in the manifest raises
 or calibration library that cannot be created raises
 :class:`~mastpipe.core.errors.OutputUnwritableError`; a library that is busy or whose index
 is invalid raises its own :class:`~mastpipe.core.errors.RunError`. The ``mastpipe`` logger
-writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both handlers
-are removed when it ends. An exception that ends the run is written to the log file only
-(``run failed: ...``, with the traceback when it is not a ``RunError``), and the summary
-handed to :func:`run_quicklook` keeps what the run gathered, with its ``finished`` time.
+writes a new log file per run, ``out/logs/quicklook_<UTC stamp>_<6 hex>.log`` (created
+exclusively, another random suffix drawn when the name is taken, so two runs started in
+the same second never share a file; its path is the summary's ``log`` as soon as it
+exists), and the console: ``INFO`` and above, or ``WARNING`` and above with
+``options.quiet`` (the file always has ``INFO``); both handlers are removed when the run
+ends. An exception that ends the run is written to the log file only (``run failed:
+...``, with the traceback when it is not a ``RunError``; ``run interrupted``, one line
+without a traceback, for a ``KeyboardInterrupt``), and the summary handed to
+:func:`run_quicklook` keeps what the run gathered, with its ``finished`` time.
 
 The constant ``TIME_POLICIES`` and the classes ``RunOptions``, ``RunSummary``, ``Skipped``
 and ``Failure`` (the run's options, its summary and the summary's items) re-exported here
@@ -99,6 +104,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -164,20 +170,46 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _start_logging(out_dir: Path) -> tuple[list[logging.Handler], int]:
+LOG_NAME_ATTEMPTS = 100
+"""How many random suffixes :func:`_start_logging` draws before giving up on a log name."""
+
+
+def _new_log_file(folder: Path) -> tuple[logging.FileHandler, Path]:
+    """A handler on a new file ``quicklook_<UTC stamp>_<6 hex>.log`` in ``folder``, and its
+    path (under ``folder`` as given), the file created exclusively: a name already taken
+    (another run in the same second) draws another suffix, so no two runs ever write into
+    one file."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    attempts = LOG_NAME_ATTEMPTS
+    while True:
+        path = folder / f"quicklook_{stamp}_{secrets.token_hex(3)}.log"
+        try:
+            handler = logging.FileHandler(path, mode="x", encoding="utf-8")
+        except FileExistsError:
+            attempts -= 1
+            if attempts == 0:
+                raise
+            continue
+        handler.mode = "a"  # should the stream ever be reopened, append to this run's file
+        return handler, path
+
+
+def _start_logging(out_dir: Path, quiet: bool = False) -> tuple[list[logging.Handler], int, Path]:
+    """Start the run's log: a new file in ``out_dir/logs`` (:func:`_new_log_file`) at
+    ``INFO`` and the console at ``INFO``, or ``WARNING`` when ``quiet``. Returns the
+    handlers, the logger's previous level and the log file's path."""
     folder = out_dir / LOG_FOLDER
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    file_handler = logging.FileHandler(folder / f"quicklook_{stamp}.log", encoding="utf-8")
+    file_handler, path = _new_log_file(folder)
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
+    console.setLevel(logging.WARNING if quiet else logging.INFO)
     console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     previous = log.level
     log.setLevel(logging.INFO)
     log.addHandler(file_handler)
     log.addHandler(console)
-    return [file_handler, console], previous
+    return [file_handler, console], previous, path
 
 
 def _run_group(
@@ -275,12 +307,12 @@ def _warn_earlier_products(spec_dir: Path) -> None:
         )
 
 
-def _start_output(out_dir: Path) -> tuple[list[logging.Handler], int]:
+def _start_output(out_dir: Path, quiet: bool = False) -> tuple[list[logging.Handler], int, Path]:
     """Create ``out_dir`` and start the run's log (:func:`_start_logging`);
     :class:`~mastpipe.core.errors.OutputUnwritableError` for an ``OSError`` doing so."""
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        return _start_logging(out_dir)
+        return _start_logging(out_dir, quiet)
     except OSError as error:
         raise OutputUnwritableError(f"cannot write the output folder {out_dir}: {error}") from error
 
@@ -299,14 +331,17 @@ def _open_library(root: Path) -> CalibLibrary:
 
 def _log_run_failure(handlers: list[logging.Handler], error: BaseException) -> None:
     """Write the exception leaving the run to the log file only: the console handler is
-    removed first (stderr is the command layer's). Nothing is written when the log has not
+    removed first (stderr is the command layer's). A ``KeyboardInterrupt`` is the one line
+    ``run interrupted``, without a traceback. Nothing is written when the log has not
     started."""
     if not handlers:
         return
     for handler in handlers:
         if not isinstance(handler, logging.FileHandler):
             log.removeHandler(handler)
-    if isinstance(error, RunError):
+    if isinstance(error, KeyboardInterrupt):
+        log.error("run interrupted")
+    elif isinstance(error, RunError):
         log.error("run failed: %s", error)
     else:
         log.exception("run failed", exc_info=error)
@@ -335,7 +370,7 @@ def run_quicklook(
     handlers: list[logging.Handler] = []
     level = log.level
     try:
-        handlers, level = _start_output(out_dir)
+        handlers, level, summary.log = _start_output(out_dir, options.quiet)
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
         _warn_earlier_products(out_dir / SPEC_FOLDER)
         instrument = load_instrument(options.instrument)

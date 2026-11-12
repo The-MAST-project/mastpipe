@@ -4,8 +4,10 @@ under the ``interpolate`` policy, the group's binning and the per-frame isolatio
 calibration frames."""
 
 import logging
+import re
 import shutil
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +17,7 @@ import pytest
 from astropy.io import fits
 
 from mastpipe.config.models import DriftParams
-from mastpipe.core.errors import LibraryInvalidError, OutputUnwritableError
+from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError, OutputUnwritableError
 from mastpipe.core.model import (
     PER_FIBER_COLUMNS,
     CalibrationSet,
@@ -780,3 +782,115 @@ def test_out_that_is_a_file_is_output_unwritable(tmp_path):
     (tmp_path / "out").write_text("a file", encoding="utf-8")
     with pytest.raises(OutputUnwritableError):
         run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+
+
+def test_two_runs_in_one_second_have_two_logs(tmp_path, monkeypatch):
+    night = tmp_path / "night"
+    night.mkdir()
+    fixed = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.datetime", Clock)
+    first = run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+    second = run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+    assert first.log != second.log and first.log.is_file() and second.log.is_file()
+    assert re.fullmatch(r"quicklook_20260102T030405_[0-9a-f]{6}\.log", first.log.name)
+    assert first.log.parent == tmp_path / "out" / "logs"
+
+
+def test_a_drawn_suffix_already_taken_draws_another(tmp_path, monkeypatch):
+    night = tmp_path / "night"
+    night.mkdir()
+    fixed = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    suffixes = iter(["aaaaaa", "aaaaaa", "bbbbbb"])
+    monkeypatch.setattr("mastpipe.pipeline.runner.datetime", Clock)
+    monkeypatch.setattr("mastpipe.pipeline.runner.secrets.token_hex", lambda n: next(suffixes))
+    first = run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+    second = run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+    assert first.log.name == "quicklook_20260102T030405_aaaaaa.log"
+    assert second.log.name == "quicklook_20260102T030405_bbbbbb.log"
+    assert "quicklook of" in first.log.read_text(encoding="utf-8")
+
+
+def test_quiet_keeps_progress_off_stderr(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    run_quicklook(night, tmp_path / "out", RunOptions("highspec", quiet=True))
+    err = capsys.readouterr().err
+    assert "INFO" not in err and "WARNING no frames of highspec" in err
+    run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+    assert "INFO quicklook of" in capsys.readouterr().err
+
+
+def test_quiet_run_log_keeps_progress(tmp_path, monkeypatch):
+    night = tmp_path / "night"
+    night.mkdir()
+    monkeypatch.chdir(tmp_path)
+    summary = run_quicklook("night", "out", RunOptions("highspec", quiet=True))
+    assert summary.log.parent == Path("out", "logs")  # under --out as given
+    assert "INFO quicklook of" in summary.log.read_text(encoding="utf-8")
+
+
+def test_summary_names_the_log_of_a_run_that_raises(tmp_path):
+    night = tmp_path / "night"
+    night.mkdir()
+    out = tmp_path / "out"
+    (out / "calib").mkdir(parents=True)
+    (out / "calib" / "index.json").write_text("{not json", encoding="utf-8")
+    summary = RunSummary()
+    with pytest.raises(LibraryInvalidError):
+        run_quicklook(night, out, RunOptions("highspec"), summary)
+    assert summary.log is not None and summary.log.parent == out / "logs"
+    assert "run failed" in summary.log.read_text(encoding="utf-8")
+
+
+def test_busy_library_stays_library_busy(tmp_path, monkeypatch):
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    night = tmp_path / "night"
+    night.mkdir()
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        run_quicklook(night, tmp_path / "out", RunOptions("highspec"))
+
+
+def test_unexpected_error_is_logged_with_its_traceback_in_the_log_only(tmp_path, monkeypatch, capsys):
+    def defect(*args, **kwargs):
+        raise RuntimeError("a defect")
+
+    night = tmp_path / "night"
+    night.mkdir()
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", defect)
+    summary = RunSummary()
+    with pytest.raises(RuntimeError, match="a defect"):
+        run_quicklook(night, tmp_path / "out", RunOptions("highspec"), summary)
+    text = summary.log.read_text(encoding="utf-8")
+    assert "run failed" in text and "Traceback" in text and "RuntimeError: a defect" in text
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "a defect" not in err
+
+
+def test_interrupt_is_one_plain_line_in_the_log(tmp_path, monkeypatch, capsys):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    night = tmp_path / "night"
+    night.mkdir()
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", interrupt)
+    summary = RunSummary()
+    with pytest.raises(KeyboardInterrupt):
+        run_quicklook(night, tmp_path / "out", RunOptions("highspec"), summary)
+    text = summary.log.read_text(encoding="utf-8")
+    assert "run interrupted" in text and "Traceback" not in text and "run failed" not in text
+    assert "run interrupted" not in capsys.readouterr().err

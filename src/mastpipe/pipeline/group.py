@@ -75,7 +75,8 @@ class RunOptions:
     time; ``time_policy`` overrides ``params.drift.time_policy`` (as the last override, so
     the configuration hash covers it); ``force`` rebuilds masters and science products that
     are up to date; ``library`` is the calibration library folder (default
-    ``out_dir/calib``).
+    ``out_dir/calib``); ``quiet`` keeps the console to warnings and errors (the run's log
+    file still has every ``INFO`` line).
     """
 
     instrument: str
@@ -89,6 +90,7 @@ class RunOptions:
     reference_id: str | None = None
     time_policy: str | None = None
     library: Path | None = None
+    quiet: bool = False
 
 
 Scope = Literal["frame", "group", "manifest", "run"]

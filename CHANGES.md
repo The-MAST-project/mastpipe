@@ -9,6 +9,13 @@
   `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
   map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
   once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- Quick-look log (2026-11-12): each run writes a new log file,
+  `out/logs/quicklook_<UTC stamp>_<6 hex>.log` (was `quicklook_<UTC stamp>.log`), created
+  exclusively with a random suffix, so two runs started in the same second no longer
+  share one file; `RunSummary.log` names it. `RunOptions(quiet=True)` keeps the console
+  to warnings and errors (the log file still has every `INFO` line). An interrupted run
+  (`KeyboardInterrupt`) writes the one line `run interrupted` to the log, without a
+  traceback.
 - Run errors (2026-11-12): what stops a run is one exception family,
   `mastpipe.core.errors.RunError`, each class with a `kind` and `retryable`, and each
   keeping its builtin base: a missing night folder is `InputMissingError` (a

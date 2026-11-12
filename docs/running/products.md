@@ -22,14 +22,16 @@ out/
   calib/   masters, trace sets, references, fiber_agreement.csv, index.json, index.lock
   spec/    *_spec.fits (one per science exposure), *_comb_<target>.fits (one per target)
   qa/      *.json: one per trace set, reference, drift arc and science frame
-  logs/    quicklook_<UTC stamp>.log
+  logs/    quicklook_<UTC stamp>_<6 hex>.log, one per run
 ```
 
 Every product, the QC files and `calib/index.json` are written to a temporary
 `<name>.tmp-<pid>-<random>` next to the target and moved into place when complete, so an
 interrupted run never leaves a partial file. `calib/index.lock` is the lock that
 lets several runs (a quick-look and an `identify`) share one `calib/` folder
-without losing each other's index entries; leave it in place.
+without losing each other's index entries; leave it in place. Each run writes a new
+log file, named after its UTC start time with a random six-hex-digit suffix, so two runs
+started in the same second never write into one file.
 
 ## Output folders of an earlier version
 

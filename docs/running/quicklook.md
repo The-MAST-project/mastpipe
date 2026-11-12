@@ -106,7 +106,12 @@ quick-look runs again, those frames are reduced once more and become
 ## What the run reports
 
 The console shows one line per product and a summary; the log in `out/logs/`
-has everything with timestamps. The exit status is 0 when every frame was
+has everything with timestamps, one new file per run
+(`quicklook_<UTC stamp>_<6 hex>.log`, the random suffix keeping two runs started in
+the same second apart). A run that raises writes why to the log only (`run failed: ...`,
+or `run interrupted` for Ctrl-C). Called from Python, `RunOptions(quiet=True)` keeps the
+console to warnings and errors; the log still has every line, and the run summary's
+`log` names the file. The exit status is 0 when every frame was
 reduced or skipped as up to date, 2 when anything failed, when the folder held
 no readable frame, when it or the manifest does not exist, or when the manifest
 has an error. The last three stop the run with one `FAILED:` line on stderr

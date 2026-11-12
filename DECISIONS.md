@@ -499,3 +499,9 @@ designer made, and from the rulings made while the plan was executed.
   where it is defined (`io/ingest.py`). Only an unknown instrument is an
   `UnknownInstrumentError`; the registry's `KeyError`s for an unknown layout or
   configuration stay plain. The family lives in `core/` because every layer raises it.
+- **One log file per run, never shared**: `quicklook_<UTC stamp>_<6 hex>.log`, opened
+  exclusively (mode `"x"`) with a random suffix from `secrets.token_hex(3)` and a new
+  draw when the name is taken, so two runs started in the same second (two cron jobs,
+  two cameras) never interleave in one file; the path is `RunSummary.log`. `quiet` lowers
+  only the console (to `WARNING`); the file keeps `INFO`. An interrupt is logged as the
+  one line `run interrupted`, without a traceback: it is an operator's action, not a defect.
