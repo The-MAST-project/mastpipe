@@ -26,6 +26,8 @@ def summary(**changes) -> RunSummary:
         ({"frames_scanned": 0, "failed": [Failure("frame", "a.fits", "unreadable FITS file")]}, None, ("partial", 3)),
         ({}, LibraryBusyError("busy"), ("failed", 4)),
         ({}, RuntimeError("bug"), ("error", 1)),
+        # once the library is open, a run error leaving the run is a re-raise: error, 1
+        ({"library": Path("lib")}, LibraryBusyError("busy"), ("error", 1)),
     ],
 )
 def test_outcome(changes, error, expected):
@@ -65,6 +67,43 @@ def test_run_error_document():
     doc = document(RunSummary(), RunOptions("highspec"), Path("n"), Path("o"), [], RuntimeError("bug"))
     assert doc["run_error"]["kind"] == "unexpected" and doc["run_error"]["retryable"] is False
     assert doc["status"] == "error" and doc["exit_code"] == 1
+
+
+def test_run_error_after_the_library_opened_is_unexpected():
+    run = RunSummary(library=Path("lib"), products=[Path("o/spec/p_spec.fits")])
+    doc = document(run, RunOptions("highspec", on_error="raise"), Path("n"), Path("o"), [], LibraryBusyError("busy"))
+    assert doc["run_error"] == {
+        "kind": "unexpected",
+        "error_type": "LibraryBusyError",
+        "message": "busy",
+        "retryable": False,
+    }
+    assert doc["status"] == "error" and doc["exit_code"] == 1
+
+
+def test_paths_as_given_with_forward_slashes():
+    options = RunOptions("highspec", manifest=Path("some") / "frames.csv")
+    run = RunSummary(library=Path("some") / "lib")
+    doc = document(run, options, Path("some") / "night", Path("some") / "out", [], None)
+    assert doc["input"] == "some/night" and doc["out"] == "some/out"
+    assert doc["library"] == "some/lib" and doc["options"]["manifest"] == "some/frames.csv"
+
+
+def test_root_is_decided_on_absolute_paths(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    library = Path("..") / "lib"
+    run = summary(products=[library / "m_bias.fits", Path("spec") / "p_spec.fits"], library=library)
+    doc = document(run, RunOptions("highspec"), Path("night"), Path("."), [], None)
+    assert doc["products"] == [{"root": "library", "path": "m_bias.fits"}, {"root": "out", "path": "spec/p_spec.fits"}]
+
+
+def test_the_deeper_root_wins():
+    out = Path("o")
+    run = summary(products=[out / "calib" / "m_bias.fits", out / "spec" / "p_spec.fits"], library=out / "calib")
+    doc = document(run, RunOptions("highspec"), Path("night"), out, [], None)
+    assert doc["products"] == [{"root": "library", "path": "m_bias.fits"}, {"root": "out", "path": "spec/p_spec.fits"}]
 
 
 def test_write_is_sorted_ascii_json_with_a_newline(tmp_path):

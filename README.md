@@ -266,13 +266,14 @@ frame's time. Frames the headers cannot classify are skipped with their rule,
 failures are recorded and the run goes on (`--on-error continue`, the default).
 The exit status is 0 when the run finished and nothing failed (`complete`, or
 `empty` when the folder holds no frame of the instrument); 1 on an unexpected
-error (a defect, or `--on-error raise` re-raising a frame's error; traceback on
-stderr); 2 when the command line is wrong; 3 when the run finished but some frame
+error (a defect, or `--on-error raise` re-raising a frame's or group's error, a
+run error from inside a group included; traceback on stderr); 2 when the command line is wrong; 3 when the run finished but some frame
 or group failed (`partial`; a folder whose only file is unreadable is one); and 4
-when the run could not be done (`failed`: the night folder or the manifest does not
-exist, the manifest has an error, the instrument is unknown, the calibration
-library is busy or unreadable, or the output cannot be written), reported in one
-`FAILED:` line on stderr. `--summary-json PATH` writes the run's result as one
+when the run could not be done and nothing was reduced (`failed`: before the
+calibration library was open, the night folder or the manifest does not exist,
+the manifest has an error, the instrument is unknown, the calibration library is
+busy or unreadable, or the output cannot be written), reported in one `FAILED:`
+line on stderr. `--summary-json PATH` writes the run's result as one
 JSON document for a calling program (see `docs/running/result-file.md`), and
 `--quiet` keeps the per-frame progress lines off the console.
 

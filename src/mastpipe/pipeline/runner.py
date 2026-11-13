@@ -145,6 +145,7 @@ from mastpipe.pipeline.group import (
 from mastpipe.pipeline.identify import CALIB_FOLDER
 from mastpipe.pipeline.masters import _masters
 from mastpipe.pipeline.science import _science_frame
+from mastpipe.pipeline.summary import stopped_by_run_error
 from mastpipe.pipeline.traces import _resolve_light, _traces
 
 __all__ = [
@@ -329,11 +330,13 @@ def _open_library(root: Path) -> CalibLibrary:
         raise OutputUnwritableError(f"cannot open the calibration library {root}: {error}") from error
 
 
-def _log_run_failure(handlers: list[logging.Handler], error: BaseException) -> None:
+def _log_run_failure(handlers: list[logging.Handler], error: BaseException, summary: RunSummary) -> None:
     """Write the exception leaving the run to the log file only: the console handler is
     removed first (stderr is the command layer's). A ``KeyboardInterrupt`` is the one line
-    ``run interrupted``, without a traceback. Nothing is written when the log has not
-    started."""
+    ``run interrupted``, without a traceback; a run error of the result
+    (:func:`~mastpipe.pipeline.summary.stopped_by_run_error`) the one line
+    ``run failed: ...``; anything else, a ``RunError`` re-raised from a group included,
+    ``run failed`` with its traceback. Nothing is written when the log has not started."""
     if not handlers:
         return
     for handler in handlers:
@@ -341,7 +344,7 @@ def _log_run_failure(handlers: list[logging.Handler], error: BaseException) -> N
             log.removeHandler(handler)
     if isinstance(error, KeyboardInterrupt):
         log.error("run interrupted")
-    elif isinstance(error, RunError):
+    elif stopped_by_run_error(summary, error):
         log.error("run failed: %s", error)
     else:
         log.exception("run failed", exc_info=error)
@@ -461,7 +464,7 @@ def run_quicklook(
             len(summary.failed),
         )
     except BaseException as error:
-        _log_run_failure(handlers, error)
+        _log_run_failure(handlers, error, summary)
         raise
     finally:
         summary.finished = _utc_now()

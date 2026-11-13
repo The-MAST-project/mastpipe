@@ -513,9 +513,16 @@ designer made, and from the rulings made while the plan was executed.
   a success because a caller meets folders of plans that ended before their first frame.
   The mapping lives in the command layer (`pipeline/summary.py`, called from
   `pipeline/commands.py`), so `run_quicklook` keeps raising and returning a
-  `RunSummary`. `--summary-json PATH` writes a schema-1 JSON document (sorted keys,
-  ASCII, written atomically) only when asked; written paths are relative to one of two
-  roots, `out` or `library`, with forward slashes. Its stability rule (adding a field or
+  `RunSummary`. A `RunError` is a run error of the result (`failed`, its own `kind` and
+  `retryable`) only while `RunSummary.library` is still `None`: once the library is open
+  something may have been reduced, so a `RunError` re-raised from a group under
+  `--on-error raise` is `error`, kind `unexpected` (one predicate,
+  `summary.stopped_by_run_error`, decides it for the exit code, the document, stderr and
+  the log). `--summary-json PATH` writes a schema-1 JSON document (sorted keys, ASCII,
+  written atomically) only when asked; every path in it has forward slashes; `input`,
+  `out` and `library` are as given, and written paths are relative to the deeper of two
+  roots, `out` or `library`, chosen on absolute normalised paths (`os.path.abspath`, no
+  link resolution) so `--out .` never claims `../lib`. Its stability rule (adding a field or
   a `kind` keeps the schema; removing, renaming or changing a meaning bumps it) is pinned
   by a hand-written example under `tests/unit/data/` that the docs page includes
   verbatim. `KeyboardInterrupt` is not caught: no result file, and the interrupt

@@ -31,10 +31,10 @@ be read as this run's.
 |---|---|---|---|
 | 0 | `complete` | The run finished and nothing failed. | yes |
 | 0 | `empty` | The folder holds no frame of this instrument and nothing failed. Nothing to do. | yes |
-| 1 | `error` | An unexpected error: a defect in mastpipe, or `--on-error raise` re-raising a frame's error. Traceback on stderr and in the log. | yes |
+| 1 | `error` | An unexpected error: a defect in mastpipe, or `--on-error raise` re-raising a frame's or group's error (a run error raised inside a group included). Traceback on stderr and in the log. | yes |
 | 2 | (usage) | The command line is wrong: the argument parser's own status, a malformed `--set` included. | no |
 | 3 | `partial` | The run finished and at least one frame or group failed. The products of the others are good. | yes |
-| 4 | `failed` | The run could not be done, for a reason mastpipe recognizes (`run_error.kind` below). Nothing was reduced. | yes |
+| 4 | `failed` | The run could not be done, for a reason mastpipe recognizes (`run_error.kind` below), found before the calibration library was open. Nothing was reduced. | yes |
 
 A folder with no usable frame in which something did fail (its only file is not
 readable FITS) is `partial`, not `empty`, so a folder of corrupt files is never passed
@@ -64,11 +64,12 @@ reached is `null` (or an empty list).
 
 `input`, `out`, `library`
 : The night folder, the `--out` folder and the calibration library the run used, as
-  given (not resolved). `library` is `null` when the run stopped before opening it.
+  given (neither resolved nor made absolute) but with forward slashes, as is
+  `options.manifest`. `library` is `null` when the run stopped before opening it.
 
 `options`
 : The options of the run: `instrument`, `configuration`, `camera`, `layout`,
-  `time_policy`, `force`, `on_error`, `manifest` (the path as given), `reference` (the
+  `time_policy`, `force`, `on_error`, `manifest` (the path as given, forward slashes), `reference` (the
   `--reference` id) and `set` (the `--set` overrides as given, a list of strings).
   An option not given is `null` (`force` is `false`, `on_error` `"continue"`, `set`
   `[]`).
@@ -87,10 +88,11 @@ reached is `null` (or an empty list).
   `failed`. They equal the counts in the printed summary.
 
 `products`, `qc`
-: Every file the run wrote, as `{"root": ..., "path": ...}`: `root` is `"out"` for a
-  file under the `--out` folder, else `"library"` for one in the calibration library
-  (which may lie outside `--out`); `path` is relative to that root, with forward
-  slashes.
+: Every file the run wrote, as `{"root": ..., "path": ...}`: `root` is `"library"` for a
+  file in the calibration library (which may lie inside or outside `--out`), else
+  `"out"` for one under the `--out` folder (when both hold a file, the deeper folder is
+  its root; which folder holds a file is decided on absolute paths, so `--out .` does not
+  hold `../lib`); `path` is relative to that root, with forward slashes.
 
 `skipped`
 : What the run left out on purpose: `{"scope", "source", "reason"}`.
@@ -128,10 +130,18 @@ Every `skipped` and `failed` item has both; a `source` is never a sentence.
 | `kind` | Cause |
 |---|---|
 | `error` | anything else |
-| `library_busy` | the calibration library's lock was not free in time while a group added to it |
 | `configuration_unknown` | a group whose frames name no grating, and no `--configuration` was passed |
+| a run-error kind | a run error raised inside a group or for a frame, under `--on-error continue`: e.g. `library_busy` (the library's lock was not free in time while a group added to it) or `library_invalid` (the index could not be read while a group wrote to it) |
+
+Any kind of the `run_error.kind` table below may appear on an item, and new kinds may be
+added (see Stability).
 
 ### `run_error.kind`
+
+A run error stops the run before its first group: before the calibration library was
+open, so nothing has been reduced. A run error raised later (under `--on-error raise`,
+re-raised from a group) is an `error` run, kind `unexpected`, with its class in
+`error_type`.
 
 | `kind` | Cause | `retryable` |
 |---|---|---|
@@ -142,7 +152,7 @@ Every `skipped` and `failed` item has both; a `source` is never a sentence.
 | `library_busy` | another process held the calibration library's lock past the timeout when the library was opened | **true** |
 | `library_invalid` | the library's `index.json` cannot be read as an index | false |
 | `output_unwritable` | `--out`, its log folder or log file, or the library folder cannot be created or locked | false |
-| `unexpected` | an `error` run (status 1): any other exception | false |
+| `unexpected` | an `error` run (status 1): any other exception, or a run error raised after the library was open | false |
 
 `retryable` is mastpipe's statement that the same command may succeed later with nothing
 changed by a person.

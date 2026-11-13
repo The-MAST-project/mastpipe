@@ -24,7 +24,6 @@ from astropy.io import fits
 
 from mastpipe.config.loader import build_effective, override_argument, parse_override
 from mastpipe.config.models import InstrumentConfig
-from mastpipe.core.errors import RunError
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io import products
 from mastpipe.pipeline import summary as result
@@ -108,10 +107,12 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
 def quicklook_command(args: argparse.Namespace) -> int:
     """Run ``quicklook`` from parsed arguments and return its exit code (see
     :func:`mastpipe.pipeline.summary.outcome`): 0 ``complete`` or ``empty``, 1 ``error``,
-    3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` is one
-    ``FAILED:`` line on stderr, any other exception its traceback; the printed summary
+    3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` raised before the
+    calibration library was open is one ``FAILED:`` line on stderr, any other exception
+    (a run error re-raised from a group included) its traceback; the printed summary
     follows only a run that ended normally. With ``--summary-json`` the result document is
-    written last; a failure to write it is one line on stderr and changes nothing else."""
+    built and written last; a failure to do so is one line on stderr and changes nothing
+    else."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -130,19 +131,19 @@ def quicklook_command(args: argparse.Namespace) -> int:
     error: Exception | None = None
     try:
         run_quicklook(args.night_dir, args.out, options, summary)
-    except RunError as caught:
-        error = caught
-        print(f"FAILED: {caught}", file=sys.stderr)
     except Exception as caught:
         error = caught
-        traceback.print_exception(caught, file=sys.stderr)
+        if result.stopped_by_run_error(summary, caught):
+            print(f"FAILED: {caught}", file=sys.stderr)
+        else:
+            traceback.print_exception(caught, file=sys.stderr)
     if error is None:
         _print_summary(summary, options, args.night_dir)
     if args.summary_json is not None:
-        doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
         try:
+            doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
             result.write(args.summary_json, doc)
-        except OSError as failure:
+        except Exception as failure:
             print(f"could not write the result file {args.summary_json}: {failure}", file=sys.stderr)
     return result.outcome(summary, error)[1]
 

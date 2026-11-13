@@ -32,7 +32,9 @@ meet and what to do.
   later). The cause is the last entry of the log under `out/logs/`; the
   traceback follows it when the error was unexpected. On the console the command
   prints the one line `FAILED: …` and exits with status 4, or, for an unexpected
-  error, prints the traceback and exits with status 1.
+  error, prints the traceback and exits with status 1. With `--on-error raise`, an
+  error raised inside a group (a busy library while adding a master, say) is
+  unexpected in this sense: traceback, status 1.
 
 "FAILED <file>: …"
 : An exception in that frame's reduction; the traceback is in the log. The

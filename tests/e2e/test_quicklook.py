@@ -23,6 +23,7 @@ from astropy.io import fits
 
 from mastpipe.cli import main
 from mastpipe.config.loader import build_effective, parse_override
+from mastpipe.core.errors import LibraryBusyError
 from mastpipe.instruments import registry
 from mastpipe.instruments.registry import layout_hash, load_instrument
 from mastpipe.io.ingest import file_checksum
@@ -713,7 +714,7 @@ def write_frame(path: Path, data: np.ndarray, **cards) -> None:
     hdu.writeto(path, overwrite=True)
 
 
-def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
+def test_missing_night_folder_fails_and_empty_one_is_a_success(tmp_path, capsys):
     nowhere = tmp_path / "nowhere"
     with pytest.raises(FileNotFoundError, match="nowhere"):
         run_quicklook(nowhere, tmp_path / "out", RunOptions("highspec"))
@@ -777,7 +778,7 @@ def test_quicklook_reports_a_missing_manifest_on_stderr(tmp_path, capsys):
     assert failed == [captured.err.splitlines()[-1]] and "missing.csv" in failed[0], captured.err
 
 
-def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch, capsys):
+def test_quicklook_reports_other_value_errors_as_unexpected(tmp_path, monkeypatch, capsys):
     """Only a run error is reported as one ``FAILED:`` line: a ``ValueError`` from the
     reduction itself is an unexpected error, exit code 1 with its traceback on stderr."""
 
@@ -1209,6 +1210,11 @@ def test_exit_codes_and_result_file(tmp_path, capsys):
     assert main(["quicklook", str(empty), *base, "--manifest", str(tmp_path / "missing.csv")]) == 4
     assert read(result)["run_error"]["kind"] == "manifest_missing"
 
+    bad = tmp_path / "frames.csv"
+    bad.write_text("source,exposure\nx.fits,1\n", encoding="utf-8")
+    assert main(["quicklook", str(empty), *base, "--manifest", str(bad)]) == 4
+    assert read(result)["run_error"]["kind"] == "manifest_invalid"
+
     base[3] = "nosuch"
     assert main(["quicklook", str(empty), *base]) == 4
     assert read(result)["run_error"]["kind"] == "instrument_unknown"
@@ -1264,6 +1270,46 @@ def test_unwritable_result_file_keeps_the_exit_code(tmp_path, capsys):
     assert "could not write the result file" in err and "Traceback" not in err
 
 
+def test_result_file_that_cannot_be_built_keeps_the_exit_code(tmp_path, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise ValueError("no root")
+
+    monkeypatch.setattr("mastpipe.pipeline.summary.document", broken)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 0
+    err = capsys.readouterr().err
+    assert f"could not write the result file {result}: no root" in err and "Traceback" not in err
+    assert not result.exists()
+
+
+def test_run_error_re_raised_from_a_group_is_unexpected(tmp_path, night, monkeypatch, capsys):
+    """Under ``--on-error raise`` a library write that times out inside a group is
+    re-raised: the run got past opening the library, so it is ``error`` (exit 1), not a
+    retryable ``failed`` run, and its traceback is on stderr and in the log."""
+
+    def busy(*args, **kwargs):
+        raise LibraryBusyError("calibration library is busy")
+
+    monkeypatch.setattr(CalibLibrary, "add", busy)
+    out, result = tmp_path / "out", tmp_path / "r.json"
+    argv = ["quicklook", str(night.dir), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--on-error", "raise", "--summary-json", str(result)]) == 1
+    doc = read(result)
+    assert doc["status"] == "error" and doc["library"] is not None
+    assert doc["run_error"] == {
+        "kind": "unexpected",
+        "error_type": "LibraryBusyError",
+        "message": "calibration library is busy",
+        "retryable": False,
+    }
+    err = capsys.readouterr().err
+    assert "Traceback" in err and "FAILED:" not in err
+    assert "Traceback" in (out / doc["log"]).read_text(encoding="utf-8")
+
+
 def test_quiet_keeps_info_lines_off_stderr(tmp_path, capsys):
     night = tmp_path / "night"
     night.mkdir()
@@ -1287,7 +1333,8 @@ def test_result_file_of_a_full_run(tmp_path, night, survey_layout, mg_lines, ide
     capsys.readouterr()
     doc = read(result)
     assert doc["status"] == "complete" and doc["exit_code"] == 0 and doc["run_error"] is None
-    assert doc["library"] == str(library) and doc["frames_scanned"] > 0
+    assert doc["library"] == library.as_posix() and doc["frames_scanned"] > 0
+    assert doc["input"] == folder.as_posix() and doc["out"] == out.as_posix()
     assert doc["counts"] == {name: len(doc[name]) for name in ("products", "qc", "skipped", "reduced_again", "failed")}
     roots = {item["root"] for item in doc["products"]}
     assert roots == {"out", "library"}

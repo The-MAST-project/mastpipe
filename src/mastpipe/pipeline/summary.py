@@ -4,13 +4,15 @@
 
 Exit codes: 0 ``complete`` or ``empty``, 1 ``error`` (an unexpected exception), 2 a usage
 error (the argument parser's own, never returned here), 3 ``partial`` (some frame or group
-failed), 4 ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped the run). The
-fields and the stability rule are documented on the user-docs page "The result file".
+failed), 4 ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped the run before
+the calibration library was open, so nothing was reduced; see :func:`stopped_by_run_error`).
+The fields and the stability rule are documented on the user-docs page "The result file".
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,12 +29,22 @@ a value changes meaning, never when a field or a ``kind`` is added."""
 EXIT_OK, EXIT_ERROR, EXIT_PARTIAL, EXIT_FAILED = 0, 1, 3, 4
 
 
+def stopped_by_run_error(summary: RunSummary, error: BaseException | None) -> bool:
+    """Whether ``error`` is a run error of the result (``failed``, exit 4, with its own
+    ``kind`` and ``retryable``): a :class:`~mastpipe.core.errors.RunError` raised before
+    the calibration library was open (``summary.library`` still ``None``), when nothing
+    has been reduced. Once the library is open, any exception leaving the run -- a
+    ``RunError`` re-raised from a group under ``--on-error raise`` included -- is an
+    unexpected ``error``."""
+    return isinstance(error, RunError) and summary.library is None
+
+
 def outcome(summary: RunSummary, error: BaseException | None) -> tuple[str, int]:
-    """The run's status and exit code: ``("failed", 4)`` for a
-    :class:`~mastpipe.core.errors.RunError`; ``("error", 1)`` for any other exception;
+    """The run's status and exit code: ``("failed", 4)`` when
+    :func:`stopped_by_run_error`; ``("error", 1)`` for any other exception;
     ``("partial", 3)`` when something failed; ``("empty", 0)`` when the scan found no frame;
     else ``("complete", 0)``."""
-    if isinstance(error, RunError):
+    if stopped_by_run_error(summary, error):
         return "failed", EXIT_FAILED
     if error is not None:
         return "error", EXIT_ERROR
@@ -43,20 +55,35 @@ def outcome(summary: RunSummary, error: BaseException | None) -> tuple[str, int]
     return "complete", EXIT_OK
 
 
+def _absolute(path: Path) -> Path:
+    """``path`` made absolute and normalised (``..`` removed) without following links."""
+    return Path(os.path.abspath(path))
+
+
 def _written(path: Path, out_dir: Path, library: Path | None) -> dict[str, str]:
-    """A written path relative to its root: ``out`` when it lies under ``out_dir``, else
-    ``library``; forward slashes either way."""
-    if path.is_relative_to(out_dir):
-        return {"root": "out", "path": path.relative_to(out_dir).as_posix()}
-    if library is None:
-        raise ValueError(f"{path} lies outside {out_dir} and the run has no library")
-    return {"root": "library", "path": path.relative_to(library).as_posix()}
+    """A written path relative to its root, with forward slashes: of ``out`` and
+    ``library``, the deeper root that holds it, decided on absolute paths (so ``--out .``
+    does not hold ``../lib``, and a library inside ``--out`` is the master's root)."""
+    target = _absolute(path)
+    roots = [("out", _absolute(out_dir))]
+    if library is not None:
+        roots.append(("library", _absolute(library)))
+    holding = [(name, root) for name, root in roots if target.is_relative_to(root)]
+    if not holding:
+        raise ValueError(f"{path} lies outside {out_dir} and the library {library}")
+    name, root = max(holding, key=lambda item: len(item[1].parts))
+    return {"root": name, "path": target.relative_to(root).as_posix()}
 
 
-def _run_error(error: BaseException | None) -> dict[str, Any] | None:
+def _posix(path: Path | None) -> str | None:
+    return None if path is None else path.as_posix()
+
+
+def _run_error(summary: RunSummary, error: BaseException | None) -> dict[str, Any] | None:
     if error is None:
         return None
-    if isinstance(error, RunError):
+    if stopped_by_run_error(summary, error):
+        assert isinstance(error, RunError)
         kind, retryable = error.kind, error.retryable
     else:
         kind, retryable = "unexpected", False
@@ -85,9 +112,9 @@ def document(
         "exit_code": code,
         "started": summary.started,
         "finished": summary.finished,
-        "input": str(night_dir),
-        "out": str(out_dir),
-        "library": None if library is None else str(library),
+        "input": night_dir.as_posix(),
+        "out": out_dir.as_posix(),
+        "library": _posix(library),
         "options": {
             "instrument": options.instrument,
             "configuration": options.configuration,
@@ -96,11 +123,11 @@ def document(
             "time_policy": options.time_policy,
             "force": options.force,
             "on_error": options.on_error,
-            "manifest": None if options.manifest is None else str(options.manifest),
+            "manifest": _posix(options.manifest),
             "reference": options.reference_id,
             "set": list(overrides),
         },
-        "log": None if summary.log is None else summary.log.relative_to(out_dir).as_posix(),
+        "log": None if summary.log is None else _absolute(summary.log).relative_to(_absolute(out_dir)).as_posix(),
         "frames_scanned": summary.frames_scanned,
         "counts": {
             "products": len(summary.products),
@@ -123,7 +150,7 @@ def document(
             }
             for item in summary.failed
         ],
-        "run_error": _run_error(error),
+        "run_error": _run_error(summary, error),
     }
 
 

@@ -131,10 +131,10 @@ The exit status says which kind of thing happened:
 |---|---|---|
 | 0 | `complete` | The run finished and nothing failed. |
 | 0 | `empty` | The folder holds no frame of this instrument and nothing failed: nothing to do. |
-| 1 | `error` | An unexpected error: a defect in mastpipe, or `--on-error raise` re-raising a frame's error. The traceback is on stderr and in the log. |
+| 1 | `error` | An unexpected error: a defect in mastpipe, or `--on-error raise` re-raising a frame's or group's error (a run error raised inside a group included). The traceback is on stderr and in the log. |
 | 2 | (usage) | The command line is wrong (the argument parser's own status), a malformed `--set` included. |
 | 3 | `partial` | The run finished and at least one frame or group failed; the other products are good. |
-| 4 | `failed` | The run could not be done, for a reason mastpipe recognizes; nothing was reduced. |
+| 4 | `failed` | The run could not be done, for a reason mastpipe recognizes, found before the calibration library was open; nothing was reduced. |
 
 A folder whose only file cannot be read as FITS has no frame but a failure, so it is
 `partial` (3), never `empty`. Status 4 is one `FAILED:` line on stderr naming the

@@ -17,9 +17,12 @@
   whose only file is unreadable is one), 4 `failed` (a `RunError` stopped the run: one
   `FAILED:` line on stderr, which now covers an unknown instrument and a busy, unreadable
   or unwritable library as well as a missing folder or manifest and a manifest error).
-  `--summary-json PATH` writes the run's result as one schema-1 JSON document, atomically
-  (`mastpipe.pipeline.summary`; documented on the new page "The result file"); a failure
-  to write it is one line on stderr and leaves the exit status alone. `--quiet` keeps the
+  A `RunError` counts as `failed` only before the calibration library is open; one
+  re-raised from a group under `--on-error raise` is `error` (exit 1, traceback on stderr
+  and in the log). `--summary-json PATH` writes the run's result as one schema-1 JSON
+  document, atomically (`mastpipe.pipeline.summary`; documented on the new page "The
+  result file"), with forward slashes in every path; a failure to build or write it is
+  one line on stderr and leaves the exit status alone. `--quiet` keeps the
   per-frame progress off the console. A malformed `--set` (no `=`, an empty key segment)
   is a usage error, exit status 2, for `identify`, `solve` and `quicklook` (it was a
   traceback, exit 1). **Upgrade note:** exit status 2 from `quicklook` no longer means a
