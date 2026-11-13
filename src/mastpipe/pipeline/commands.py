@@ -14,6 +14,7 @@ failed) and 4 when it ``failed`` (a :class:`~mastpipe.core.errors.RunError` stop
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -111,10 +112,12 @@ def quicklook_command(args: argparse.Namespace) -> int:
     3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` raised before the
     calibration library was open is one ``FAILED:`` line on stderr, any other exception
     (a run error re-raised from a group included) its traceback; the printed summary
-    follows only a run that ended normally, and a stdout that cannot take it (an encoding
-    that cannot spell a file name, a full device) is one line on stderr and leaves the exit
-    code and the result file alone. With ``--summary-json`` the result document is built
-    and written last; a failure to do so is one line on stderr and changes nothing else."""
+    follows only a run that ended normally. It is left out silently when stdout is closed;
+    a stdout that cannot take it (an encoding that cannot spell a file name, a full device)
+    is one line on stderr, its descriptor is then pointed at the null device
+    (:func:`_discard_stdout`), and the exit code and the result file are left alone. With
+    ``--summary-json`` the result document is built and written last; a failure to do so
+    is one line on stderr and changes nothing else."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -139,12 +142,13 @@ def quicklook_command(args: argparse.Namespace) -> int:
             print(f"FAILED: {caught}", file=sys.stderr)
         else:
             traceback.print_exception(caught, file=sys.stderr)
-    if error is None:
+    if error is None and sys.stdout is not None:  # None: file descriptor 1 is closed
         try:
             _print_summary(summary, options, args.night_dir)
             sys.stdout.flush()
         except (OSError, UnicodeError) as failure:
             print(f"could not print the summary: {failure}", file=sys.stderr)
+            _discard_stdout()
     if args.summary_json is not None:
         try:
             doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
@@ -152,6 +156,22 @@ def quicklook_command(args: argparse.Namespace) -> int:
         except Exception as failure:
             print(f"could not write the result file {args.summary_json}: {failure}", file=sys.stderr)
     return result.outcome(summary, error)[1]
+
+
+def _discard_stdout() -> None:
+    """Point file descriptor 1 at the null device, so that the text a failed print left
+    in stdout's buffer is flushed there at shutdown instead of failing once more (which
+    would end the process with the interpreter's status 120, not the run's). A stdout
+    without a real descriptor (one replaced in-process) is left alone."""
+    try:
+        target = sys.stdout.fileno()
+    except (OSError, ValueError, AttributeError):  # io.UnsupportedOperation is both of the first two
+        return
+    null = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null, target)
+    finally:
+        os.close(null)
 
 
 def _print_summary(summary: RunSummary, options: RunOptions, night_dir: Path) -> None:

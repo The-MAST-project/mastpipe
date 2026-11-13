@@ -10,8 +10,11 @@ tests share them read-only.
 """
 
 import json
+import os
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1316,6 +1319,45 @@ def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatc
     assert [line for line in err.splitlines() if "could not print the summary" in line] == [
         f"could not print the summary: {error}"
     ]
+
+
+def test_closed_stdout_is_not_a_failure(tmp_path, monkeypatch, capsys):
+    """With file descriptor 1 closed Python sets ``sys.stdout`` to ``None``: the summary
+    is not printed, silently, and the run's exit code and result file stand."""
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    monkeypatch.setattr("sys.stdout", None)
+    assert main([*argv, "--summary-json", str(result)]) == 0
+    assert read(result)["exit_code"] == 0
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "summary" not in err
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/dev/full").exists(), reason="needs POSIX and /dev/full")
+def test_full_stdout_device_keeps_the_exit_code(tmp_path):
+    """A stdout on a full device: the summary cannot be printed, which is one line on
+    stderr, and the process still exits with the run's status (not the interpreter's 120
+    for a failed flush at shutdown)."""
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    entry = "import sys; from mastpipe.cli import main; sys.exit(main())"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with Path("/dev/full").open("w", encoding="utf-8") as full:
+        done = subprocess.run(
+            [sys.executable, "-c", entry, *argv, "--quiet", "--summary-json", str(result)],
+            stdout=full,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    assert done.returncode == 0, done.stderr
+    lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
+    assert len(lines) == 1 and "Exception ignored" not in done.stderr, done.stderr
+    assert read(result)["exit_code"] == 0
 
 
 @pytest.mark.parametrize("command", ["quicklook", "identify", "solve"])

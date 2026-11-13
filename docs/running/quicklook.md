@@ -118,8 +118,8 @@ quick-look runs again, those frames are reduced once more and become
 The console shows one line per product and a summary (each failure as `FAILED <source>:
 <exception class>: <message>`, or the message alone when no exception caused it); a
 stdout that cannot take the summary is one line on stderr, `could not print the summary:
-…`, and leaves the exit status and the result file alone (but see
-[The result file](result-file.md) for a full device). The log in `out/logs/`
+…`, and leaves the exit status and the result file alone; with stdout closed the
+summary is simply not printed. The log in `out/logs/`
 has everything with timestamps, one new file per run
 (`quicklook_<UTC stamp>_<6 hex>.log`, the random suffix keeping two runs started in
 the same second apart). When something stops the whole run, the runner writes why to

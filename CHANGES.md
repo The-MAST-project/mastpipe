@@ -5,7 +5,10 @@
 - `quicklook` caller-contract fixes (2026-11-13): a printed summary that stdout cannot take
   (an encoding that cannot spell a file name, a full device) is one line on stderr,
   `could not print the summary: ...`, instead of a traceback with exit status 1 and no
-  result file; the run's exit status stands and the result file is written. Every run
+  result file; the run's exit status stands (stdout is pointed at the null device, so a
+  full device cannot turn it into the interpreter's 120 at exit) and the result file is
+  written. A closed stdout (`>&-`) is not a failure: the summary is left out silently.
+  Every run
   stamps `started` and `finished`, one stopped by a missing night folder or an option out
   of range included (they were `null` in the result file). A printed `FAILED` line names
   the exception's class again: `FAILED a.fits: KeyError: 'GRATING'` (the result file's
