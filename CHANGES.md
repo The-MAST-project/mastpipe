@@ -5,15 +5,16 @@
 - `quicklook` caller-contract fixes (2026-11-13): a printed summary that stdout cannot take
   (an encoding that cannot spell a file name, a full device) is one line on stderr,
   `could not print the summary: ...`, instead of a traceback with exit status 1 and no
-  result file; the run's exit status stands (stdout is pointed at the null device, so a
-  full device cannot turn it into the interpreter's 120 at exit) and the result file is
-  written. A closed stdout (`>&-`) is not a failure: the summary is left out silently.
-  Every run
-  stamps `started` and `finished`, one stopped by a missing night folder or an option out
-  of range included (they were `null` in the result file). A printed `FAILED` line names
-  the exception's class again: `FAILED a.fits: KeyError: 'GRATING'` (the result file's
-  `message` is unchanged). `stopped_by_run_error` moved from `mastpipe.pipeline.summary`
-  to `mastpipe.pipeline.group`.
+  result file; the run's exit status stands and the result file is written. An encoding
+  failure loses only the summary lines that could not be printed. Only when stdout cannot
+  be written at all (a full device) is it pointed at the null device, so the interpreter's
+  flush at exit cannot turn the status into 120; anything the same process writes to
+  stdout afterwards is discarded. A closed stdout (`>&-`) is not a failure: the summary is
+  left out silently. Every run stamps `started` and `finished`, one stopped by a missing
+  night folder or an option out of range included (they were `null` in the result file).
+  A printed `FAILED` line names the exception's class again: `FAILED a.fits: KeyError:
+  'GRATING'` (the result file's `message` is unchanged). `stopped_by_run_error` moved from
+  `mastpipe.pipeline.summary` to `mastpipe.pipeline.group`.
 
 - Upgrade notes: what re-running `quicklook` into an output folder written by an earlier
   version costs. A flat master built by an earlier version (no `MPMKH`) is built again

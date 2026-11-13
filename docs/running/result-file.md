@@ -25,9 +25,12 @@ one of the table below.
 
 If the printed summary cannot be written to stdout (an encoding that cannot spell a file
 name, a full device), one line on stderr says `could not print the summary: …`; the exit
-status is still the run's and the result file is still written (stdout is then pointed at
-the null device, so the interpreter's own flush at exit cannot fail and change the
-status). With stdout closed the summary is simply not printed, and nothing else changes.
+status is still the run's and the result file is still written. An encoding failure loses
+only the summary lines that could not be printed. Only when stdout cannot be written at
+all (a full device) is it pointed at the null device, so that the interpreter's own flush
+at exit cannot fail and change the status; anything the same process writes to stdout
+afterwards is then discarded. With stdout closed the summary is simply not printed, and
+nothing else changes.
 
 If the file cannot be written, the exit status is still the run's, and one line on
 stderr says `could not write the result file PATH: …`. A caller that asked for a result

@@ -6,7 +6,7 @@ import pytest
 
 from mastpipe import __version__, cli
 from mastpipe.cli import main
-from mastpipe.pipeline.commands import _print_summary
+from mastpipe.pipeline.commands import _discard_stdout, _print_summary
 from mastpipe.pipeline.group import Failure, RunOptions, RunSummary
 
 
@@ -42,3 +42,16 @@ def test_printed_failure_names_the_exception_class(capsys):
     lines = capsys.readouterr().out.splitlines()
     assert "  FAILED a.fits: KeyError: 'GRATING'" in lines
     assert "  FAILED b.fits: unreadable FITS file" in lines
+
+
+def test_discard_stdout_gives_up_quietly_without_a_null_device(monkeypatch):
+    class Stdout:
+        def fileno(self) -> int:
+            return 1
+
+    def no_device(*args, **kwargs):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr("sys.stdout", Stdout())
+    monkeypatch.setattr("mastpipe.pipeline.commands.os.open", no_device)
+    _discard_stdout()  # returns; the run goes on to write its result file

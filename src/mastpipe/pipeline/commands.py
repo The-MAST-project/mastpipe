@@ -114,8 +114,9 @@ def quicklook_command(args: argparse.Namespace) -> int:
     (a run error re-raised from a group included) its traceback; the printed summary
     follows only a run that ended normally. It is left out silently when stdout is closed;
     a stdout that cannot take it (an encoding that cannot spell a file name, a full device)
-    is one line on stderr, its descriptor is then pointed at the null device
-    (:func:`_discard_stdout`), and the exit code and the result file are left alone. With
+    is one line on stderr, then stdout is drained, or discarded only when it cannot be
+    written at all (:func:`_drain_stdout`), and the exit code and the result file are left
+    alone. With
     ``--summary-json`` the result document is built and written last; a failure to do so
     is one line on stderr and changes nothing else."""
     options = RunOptions(
@@ -146,9 +147,9 @@ def quicklook_command(args: argparse.Namespace) -> int:
         try:
             _print_summary(summary, options, args.night_dir)
             sys.stdout.flush()
-        except (OSError, UnicodeError) as failure:
+        except (OSError, ValueError) as failure:  # UnicodeError is a ValueError, as is a closed file's
             print(f"could not print the summary: {failure}", file=sys.stderr)
-            _discard_stdout()
+            _drain_stdout()
     if args.summary_json is not None:
         try:
             doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
@@ -158,18 +159,38 @@ def quicklook_command(args: argparse.Namespace) -> int:
     return result.outcome(summary, error)[1]
 
 
+def _drain_stdout() -> None:
+    """After a failed print: flush what stdout still holds (the lines printed before an
+    encoding failure reach their reader), and only when stdout cannot be written at all
+    (the flush raises ``OSError``: a full device, say) discard it (:func:`_discard_stdout`).
+    Any other error of the flush (a closed file) is left alone."""
+    try:
+        sys.stdout.flush()
+    except OSError:
+        _discard_stdout()
+    except ValueError:
+        pass
+
+
 def _discard_stdout() -> None:
-    """Point file descriptor 1 at the null device, so that the text a failed print left
+    """Point file descriptor 1 at the null device, so that the text a failed write left
     in stdout's buffer is flushed there at shutdown instead of failing once more (which
-    would end the process with the interpreter's status 120, not the run's). A stdout
-    without a real descriptor (one replaced in-process) is left alone."""
+    would end the process with the interpreter's status 120, not the run's); whatever
+    the process writes to stdout afterwards is discarded too. A stdout without a real
+    descriptor (one replaced in-process) is left alone, and so is everything when the
+    null device cannot be opened or duplicated."""
     try:
         target = sys.stdout.fileno()
     except (OSError, ValueError, AttributeError):  # io.UnsupportedOperation is both of the first two
         return
-    null = os.open(os.devnull, os.O_WRONLY)
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
     try:
         os.dup2(null, target)
+    except OSError:
+        pass
     finally:
         os.close(null)
 

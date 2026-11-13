@@ -1303,6 +1303,7 @@ class Unprintable:
         (UnicodeEncodeError("charmap", "é", 0, 1, "character maps to <undefined>"), "write"),
         (OSError(28, "No space left on device"), "write"),
         (OSError(28, "No space left on device"), "flush"),
+        (ValueError("I/O operation on closed file."), "write"),
     ],
 )
 def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatch, capsys, error, on):
@@ -1357,6 +1358,33 @@ def test_full_stdout_device_keeps_the_exit_code(tmp_path):
     assert done.returncode == 0, done.stderr
     lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
     assert len(lines) == 1 and "Exception ignored" not in done.stderr, done.stderr
+    assert read(result)["exit_code"] == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX")
+def test_unencodable_summary_line_keeps_stdout(tmp_path):
+    """A summary line stdout's encoding cannot spell is lost, but stdout itself works: the
+    lines printed before it, and whatever the process prints after ``main`` returns, still
+    arrive."""
+    night = tmp_path / "né"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    entry = "import sys; from mastpipe.cli import main; code = main(); print('MARKER after main'); sys.exit(code)"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    done = subprocess.run(
+        [sys.executable, "-c", entry, *argv, "--quiet", "--summary-json", str(result)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
+    assert len(lines) == 1, done.stderr
+    out = done.stdout.splitlines()
+    assert out[0].startswith("0 products") and out[-1] == "MARKER after main", done.stdout
     assert read(result)["exit_code"] == 0
 
 
