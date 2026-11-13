@@ -28,6 +28,7 @@ from mastpipe.instruments.registry import load_instrument
 from mastpipe.io import products
 from mastpipe.pipeline import summary as result
 from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
+from mastpipe.pipeline.group import stopped_by_run_error
 from mastpipe.pipeline.identify import CALIB_FOLDER, run_solve
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.pipeline.runner import TIME_POLICIES, RunOptions, RunSummary, run_quicklook
@@ -110,9 +111,10 @@ def quicklook_command(args: argparse.Namespace) -> int:
     3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` raised before the
     calibration library was open is one ``FAILED:`` line on stderr, any other exception
     (a run error re-raised from a group included) its traceback; the printed summary
-    follows only a run that ended normally. With ``--summary-json`` the result document is
-    built and written last; a failure to do so is one line on stderr and changes nothing
-    else."""
+    follows only a run that ended normally, and a stdout that cannot take it (an encoding
+    that cannot spell a file name, a full device) is one line on stderr and leaves the exit
+    code and the result file alone. With ``--summary-json`` the result document is built
+    and written last; a failure to do so is one line on stderr and changes nothing else."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -133,12 +135,16 @@ def quicklook_command(args: argparse.Namespace) -> int:
         run_quicklook(args.night_dir, args.out, options, summary)
     except Exception as caught:
         error = caught
-        if result.stopped_by_run_error(summary, caught):
+        if stopped_by_run_error(summary, caught):
             print(f"FAILED: {caught}", file=sys.stderr)
         else:
             traceback.print_exception(caught, file=sys.stderr)
     if error is None:
-        _print_summary(summary, options, args.night_dir)
+        try:
+            _print_summary(summary, options, args.night_dir)
+            sys.stdout.flush()
+        except (OSError, UnicodeError) as failure:
+            print(f"could not print the summary: {failure}", file=sys.stderr)
     if args.summary_json is not None:
         try:
             doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
@@ -161,7 +167,8 @@ def _print_summary(summary: RunSummary, options: RunOptions, night_dir: Path) ->
     for source in summary.reduced_again:
         print(f"  reduced again {source}")
     for failure in summary.failed:
-        print(f"  FAILED {failure.label}: {failure.message}")
+        cause = failure.message if failure.error_type is None else f"{failure.error_type}: {failure.message}"
+        print(f"  FAILED {failure.label}: {cause}")
 
 
 # ---------------------------------------------------------------------------------- solve

@@ -16,8 +16,10 @@ from typing import ClassVar
 
 
 class RunError(Exception):
-    """An error that stops a run. ``kind`` names the cause (``unexpected`` for the base
-    class); ``retryable`` is true when the same run may succeed later unchanged."""
+    """An error that stops a run. ``kind`` names the cause; ``retryable`` is true when the
+    same run may succeed later unchanged. The base class is never raised directly, only
+    its subclasses, each with its own ``kind``: the base's ``unexpected`` is the kind of an
+    ``error`` run (exit 1), never that of a run a ``RunError`` stopped."""
 
     kind: ClassVar[str] = "unexpected"
     retryable: ClassVar[bool] = False

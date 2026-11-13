@@ -5,7 +5,8 @@
 Exit codes: 0 ``complete`` or ``empty``, 1 ``error`` (an unexpected exception), 2 a usage
 error (the argument parser's own, never returned here), 3 ``partial`` (some frame or group
 failed), 4 ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped the run before
-the calibration library was open, so nothing was reduced; see :func:`stopped_by_run_error`).
+the calibration library was open, so nothing was reduced; see
+:func:`~mastpipe.pipeline.group.stopped_by_run_error`).
 The fields and the stability rule are documented on the user-docs page "The result file".
 """
 
@@ -20,7 +21,7 @@ from typing import Any
 from mastpipe.__version__ import __version__
 from mastpipe.core.errors import RunError
 from mastpipe.io.atomic import atomic_write
-from mastpipe.pipeline.group import RunOptions, RunSummary
+from mastpipe.pipeline.group import RunOptions, RunSummary, stopped_by_run_error
 
 SCHEMA = 1
 """The result document's schema version: it changes when a field is removed or renamed or
@@ -29,19 +30,9 @@ a value changes meaning, never when a field or a ``kind`` is added."""
 EXIT_OK, EXIT_ERROR, EXIT_PARTIAL, EXIT_FAILED = 0, 1, 3, 4
 
 
-def stopped_by_run_error(summary: RunSummary, error: BaseException | None) -> bool:
-    """Whether ``error`` is a run error of the result (``failed``, exit 4, with its own
-    ``kind`` and ``retryable``): a :class:`~mastpipe.core.errors.RunError` raised before
-    the calibration library was open (``summary.library`` still ``None``), when nothing
-    has been reduced. Once the library is open, any exception leaving the run -- a
-    ``RunError`` re-raised from a group under ``--on-error raise`` included -- is an
-    unexpected ``error``."""
-    return isinstance(error, RunError) and summary.library is None
-
-
 def outcome(summary: RunSummary, error: BaseException | None) -> tuple[str, int]:
     """The run's status and exit code: ``("failed", 4)`` when
-    :func:`stopped_by_run_error`; ``("error", 1)`` for any other exception;
+    :func:`~mastpipe.pipeline.group.stopped_by_run_error`; ``("error", 1)`` for any other exception;
     ``("partial", 3)`` when something failed; ``("empty", 0)`` when the scan found no frame;
     else ``("complete", 0)``."""
     if stopped_by_run_error(summary, error):

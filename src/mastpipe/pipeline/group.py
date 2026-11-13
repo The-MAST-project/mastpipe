@@ -160,6 +160,18 @@ class RunSummary:
     library: Path | None = None
 
 
+def stopped_by_run_error(summary: RunSummary, error: BaseException | None) -> bool:
+    """Whether ``error`` is a run error of the result (``failed``, exit 4, with its own
+    ``kind`` and ``retryable``): a :class:`~mastpipe.core.errors.RunError` raised before
+    the calibration library was open (``summary.library`` still ``None``), when nothing
+    has been reduced. Once the library is open, any exception leaving the run -- a
+    ``RunError`` re-raised from a group under ``--on-error raise`` included -- is an
+    unexpected ``error``. One predicate for the exit code and the result document
+    (:mod:`mastpipe.pipeline.summary`), stderr (:mod:`mastpipe.pipeline.commands`) and the
+    log (:mod:`mastpipe.pipeline.runner`)."""
+    return isinstance(error, RunError) and summary.library is None
+
+
 @dataclass(eq=False)
 class _Group:
     """The state of one ``(camera, configuration)`` group while it is reduced."""

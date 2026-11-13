@@ -2,6 +2,16 @@
 
 ## 0.0.1 (unreleased)
 
+- `quicklook` caller-contract fixes (2026-11-13): a printed summary that stdout cannot take
+  (an encoding that cannot spell a file name, a full device) is one line on stderr,
+  `could not print the summary: ...`, instead of a traceback with exit status 1 and no
+  result file; the run's exit status stands and the result file is written. Every run
+  stamps `started` and `finished`, one stopped by a missing night folder or an option out
+  of range included (they were `null` in the result file). A printed `FAILED` line names
+  the exception's class again: `FAILED a.fits: KeyError: 'GRATING'` (the result file's
+  `message` is unchanged). `stopped_by_run_error` moved from `mastpipe.pipeline.summary`
+  to `mastpipe.pipeline.group`.
+
 - Upgrade notes: what re-running `quicklook` into an output folder written by an earlier
   version costs. A flat master built by an earlier version (no `MPMKH`) is built again
   once, on the first run that would have reused it, and the science products of that
@@ -59,7 +69,7 @@
   An unmatched manifest row is listed as `<source>: manifest row N: matches no frame`. A
   night folder with no frame of the instrument is no longer a failure item (`NO_FRAMES` is
   gone): the run logs `no frames of <instrument> in <folder>` as a warning and `quicklook`
-  prints that line; its exit status is still 2.
+  prints that line; its exit status is 0 (`empty`, see the exit codes above).
 - Manifest errors on the command line (2026-11-11):
   - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
     such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on

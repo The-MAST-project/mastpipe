@@ -1195,6 +1195,10 @@ def test_exit_codes_and_result_file(tmp_path, capsys):
     assert main(["quicklook", str(nowhere), *base]) == 4
     doc = read(result)
     assert doc["status"] == "failed" and doc["run_error"]["kind"] == "input_missing"
+    # every run is stamped; only what the run never reached is null
+    assert doc["started"] is not None and doc["finished"] is not None
+    assert doc["started"] <= doc["finished"]
+    assert doc["frames_scanned"] is None and doc["log"] is None and doc["library"] is None
     assert not out.exists() and capsys.readouterr().err.startswith("FAILED: night folder")
 
     assert main(["quicklook", str(empty), *base]) == 0
@@ -1218,6 +1222,100 @@ def test_exit_codes_and_result_file(tmp_path, capsys):
     base[3] = "nosuch"
     assert main(["quicklook", str(empty), *base]) == 4
     assert read(result)["run_error"]["kind"] == "instrument_unknown"
+
+
+def test_library_and_output_run_errors_are_exit_4(tmp_path, monkeypatch, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+
+    def run(out: Path) -> int:
+        return main(["quicklook", str(night), "--out", str(out), "--instrument", "highspec", "--summary-json", str(result)])
+
+    invalid = tmp_path / "invalid"
+    (invalid / "calib").mkdir(parents=True)
+    (invalid / "calib" / "index.json").write_text("{not json", encoding="utf-8")
+    assert run(invalid) == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["exit_code"] == 4
+    assert doc["run_error"]["kind"] == "library_invalid" and doc["run_error"]["retryable"] is False
+
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file, not a folder", encoding="utf-8")
+    assert run(blocked) == 4
+    doc = read(result)
+    assert doc["run_error"]["kind"] == "output_unwritable" and doc["run_error"]["retryable"] is False
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    assert run(tmp_path / "busy") == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["library"] is None
+    assert doc["run_error"]["kind"] == "library_busy" and doc["run_error"]["retryable"] is True
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("FAILED:") == 3
+
+
+def test_run_error_inside_a_group_is_a_failed_item(tmp_path, night, monkeypatch, capsys):
+    """Under the default ``--on-error continue`` a library write that times out inside a
+    group fails that group with the run error's kind: the run is ``partial`` (exit 3)."""
+
+    def busy(*args, **kwargs):
+        raise LibraryBusyError("calibration library is busy")
+
+    monkeypatch.setattr(CalibLibrary, "add", busy)
+    out, result = tmp_path / "out", tmp_path / "r.json"
+    argv = ["quicklook", str(night.dir), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--summary-json", str(result)]) == 3
+    doc = read(result)
+    assert doc["status"] == "partial" and doc["run_error"] is None
+    assert [item["kind"] for item in doc["failed"]] == ["library_busy"]
+    assert doc["failed"][0]["scope"] == "group" and doc["failed"][0]["error_type"] == "LibraryBusyError"
+    assert "FAILED group main/Mg: LibraryBusyError: calibration library is busy" in capsys.readouterr().out
+
+
+class Unprintable:
+    """A stdout that cannot take the summary: ``write`` or ``flush`` raises ``error``."""
+
+    encoding = "cp1252"
+
+    def __init__(self, error: Exception, on: str) -> None:
+        self.error, self.on = error, on
+
+    def write(self, text: str) -> int:
+        if self.on == "write":
+            raise self.error
+        return len(text)
+
+    def flush(self) -> None:
+        if self.on == "flush":
+            raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "on"),
+    [
+        (UnicodeEncodeError("charmap", "é", 0, 1, "character maps to <undefined>"), "write"),
+        (OSError(28, "No space left on device"), "write"),
+        (OSError(28, "No space left on device"), "flush"),
+    ],
+)
+def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatch, capsys, error, on):
+    night = tmp_path / "night"
+    (night / "sub").mkdir(parents=True)
+    (night / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    monkeypatch.setattr("sys.stdout", Unprintable(error, on))
+    assert main([*argv, "--summary-json", str(result)]) == 3
+    assert read(result)["status"] == "partial"
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert [line for line in err.splitlines() if "could not print the summary" in line] == [
+        f"could not print the summary: {error}"
+    ]
 
 
 @pytest.mark.parametrize("command", ["quicklook", "identify", "solve"])

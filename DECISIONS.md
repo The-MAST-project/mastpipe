@@ -517,7 +517,8 @@ designer made, and from the rulings made while the plan was executed.
   `retryable`) only while `RunSummary.library` is still `None`: once the library is open
   something may have been reduced, so a `RunError` re-raised from a group under
   `--on-error raise` is `error`, kind `unexpected` (one predicate,
-  `summary.stopped_by_run_error`, decides it for the exit code, the document, stderr and
+  `group.stopped_by_run_error`, beside `RunSummary` so the runner need not import the
+  command layer's `summary` module, decides it for the exit code, the document, stderr and
   the log). `--summary-json PATH` writes a schema-1 JSON document (sorted keys, ASCII,
   written atomically) only when asked; every path in it has forward slashes; `input`,
   `out` and `library` are as given, and written paths are relative to the deeper of two

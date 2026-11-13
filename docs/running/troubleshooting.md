@@ -37,7 +37,9 @@ meet and what to do.
   unexpected in this sense: traceback, status 1.
 
 "FAILED <file>: …"
-: An exception in that frame's reduction; the traceback is in the log. The
+: An exception in that frame's reduction, printed as `FAILED <file>: <exception
+  class>: <message>` (a failure no exception caused, such as an unreadable file, has
+  the message alone); the traceback is in the log. The
   other frames are unaffected. A failure in the masters or trace finding fails
   the whole camera-and-grating group instead (`FAILED group <camera>/<grating>: …`),
   since nothing downstream can run.

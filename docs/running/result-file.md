@@ -19,6 +19,16 @@ wrong) and an interrupt (Ctrl-C). Without the option nothing is written. The fol
 `PATH` is created when missing, and the file is written atomically: a reader sees the
 whole document or no file, never half of one.
 
+A run that is interrupted (Ctrl-C) or killed writes no result file, and its exit status
+is the interpreter's or the operating system's own (130 or a signal's status, say), not
+one of the table below.
+
+If the printed summary cannot be written to stdout (an encoding that cannot spell a file
+name, a full device), one line on stderr says `could not print the summary: …`; the exit
+status is still the run's and the result file is still written. (On a full device the
+interpreter may fail once more to flush stdout as it exits and end with status 120; the
+result file then still holds the run's own `exit_code`.)
+
 If the file cannot be written, the exit status is still the run's, and one line on
 stderr says `could not write the result file PATH: …`. A caller that asked for a result
 and finds none after status 0, 1, 3 or 4 treats the run as `error`. A caller that reuses
@@ -59,8 +69,8 @@ reached is `null` (or an empty list).
   status, so the file alone is enough.
 
 `started`, `finished`
-: The run's start and end, UTC, `YYYY-MM-DDTHH:MM:SSZ`; `null` when the run stopped
-  before it started (a night folder that does not exist).
+: The run's start and end, UTC, `YYYY-MM-DDTHH:MM:SSZ`; set on every run, one stopped
+  at once (a night folder that does not exist) included.
 
 `input`, `out`, `library`
 : The night folder, the `--out` folder and the calibration library the run used, as

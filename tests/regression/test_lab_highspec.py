@@ -354,8 +354,8 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     assert second_run.after == second_run.before
     assert any(name.endswith("_wref.fits") for name in second_run.after)
     assert len(library.list(kind="reference")) == 1
-    # one log per run, unless both runs started within the same second
+    # one log file per run, never shared (a random suffix keeps two runs of one second apart)
     logs = sorted((out_dir / "logs").glob("quicklook_*.log"))
-    assert 1 <= len(logs) <= 2
+    assert len(logs) == 2
     text = "".join(log.read_text(encoding="utf-8") for log in logs)
     assert "run identify" in text and "already solved" in text

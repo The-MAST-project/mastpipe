@@ -91,9 +91,13 @@ the same second never share a file; its path is the summary's ``log`` as soon as
 exists), and the console: ``INFO`` and above, or ``WARNING`` and above with
 ``options.quiet`` (the file always has ``INFO``); both handlers are removed when the run
 ends. An exception that ends the run is written to the log file only (``run failed:
-...``, with the traceback when it is not a ``RunError``; ``run interrupted``, one line
-without a traceback, for a ``KeyboardInterrupt``), and the summary handed to
-:func:`run_quicklook` keeps what the run gathered, with its ``finished`` time.
+...``, one line for a run error of the result
+(:func:`~mastpipe.pipeline.group.stopped_by_run_error`: a ``RunError`` raised before the
+calibration library was open), with the traceback for any other exception, a ``RunError``
+re-raised after the library opened included; ``run interrupted``, one line without a
+traceback, for a ``KeyboardInterrupt``), and the summary handed to :func:`run_quicklook`
+keeps what the run gathered, with its ``started`` and ``finished`` times (stamped on
+every run, one stopped by an option out of range or a missing night folder included).
 
 The constant ``TIME_POLICIES`` and the classes ``RunOptions``, ``RunSummary``, ``Skipped``
 and ``Failure`` (the run's options, its summary and the summary's items) re-exported here
@@ -141,11 +145,11 @@ from mastpipe.pipeline.group import (
     fail,
     log,
     skip,
+    stopped_by_run_error,
 )
 from mastpipe.pipeline.identify import CALIB_FOLDER
 from mastpipe.pipeline.masters import _masters
 from mastpipe.pipeline.science import _science_frame
-from mastpipe.pipeline.summary import stopped_by_run_error
 from mastpipe.pipeline.traces import _resolve_light, _traces
 
 __all__ = [
@@ -172,7 +176,7 @@ def _utc_now() -> str:
 
 
 LOG_NAME_ATTEMPTS = 100
-"""How many random suffixes :func:`_start_logging` draws before giving up on a log name."""
+"""How many random suffixes :func:`_new_log_file` draws before giving up on a log name."""
 
 
 def _new_log_file(folder: Path) -> tuple[logging.FileHandler, Path]:
@@ -334,7 +338,7 @@ def _log_run_failure(handlers: list[logging.Handler], error: BaseException, summ
     """Write the exception leaving the run to the log file only: the console handler is
     removed first (stderr is the command layer's). A ``KeyboardInterrupt`` is the one line
     ``run interrupted``, without a traceback; a run error of the result
-    (:func:`~mastpipe.pipeline.summary.stopped_by_run_error`) the one line
+    (:func:`~mastpipe.pipeline.group.stopped_by_run_error`) the one line
     ``run failed: ...``; anything else, a ``RunError`` re-raised from a group included,
     ``run failed`` with its traceback. Nothing is written when the log has not started."""
     if not handlers:
@@ -359,20 +363,25 @@ def run_quicklook(
     """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring).
 
     The run is recorded in ``summary`` (a new :class:`RunSummary` when not given), so a
-    caller that hands one in still has what the run gathered when it raises."""
+    caller that hands one in still has what the run gathered when it raises; a handed-in
+    summary must be a fresh one (the run adds to its lists and sets its facts, and a used
+    one would mix two runs). Every run stamps ``started`` and ``finished``, one that fails
+    its precondition checks (an option out of range, a missing night folder) included."""
     night_dir, out_dir = Path(night_dir), Path(out_dir)
-    if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
-        raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
-    if options.on_error not in ("continue", "raise"):
-        raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
-    if not night_dir.is_dir():
-        raise InputMissingError(f"night folder {night_dir} is not a directory")
     if summary is None:
         summary = RunSummary()
     summary.started = _utc_now()
     handlers: list[logging.Handler] = []
     level = log.level
     try:
+        # the precondition checks: nothing is created or logged when one fails, but the
+        # run is stamped like any other
+        if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
+            raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
+        if options.on_error not in ("continue", "raise"):
+            raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
+        if not night_dir.is_dir():
+            raise InputMissingError(f"night folder {night_dir} is not a directory")
         handlers, level, summary.log = _start_output(out_dir, options.quiet)
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
         _warn_earlier_products(out_dir / SPEC_FOLDER)

@@ -776,6 +776,26 @@ def test_run_error_leaves_the_summary_and_the_log(tmp_path, capsys):
     assert "run failed" not in capsys.readouterr().err  # stderr is the command's
 
 
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        (RunOptions("highspec"), FileNotFoundError),
+        (RunOptions("highspec", on_error="ignore"), ValueError),
+        (RunOptions("highspec", time_policy="sometime"), ValueError),
+    ],
+)
+def test_early_failure_is_stamped_and_writes_nothing(tmp_path, options, error):
+    """A run stopped by its precondition checks still has ``started`` and ``finished``;
+    it creates no ``--out`` and no log."""
+    summary = RunSummary()
+    with pytest.raises(error):
+        run_quicklook(tmp_path / "nowhere", tmp_path / "out", options, summary)
+    assert summary.started is not None and summary.finished is not None
+    assert summary.started <= summary.finished
+    assert summary.log is None and summary.library is None and summary.frames_scanned is None
+    assert not (tmp_path / "out").exists()
+
+
 def test_out_that_is_a_file_is_output_unwritable(tmp_path):
     night = tmp_path / "night"
     night.mkdir()
