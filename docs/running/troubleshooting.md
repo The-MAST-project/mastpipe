@@ -14,14 +14,14 @@ meet and what to do.
 
 "no frames of <instrument> in <folder>" / "night folder … is not a directory"
 : The path is wrong, or the folder has no FITS astropy can open of that
-  instrument. The command exits with status 2 (a missing folder is reported on
-  stderr, before the run starts; an empty one is a warning in the log and one
-  line on stdout, not a failure).
+  instrument. A missing folder stops the command with status 4, reported in one
+  `FAILED:` line on stderr before the run starts. An empty folder is not a failure:
+  a warning in the log, one line on stdout, and status 0 (`empty`).
 
 "FAILED: frames.csv: …" / "FAILED: manifest row N: …"
 : The manifest given with `--manifest` has an error: the file is not UTF-8 CSV, a
   column is missing or unknown, or row N has a bad source, glob, extension or value.
-  Nothing is reduced and the command exits with status 2. Fix the file or the row
+  Nothing is reduced and the command exits with status 4. Fix the file or the row
   named (see [The manifest](night-folder.md#the-manifest)).
 
 "run failed: …" (in the log)
@@ -30,7 +30,9 @@ meet and what to do.
   library cannot be written, its `index.json` is not a JSON list (fix or restore
   it), or another process held the library's lock past its timeout (run again
   later). The cause is the last entry of the log under `out/logs/`; the
-  traceback follows it when the error was unexpected.
+  traceback follows it when the error was unexpected. On the console the command
+  prints the one line `FAILED: …` and exits with status 4, or, for an unexpected
+  error, prints the traceback and exits with status 1.
 
 "FAILED <file>: …"
 : An exception in that frame's reduction; the traceback is in the log. The

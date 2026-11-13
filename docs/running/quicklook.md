@@ -77,7 +77,7 @@ Per camera and grating found in the folder:
 `--on-error continue | raise`
 : With `continue` (default) a frame that fails is recorded and the run goes
   on; a failure in the masters or traces fails that camera-and-grating group.
-  With `raise` the first error stops the run with its traceback.
+  With `raise` the first error stops the run with its traceback (exit status 1).
 
 `--force`
 : Reduce products that already exist, and rebuild masters the library holds.
@@ -85,7 +85,17 @@ Per camera and grating found in the folder:
 `--set group.key=value`
 : Override any step parameter for this run, e.g. `--set drift.max_age_hours=24`
   or `--set extract.halfwidth=4`. The configuration actually used is hashed
-  into every product, so an override changes the idempotence key.
+  into every product, so an override changes the idempotence key. An override
+  without `=` or with an empty key segment is a usage error (exit status 2).
+
+`--summary-json PATH`
+: Write the run's result to `PATH` as one JSON document, for a program that
+  starts `quicklook` and needs to know what happened; see
+  [The result file](result-file.md).
+
+`--quiet`
+: Keep the per-frame progress lines off the console: warnings and errors still go
+  to stderr, the printed summary to stdout, and the log file still gets every line.
 
 ## Idempotence and re-reduction
 
@@ -108,16 +118,30 @@ quick-look runs again, those frames are reduced once more and become
 The console shows one line per product and a summary; the log in `out/logs/`
 has everything with timestamps, one new file per run
 (`quicklook_<UTC stamp>_<6 hex>.log`, the random suffix keeping two runs started in
-the same second apart). A run that raises writes why to the log only (`run failed: ...`,
-or `run interrupted` for Ctrl-C). Called from Python, `RunOptions(quiet=True)` keeps the
-console to warnings and errors; the log still has every line, and the run summary's
-`log` names the file. The exit status is 0 when every frame was
-reduced or skipped as up to date, 2 when anything failed, when the folder held
-no readable frame, when it or the manifest does not exist, or when the manifest
-has an error. The last three stop the run with one `FAILED:` line on stderr
-naming the folder, the file or the row (see
-[The manifest](night-folder.md#the-manifest)). Skipped frames and failures are
-listed with their reasons; see [Troubleshooting](troubleshooting.md).
+the same second apart). When something stops the whole run, the runner writes why to
+the log file only (`run failed: ...`, the traceback after it for an unexpected error,
+or `run interrupted` for Ctrl-C), and the command prints its own one line on stderr: the
+`FAILED: ...` line, or the traceback of an unexpected error. `--quiet` (in Python,
+`RunOptions(quiet=True)`) keeps the console to warnings and errors; the log still has
+every line, and the run summary's `log` names the file.
+
+The exit status says which kind of thing happened:
+
+| Status | Name | Meaning |
+|---|---|---|
+| 0 | `complete` | The run finished and nothing failed. |
+| 0 | `empty` | The folder holds no frame of this instrument and nothing failed: nothing to do. |
+| 1 | `error` | An unexpected error: a defect in mastpipe, or `--on-error raise` re-raising a frame's error. The traceback is on stderr and in the log. |
+| 2 | (usage) | The command line is wrong (the argument parser's own status), a malformed `--set` included. |
+| 3 | `partial` | The run finished and at least one frame or group failed; the other products are good. |
+| 4 | `failed` | The run could not be done, for a reason mastpipe recognizes; nothing was reduced. |
+
+A folder whose only file cannot be read as FITS has no frame but a failure, so it is
+`partial` (3), never `empty`. Status 4 is one `FAILED:` line on stderr naming the
+folder, the file or the row (see [The manifest](night-folder.md#the-manifest)); its
+causes and their `kind` names are listed in [The result file](result-file.md).
+Skipped frames and failures are listed with their reasons; see
+[Troubleshooting](troubleshooting.md).
 
 ## Running on a laptop afterwards
 

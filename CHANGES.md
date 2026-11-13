@@ -9,6 +9,24 @@
   `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
   map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
   once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- `quicklook` exit codes and result file (2026-11-12): the exit status says which kind of
+  thing happened: 0 `complete` or `empty` (a folder with no frame of the instrument, in
+  which nothing failed, is now a success), 1 `error` (an unexpected exception: its
+  traceback is printed on stderr, where it used to propagate out of `main`), 2 a usage
+  error only (the argument parser's), 3 `partial` (some frame or group failed; a folder
+  whose only file is unreadable is one), 4 `failed` (a `RunError` stopped the run: one
+  `FAILED:` line on stderr, which now covers an unknown instrument and a busy, unreadable
+  or unwritable library as well as a missing folder or manifest and a manifest error).
+  `--summary-json PATH` writes the run's result as one schema-1 JSON document, atomically
+  (`mastpipe.pipeline.summary`; documented on the new page "The result file"); a failure
+  to write it is one line on stderr and leaves the exit status alone. `--quiet` keeps the
+  per-frame progress off the console. A malformed `--set` (no `=`, an empty key segment)
+  is a usage error, exit status 2, for `identify`, `solve` and `quicklook` (it was a
+  traceback, exit 1). **Upgrade note:** exit status 2 from `quicklook` no longer means a
+  failed frame or group, an empty or missing folder or a bad manifest: a script that
+  tested for 2 tests for 3 (something failed) and 4 (the run could not be done) instead,
+  and no longer treats an empty folder as a failure. `solve` still exits 2 when there is
+  no reference ("run identify first").
 - Quick-look log (2026-11-12): each run writes a new log file,
   `out/logs/quicklook_<UTC stamp>_<6 hex>.log` (was `quicklook_<UTC stamp>.log`), created
   exclusively with a random suffix, so two runs started in the same second no longer

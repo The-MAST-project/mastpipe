@@ -9,6 +9,7 @@ the nominal run, the reference made by ``run_identify`` and the transferred run,
 tests share them read-only.
 """
 
+import json
 import re
 import shutil
 from dataclasses import replace
@@ -718,7 +719,7 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
         run_quicklook(nowhere, tmp_path / "out", RunOptions("highspec"))
     assert not (tmp_path / "out").exists()  # nothing is written for a mistyped path
     argv = ["quicklook", str(nowhere), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
+    assert main(argv) == 4
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == f"FAILED: night folder {nowhere} is not a directory\n"
 
@@ -728,11 +729,11 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     assert summary.products == [] and summary.skipped == [] and summary.failed == []
     assert summary.frames_scanned == 0
     argv = ["quicklook", str(empty), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2  # Task 4
+    assert main(argv) == 0  # empty: nothing to do is not a failure
     captured = capsys.readouterr()
     assert f"no frames of highspec in {empty}" in captured.out
     assert "WARNING no frames of highspec" in captured.err
-    # a folder whose only file cannot be read is as empty
+    # a folder whose only file cannot be read has no frames, but a failure (partial, exit 3)
     (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
     assert [item.source for item in summary.failed] == ["junk.fits"] and summary.frames_scanned == 0
@@ -747,7 +748,7 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     ],
 )
 def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest, message):
-    """An error in the manifest's content ends ``quicklook`` with exit code 2 and one
+    """An error in the manifest's content ends ``quicklook`` with exit code 4 and one
     ``FAILED:`` line on stderr naming the file or the row (after the run's opening log
     line), not a traceback."""
     night_dir = tmp_path / "night"
@@ -755,7 +756,7 @@ def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest
     path = tmp_path / "frames.csv"
     path.write_text(manifest, encoding="utf-8")
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main([*argv, "--manifest", str(path)]) == 2
+    assert main([*argv, "--manifest", str(path)]) == 4
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Traceback" not in captured.err
@@ -765,20 +766,20 @@ def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest
 
 def test_quicklook_reports_a_missing_manifest_on_stderr(tmp_path, capsys):
     """A ``--manifest`` file that does not exist is reported like a missing night folder:
-    one ``FAILED:`` line on stderr, exit code 2."""
+    one ``FAILED:`` line on stderr, exit code 4."""
     night_dir = tmp_path / "night"
     night_dir.mkdir()
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 2
+    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 4
     captured = capsys.readouterr()
     assert captured.out == "" and "Traceback" not in captured.err
     failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
     assert failed == [captured.err.splitlines()[-1]] and "missing.csv" in failed[0], captured.err
 
 
-def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
-    """Only the manifest's errors are reported as a user error: a ``ValueError`` from the
-    reduction itself still propagates."""
+def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch, capsys):
+    """Only a run error is reported as one ``FAILED:`` line: a ``ValueError`` from the
+    reduction itself is an unexpected error, exit code 1 with its traceback on stderr."""
 
     def broken(*args, **kwargs):
         raise ValueError("a programming error")
@@ -787,8 +788,10 @@ def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
     night_dir = tmp_path / "night"
     night_dir.mkdir()
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    with pytest.raises(ValueError, match="a programming error"):
-        main(argv)
+    assert main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Traceback" in captured.err
+    assert "ValueError: a programming error" in captured.err and "FAILED:" not in captured.err
 
 
 def test_unknown_frames_are_skipped_with_reason(tmp_path):
@@ -869,7 +872,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
 def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     """A truncated bias, a flat binned 2x1 and a corrupt arc are each dropped and recorded
     as a failure of that frame; the masters are stacked from the other frames and the night
-    still yields every science product. The command reports the failures (exit code 2)."""
+    still yields every science product. The command reports the failures (exit code 3)."""
     folder = tmp_path / "night"
     shutil.copytree(night.dir, folder)
     truth = night.truth
@@ -901,7 +904,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
         assert len(prov.inputs) == n, kind
 
     argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec"]
-    assert main(argv + ["--layout", "survey45"]) == 2
+    assert main(argv + ["--layout", "survey45"]) == 3
 
 
 def test_quicklook_skips_a_bias_of_another_amplifier(tmp_path, night):
@@ -1165,13 +1168,134 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
 
 def test_site_night_without_configuration_stops_with_a_message(site_night, tmp_path, capsys):
     argv = ["quicklook", str(site_night.dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
+    assert main(argv) == 3
     out = capsys.readouterr().out
     assert "--configuration" in out
     configurations = sorted(load_instrument("highspec").configurations)
     assert str(configurations) in out
     for name in set(GRATING_NAMES) - set(configurations):
         assert name not in out
+
+
+# ------------------------------------------------------------------ the caller contract
+
+
+def read(path: Path) -> dict:
+    """The result file ``--summary-json`` wrote."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_exit_codes_and_result_file(tmp_path, capsys):
+    out, result = tmp_path / "out", tmp_path / "new" / "dir" / "r.json"
+    base = ["--out", str(out), "--instrument", "highspec", "--summary-json", str(result)]
+    nowhere, empty = tmp_path / "nowhere", tmp_path / "empty"
+    empty.mkdir()
+
+    assert main(["quicklook", str(nowhere), *base]) == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["run_error"]["kind"] == "input_missing"
+    assert not out.exists() and capsys.readouterr().err.startswith("FAILED: night folder")
+
+    assert main(["quicklook", str(empty), *base]) == 0
+    assert read(result)["status"] == "empty"
+    assert "no frames of highspec" in capsys.readouterr().out
+
+    (empty / "sub").mkdir()
+    (empty / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    assert main(["quicklook", str(empty), *base]) == 3
+    doc = read(result)
+    assert doc["status"] == "partial" and doc["failed"][0]["source"] == "sub/junk.fits"
+
+    assert main(["quicklook", str(empty), *base, "--manifest", str(tmp_path / "missing.csv")]) == 4
+    assert read(result)["run_error"]["kind"] == "manifest_missing"
+
+    base[3] = "nosuch"
+    assert main(["quicklook", str(empty), *base]) == 4
+    assert read(result)["run_error"]["kind"] == "instrument_unknown"
+
+
+@pytest.mark.parametrize("command", ["quicklook", "identify", "solve"])
+def test_bad_set_is_a_usage_error(tmp_path, capsys, command):
+    argv = [command, str(tmp_path), "--out", str(tmp_path / "o"), "--instrument", "highspec", "--configuration", "Mg"]
+    with pytest.raises(SystemExit) as excinfo:
+        main([*argv, "--set", "novalue"])
+    assert excinfo.value.code == 2
+    assert "must have the form key.path=value" in capsys.readouterr().err
+
+
+def test_unexpected_error_is_exit_1_with_a_result(tmp_path, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise RuntimeError("a defect")
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", broken)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 1
+    doc = read(result)
+    assert doc["status"] == "error" and doc["run_error"]["kind"] == "unexpected" and doc["log"] is not None
+    assert "RuntimeError: a defect" in capsys.readouterr().err
+    assert "a defect" in (tmp_path / "out" / doc["log"]).read_text(encoding="utf-8")
+
+
+def test_interrupt_propagates_and_writes_no_result(tmp_path, monkeypatch):
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", interrupted)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with pytest.raises(KeyboardInterrupt):
+        main([*argv, "--summary-json", str(result)])
+    assert not result.exists()
+
+
+def test_unwritable_result_file_keeps_the_exit_code(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    blocked = tmp_path / "blocked"  # the result path is a folder
+    blocked.mkdir()
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(blocked)]) == 0
+    err = capsys.readouterr().err
+    assert "could not write the result file" in err and "Traceback" not in err
+
+
+def test_quiet_keeps_info_lines_off_stderr(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--quiet"]) == 0
+    captured = capsys.readouterr()
+    levels = {line.split(" ", 1)[0] for line in captured.err.splitlines()}
+    assert levels == {"WARNING"} and "WARNING no frames of highspec" in captured.err
+    assert "no frames of highspec" in captured.out
+    assert main(argv) == 0
+    assert "INFO" in {line.split(" ", 1)[0] for line in capsys.readouterr().err.splitlines()}
+
+
+def test_result_file_of_a_full_run(tmp_path, night, survey_layout, mg_lines, identified, capsys):
+    folder = tmp_path / "night"
+    simulate_night(night.effective, survey_layout, mg_lines, folder, seed=0, n_science=N_SCIENCE, no_cal_arcs=True)
+    out, library, result = tmp_path / "out", tmp_path / "lib", tmp_path / "r.json"
+    CalibLibrary(library).add_reference(identified.ref, identified.prov, "main")
+    argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--library", str(library), "--summary-json", str(result)]) == 0
+    capsys.readouterr()
+    doc = read(result)
+    assert doc["status"] == "complete" and doc["exit_code"] == 0 and doc["run_error"] is None
+    assert doc["library"] == str(library) and doc["frames_scanned"] > 0
+    assert doc["counts"] == {name: len(doc[name]) for name in ("products", "qc", "skipped", "reduced_again", "failed")}
+    roots = {item["root"] for item in doc["products"]}
+    assert roots == {"out", "library"}
+    paths = [item["path"] for item in doc["products"] + doc["qc"]]
+    sources = [item["source"] for item in doc["skipped"] + doc["failed"]]
+    assert all("\\" not in text for text in paths + sources + doc["reduced_again"])
+    assert all((out if item["root"] == "out" else library).joinpath(item["path"]).is_file() for item in doc["products"])
+    assert (out / doc["log"]).is_file()
 
 
 # ------------------------------------------------------------------------------- the CLI

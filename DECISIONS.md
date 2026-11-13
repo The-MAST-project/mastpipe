@@ -505,3 +505,18 @@ designer made, and from the rulings made while the plan was executed.
   two cameras) never interleave in one file; the path is `RunSummary.log`. `quiet` lowers
   only the console (to `WARNING`); the file keeps `INFO`. An interrupt is logged as the
   one line `run interrupted`, without a traceback: it is an operator's action, not a defect.
+- **`quicklook`'s exit status is a five-way contract, and the result file is opt-in**:
+  0 `complete` or `empty`, 1 `error` (any exception other than a `RunError`; its
+  traceback on stderr), 2 the argument parser's alone (a malformed `--set` joins it,
+  through an argparse `type`), 3 `partial`, 4 `failed` (a `RunError`). Failures moved off
+  2 because 2 already meant "bad command line"; an empty folder in which nothing failed is
+  a success because a caller meets folders of plans that ended before their first frame.
+  The mapping lives in the command layer (`pipeline/summary.py`, called from
+  `pipeline/commands.py`), so `run_quicklook` keeps raising and returning a
+  `RunSummary`. `--summary-json PATH` writes a schema-1 JSON document (sorted keys,
+  ASCII, written atomically) only when asked; written paths are relative to one of two
+  roots, `out` or `library`, with forward slashes. Its stability rule (adding a field or
+  a `kind` keeps the schema; removing, renaming or changing a meaning bumps it) is pinned
+  by a hand-written example under `tests/unit/data/` that the docs page includes
+  verbatim. `KeyboardInterrupt` is not caught: no result file, and the interrupt
+  propagates. `solve` keeps its exit 2 ("run identify first") until it adopts the table.

@@ -9,6 +9,7 @@ layers win key by key. The result is validated as
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
@@ -155,3 +156,14 @@ def parse_override(text: str) -> dict[str, Any]:
     for part in reversed(parts[:-1]):
         nested = {part: nested}
     return nested
+
+
+def override_argument(text: str) -> str:
+    """The ``type`` of a ``--set`` command-line option: ``text`` unchanged when
+    :func:`parse_override` accepts it, else an ``argparse.ArgumentTypeError``, so a
+    malformed override is a usage error (exit code 2) rather than a traceback."""
+    try:
+        parse_override(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    return text

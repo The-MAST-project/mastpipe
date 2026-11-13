@@ -4,27 +4,34 @@ Each registrar adds one sub-parser to :data:`mastpipe.cli.COMMANDS`; the command
 turn the parsed arguments into calls of :func:`~mastpipe.pipeline.runner.run_quicklook`,
 :func:`~mastpipe.pipeline.identify.run_solve` (seeded by the calibration library) and a
 reader of any product file, and print what happened.
+
+``quicklook`` exits 0 when the run is ``complete`` or ``empty``, 1 on an unexpected error,
+2 on a usage error (the argument parser's), 3 when it is ``partial`` (some frame or group
+failed) and 4 when it ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped it); see
+:mod:`mastpipe.pipeline.summary`.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from astropy.io import fits
 
-from mastpipe.config.loader import build_effective, parse_override
+from mastpipe.config.loader import build_effective, override_argument, parse_override
 from mastpipe.config.models import InstrumentConfig
+from mastpipe.core.errors import RunError
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io import products
-from mastpipe.io.ingest import ManifestError
+from mastpipe.pipeline import summary as result
 from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
 from mastpipe.pipeline.identify import CALIB_FOLDER, run_solve
 from mastpipe.pipeline.provenance import Provenance
-from mastpipe.pipeline.runner import TIME_POLICIES, RunOptions, run_quicklook
+from mastpipe.pipeline.runner import TIME_POLICIES, RunOptions, RunSummary, run_quicklook
 
 RUN_IDENTIFY_FIRST = "run identify first"
 
@@ -42,6 +49,7 @@ def _add_set(parser: argparse.ArgumentParser) -> None:
         "--set",
         action="append",
         default=[],
+        type=override_argument,
         metavar="KEY.PATH=VALUE",
         help="override a step parameter, e.g. extract.halfwidth=4 (repeatable)",
     )
@@ -82,15 +90,28 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--reference", metavar="ID", help="use this reference solution instead of the one valid")
     parser.add_argument("--time-policy", choices=list(TIME_POLICIES), help="how drift arcs are paired in time")
     parser.add_argument("--library", type=Path, help="calibration library (default: OUT/calib)")
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        metavar="PATH",
+        help="write the run's result as JSON to PATH (any outcome but a usage error)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="keep progress lines off the console; warnings and errors still show",
+    )
     _add_set(parser)
     parser.set_defaults(func=quicklook_command)
 
 
 def quicklook_command(args: argparse.Namespace) -> int:
-    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed, the
-    night folder or the manifest does not exist, or the manifest is bad (a
-    :class:`~mastpipe.io.ingest.ManifestError`); the last three are reported in one
-    ``FAILED:`` line on stderr."""
+    """Run ``quicklook`` from parsed arguments and return its exit code (see
+    :func:`mastpipe.pipeline.summary.outcome`): 0 ``complete`` or ``empty``, 1 ``error``,
+    3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` is one
+    ``FAILED:`` line on stderr, any other exception its traceback; the printed summary
+    follows only a run that ended normally. With ``--summary-json`` the result document is
+    written last; a failure to write it is one line on stderr and changes nothing else."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -103,26 +124,43 @@ def quicklook_command(args: argparse.Namespace) -> int:
         reference_id=args.reference,
         time_policy=args.time_policy,
         library=args.library,
+        quiet=args.quiet,
     )
+    summary = RunSummary()
+    error: Exception | None = None
     try:
-        summary = run_quicklook(args.night_dir, args.out, options)
-    except (FileNotFoundError, ManifestError) as error:
-        print(f"FAILED: {error}", file=sys.stderr)
-        return 2
+        run_quicklook(args.night_dir, args.out, options, summary)
+    except RunError as caught:
+        error = caught
+        print(f"FAILED: {caught}", file=sys.stderr)
+    except Exception as caught:
+        error = caught
+        traceback.print_exception(caught, file=sys.stderr)
+    if error is None:
+        _print_summary(summary, options, args.night_dir)
+    if args.summary_json is not None:
+        doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
+        try:
+            result.write(args.summary_json, doc)
+        except OSError as failure:
+            print(f"could not write the result file {args.summary_json}: {failure}", file=sys.stderr)
+    return result.outcome(summary, error)[1]
+
+
+def _print_summary(summary: RunSummary, options: RunOptions, night_dir: Path) -> None:
     print(
         f"{len(summary.products)} products, {len(summary.qc)} QC files, "
         f"{len(summary.skipped)} skipped, {len(summary.reduced_again)} reduced again, "
         f"{len(summary.failed)} failed"
     )
     if summary.frames_scanned == 0:
-        print(f"no frames of {options.instrument} in {args.night_dir}")
+        print(f"no frames of {options.instrument} in {night_dir}")
     for item in summary.skipped:
         print(f"  skipped {item.label}: {item.reason}")
     for source in summary.reduced_again:
         print(f"  reduced again {source}")
     for failure in summary.failed:
         print(f"  FAILED {failure.label}: {failure.message}")
-    return 0 if not summary.failed and summary.frames_scanned != 0 else 2
 
 
 # ---------------------------------------------------------------------------------- solve
