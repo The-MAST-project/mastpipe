@@ -486,3 +486,45 @@ designer made, and from the rulings made while the plan was executed.
   `CLAUDE.md`; reverses "same model throughout"): an approved plan carries the design, so
   implementation goes to implementer subagents on Opus, and planning, design and code
   review stay with the model the user is working with.
+
+## 2026-11-12 — The caller contract of `quicklook`
+
+- **Run-stopping causes are one exception family in `core/errors.py`**: `RunError`
+  carries a `kind` (`input_missing`, `manifest_missing`, `manifest_invalid`,
+  `instrument_unknown`, `library_busy`, `library_invalid`, `output_unwritable`;
+  `unexpected` for the base) and `retryable` (true only for `library_busy`), so a caller
+  can branch on the cause without parsing messages. Each class keeps the builtin base its
+  cause raised before (`FileNotFoundError`, `KeyError`, `TimeoutError`, `ValueError`,
+  `OSError`), so existing `except` clauses still hold. `ManifestError` joins the family
+  where it is defined (`io/ingest.py`). Only an unknown instrument is an
+  `UnknownInstrumentError`; the registry's `KeyError`s for an unknown layout or
+  configuration stay plain. The family lives in `core/` because every layer raises it.
+- **One log file per run, never shared**: `quicklook_<UTC stamp>_<6 hex>.log`, opened
+  exclusively (mode `"x"`) with a random suffix from `secrets.token_hex(3)` and a new
+  draw when the name is taken, so two runs started in the same second (two cron jobs,
+  two cameras) never interleave in one file; the path is `RunSummary.log`. `quiet` lowers
+  only the console (to `WARNING`); the file keeps `INFO`. An interrupt is logged as the
+  one line `run interrupted`, without a traceback: it is an operator's action, not a defect.
+- **`quicklook`'s exit status is a five-way contract, and the result file is opt-in**:
+  0 `complete` or `empty`, 1 `error` (any exception other than a `RunError`; its
+  traceback on stderr), 2 the argument parser's alone (a malformed `--set` joins it,
+  through an argparse `type`), 3 `partial`, 4 `failed` (a `RunError`). Failures moved off
+  2 because 2 already meant "bad command line"; an empty folder in which nothing failed is
+  a success because a caller meets folders of plans that ended before their first frame.
+  The mapping lives in the command layer (`pipeline/summary.py`, called from
+  `pipeline/commands.py`), so `run_quicklook` keeps raising and returning a
+  `RunSummary`. A `RunError` is a run error of the result (`failed`, its own `kind` and
+  `retryable`) only while `RunSummary.library` is still `None`: once the library is open
+  something may have been reduced, so a `RunError` re-raised from a group under
+  `--on-error raise` is `error`, kind `unexpected` (one predicate,
+  `group.stopped_by_run_error`, beside `RunSummary` so the runner need not import the
+  command layer's `summary` module, decides it for the exit code, the document, stderr and
+  the log). `--summary-json PATH` writes a schema-1 JSON document (sorted keys, ASCII,
+  written atomically) only when asked; every path in it has forward slashes; `input`,
+  `out` and `library` are as given, and written paths are relative to the deeper of two
+  roots, `out` or `library`, chosen on absolute normalised paths (`os.path.abspath`, no
+  link resolution) so `--out .` never claims `../lib`. Its stability rule (adding a field or
+  a `kind` keeps the schema; removing, renaming or changing a meaning bumps it) is pinned
+  by a hand-written example under `tests/unit/data/` that the docs page includes
+  verbatim. `KeyboardInterrupt` is not caught: no result file, and the interrupt
+  propagates. `solve` keeps its exit 2 ("run identify first") until it adopts the table.

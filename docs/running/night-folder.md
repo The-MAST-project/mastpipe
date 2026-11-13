@@ -34,7 +34,8 @@ in `.fits`, `.fit` or `.fits.fz`, in any case; files and folders whose name
 starts with `.` are ignored, and other files (`seq.txt`, logs, notes) are not
 scanned at all. A symbolic link to a folder is not descended into (a linked
 FITS file is read). A file with a FITS name that cannot be opened is recorded as a
-**failure** (`unreadable FITS file`), and the run's exit status is 2.
+**failure** (`unreadable FITS file`), and the run's exit status is 3 (`partial`), even
+when no other frame was found.
 
 Every frame is known by its path **relative to the night folder**, with forward
 slashes: `acquisition-0012/exposure-003.fits` and
@@ -126,7 +127,7 @@ mastpipe quicklook <night>/highspec --out out --instrument highspec --configurat
 There is no silent default: without `--configuration`, frames whose grating is
 unknown are not reduced, the run records a failure that lists the
 configurations the instrument defines (`['Mg']` for HighSpec today, not every
-fleet grating name), and the exit status is 2. The control software writes no `GRATING` card today,
+fleet grating name), and the exit status is 3. The control software writes no `GRATING` card today,
 so a night from the site needs the option.
 
 ### Time
@@ -201,7 +202,7 @@ Windows (`acquisition-0012\exposure-003.fits`) matches as well.
 An `extension` column restricts a row to one HDU of a multi-extension file.
 Rows apply in order, so a later row wins over an earlier one for the frames
 both name. A row that matches no frame is listed under *skipped* as
-`manifest row 3 (exposure-009.fits): matches no frame`, never dropped
+`exposure-009.fits: manifest row 3: matches no frame`, never dropped
 silently; a row naming a file that exists but is not a FITS file (a `.txt`, a
 `.fts`) is listed there as `not a FITS file`, since the scan never reads it.
 
@@ -224,7 +225,7 @@ row gives; a missing `source` column or an unknown one; a bad glob; an `extensio
 is not a number; a value that does not parse, such as `targets` naming something that is
 not a telescope unit) stops the run before any frame is reduced: `quicklook` prints one
 line on stderr naming the file or the row, e.g. `FAILED: manifest row 2: bad glob
-'frame[9-0].fits': …`, and exits with status 2. A manifest that does not exist is
+'frame[9-0].fits': …`, and exits with status 4. A manifest that does not exist is
 reported the same way.
 
 ## Layouts

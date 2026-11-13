@@ -27,12 +27,12 @@ from mastpipe.pipeline.group import (
     _configuration_origin,
     _configuration_steps,
     _content_steps,
-    _describe,
     _Group,
     _median_snr,
     _reference_for,
     _skip,
     _write_qc,
+    fail,
     log,
 )
 from mastpipe.pipeline.provenance import Provenance
@@ -370,5 +370,4 @@ def _combine_targets(group: _Group, es: ExposureSpectra, prov: Provenance) -> No
         except Exception as error:
             if group.options.on_error == "raise":
                 raise
-            group.summary.failed.append((meta.source, f"combine {target}: {_describe(error)}"))
-            log.exception("failed combining %s of %s", target, meta.source)
+            fail(group.summary, "frame", meta.source, error, prefix=f"combine {target}: ")

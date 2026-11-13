@@ -2,6 +2,20 @@
 
 ## 0.0.1 (unreleased)
 
+- `quicklook` caller-contract fixes (2026-11-13): a printed summary that stdout cannot take
+  (an encoding that cannot spell a file name, a full device) is one line on stderr,
+  `could not print the summary: ...`, instead of a traceback with exit status 1 and no
+  result file; the run's exit status stands and the result file is written. An encoding
+  failure loses only the summary lines that could not be printed. Only when stdout cannot
+  be written at all (a full device) is it pointed at the null device, so the interpreter's
+  flush at exit cannot turn the status into 120; anything the same process writes to
+  stdout afterwards is discarded. A closed stdout (`>&-`) is not a failure: the summary is
+  left out silently. Every run stamps `started` and `finished`, one stopped by a missing
+  night folder or an option out of range included (they were `null` in the result file).
+  A printed `FAILED` line names the exception's class again: `FAILED a.fits: KeyError:
+  'GRATING'` (the result file's `message` is unchanged). `stopped_by_run_error` moved from
+  `mastpipe.pipeline.summary` to `mastpipe.pipeline.group`.
+
 - Upgrade notes: what re-running `quicklook` into an output folder written by an earlier
   version costs. A flat master built by an earlier version (no `MPMKH`) is built again
   once, on the first run that would have reused it, and the science products of that
@@ -9,6 +23,57 @@
   `*_nosum_traces` files (in `calib/` and `qa/`) stay beside the new ones. A custom header
   map naming a UTC zone (`UTC`, `Etc/UTC`, ...) has its science products reduced again
   once; the shipped HighSpec map is not affected. Nothing else is rebuilt or reduced again.
+- `quicklook` exit codes and result file (2026-11-12): the exit status says which kind of
+  thing happened: 0 `complete` or `empty` (a folder with no frame of the instrument, in
+  which nothing failed, is now a success), 1 `error` (an unexpected exception: its
+  traceback is printed on stderr, where it used to propagate out of `main`), 2 a usage
+  error only (the argument parser's), 3 `partial` (some frame or group failed; a folder
+  whose only file is unreadable is one), 4 `failed` (a `RunError` stopped the run: one
+  `FAILED:` line on stderr, which now covers an unknown instrument and a busy, unreadable
+  or unwritable library as well as a missing folder or manifest and a manifest error).
+  A `RunError` counts as `failed` only before the calibration library is open; one
+  re-raised from a group under `--on-error raise` is `error` (exit 1, traceback on stderr
+  and in the log). `--summary-json PATH` writes the run's result as one schema-1 JSON
+  document, atomically (`mastpipe.pipeline.summary`; documented on the new page "The
+  result file"), with forward slashes in every path; a failure to build or write it is
+  one line on stderr and leaves the exit status alone. `--quiet` keeps the
+  per-frame progress off the console. A malformed `--set` (no `=`, an empty key segment)
+  is a usage error, exit status 2, for `identify`, `solve` and `quicklook` (it was a
+  traceback, exit 1). **Upgrade note:** exit status 2 from `quicklook` no longer means a
+  failed frame or group, an empty or missing folder or a bad manifest: a script that
+  tested for 2 tests for 3 (something failed) and 4 (the run could not be done) instead,
+  and no longer treats an empty folder as a failure. `solve` still exits 2 when there is
+  no reference ("run identify first").
+- Quick-look log (2026-11-12): each run writes a new log file,
+  `out/logs/quicklook_<UTC stamp>_<6 hex>.log` (was `quicklook_<UTC stamp>.log`), created
+  exclusively with a random suffix, so two runs started in the same second no longer
+  share one file; `RunSummary.log` names it. `RunOptions(quiet=True)` keeps the console
+  to warnings and errors (the log file still has every `INFO` line). An interrupted run
+  (`KeyboardInterrupt`) writes the one line `run interrupted` to the log, without a
+  traceback.
+- Run errors (2026-11-12): what stops a run is one exception family,
+  `mastpipe.core.errors.RunError`, each class with a `kind` and `retryable`, and each
+  keeping its builtin base: a missing night folder is `InputMissingError` (a
+  `FileNotFoundError`), a missing manifest `ManifestMissingError` (a `FileNotFoundError`),
+  `ManifestError` has kind `manifest_invalid`, an unknown instrument is
+  `UnknownInstrumentError` (a `KeyError`, its message no longer quoted), a calibration
+  library whose lock is held past the timeout is `LibraryBusyError` (a `TimeoutError`, the
+  one retryable kind), an `index.json` that is not UTF-8 JSON holding a list is
+  `LibraryInvalidError` (a `ValueError`; a JSON or decoding error before), and an `--out`,
+  log or library that cannot be created is `OutputUnwritableError` (an `OSError`).
+  `run_quicklook` takes an optional `summary` that keeps what the run gathered when it
+  raises, and writes the exception that ends a run to the log file (`run failed: ...`),
+  not to the console. A failure recorded from a `RunError` takes its kind.
+- Run summary (2026-11-12): `RunSummary.skipped` and `RunSummary.failed` hold
+  `Skipped(scope, source, reason)` and `Failure(scope, source, message, kind, error_type)`
+  items (scope `frame`, `group`, `manifest` or `run`) instead of strings and pairs, and the
+  summary records the run's `started` and `finished` (UTC), `frames_scanned` and
+  `library`. A failure's message no longer starts with the exception's class name (that is
+  `error_type`); a group without a configuration fails with kind `configuration_unknown`.
+  An unmatched manifest row is listed as `<source>: manifest row N: matches no frame`. A
+  night folder with no frame of the instrument is no longer a failure item (`NO_FRAMES` is
+  gone): the run logs `no frames of <instrument> in <folder>` as a warning and `quicklook`
+  prints that line; its exit status is 0 (`empty`, see the exit codes above).
 - Manifest errors on the command line (2026-11-11):
   - an error in a manifest's content (an unknown column, a bad `targets` cell, a bad glob
     such as `frame[9-0].fits`, ...) ends `mastpipe quicklook` with one `FAILED:` line on

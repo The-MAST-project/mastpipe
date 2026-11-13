@@ -4,27 +4,35 @@ Each registrar adds one sub-parser to :data:`mastpipe.cli.COMMANDS`; the command
 turn the parsed arguments into calls of :func:`~mastpipe.pipeline.runner.run_quicklook`,
 :func:`~mastpipe.pipeline.identify.run_solve` (seeded by the calibration library) and a
 reader of any product file, and print what happened.
+
+``quicklook`` exits 0 when the run is ``complete`` or ``empty``, 1 on an unexpected error,
+2 on a usage error (the argument parser's), 3 when it is ``partial`` (some frame or group
+failed) and 4 when it ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped it); see
+:mod:`mastpipe.pipeline.summary`.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from astropy.io import fits
 
-from mastpipe.config.loader import build_effective, parse_override
+from mastpipe.config.loader import build_effective, override_argument, parse_override
 from mastpipe.config.models import InstrumentConfig
 from mastpipe.instruments.registry import load_instrument
 from mastpipe.io import products
-from mastpipe.io.ingest import ManifestError
+from mastpipe.pipeline import summary as result
 from mastpipe.pipeline.callib import CalibLibrary, registry_geometry
+from mastpipe.pipeline.group import stopped_by_run_error
 from mastpipe.pipeline.identify import CALIB_FOLDER, run_solve
 from mastpipe.pipeline.provenance import Provenance
-from mastpipe.pipeline.runner import TIME_POLICIES, RunOptions, run_quicklook
+from mastpipe.pipeline.runner import TIME_POLICIES, RunOptions, RunSummary, run_quicklook
 
 RUN_IDENTIFY_FIRST = "run identify first"
 
@@ -42,6 +50,7 @@ def _add_set(parser: argparse.ArgumentParser) -> None:
         "--set",
         action="append",
         default=[],
+        type=override_argument,
         metavar="KEY.PATH=VALUE",
         help="override a step parameter, e.g. extract.halfwidth=4 (repeatable)",
     )
@@ -82,15 +91,34 @@ def register_quicklook(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--reference", metavar="ID", help="use this reference solution instead of the one valid")
     parser.add_argument("--time-policy", choices=list(TIME_POLICIES), help="how drift arcs are paired in time")
     parser.add_argument("--library", type=Path, help="calibration library (default: OUT/calib)")
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        metavar="PATH",
+        help="write the run's result as JSON to PATH (any outcome but a usage error)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="keep progress lines off the console; warnings and errors still show",
+    )
     _add_set(parser)
     parser.set_defaults(func=quicklook_command)
 
 
 def quicklook_command(args: argparse.Namespace) -> int:
-    """Run ``quicklook`` from parsed arguments; exit code 2 when anything failed, the
-    night folder or the manifest does not exist, or the manifest is bad (a
-    :class:`~mastpipe.io.ingest.ManifestError`); the last three are reported in one
-    ``FAILED:`` line on stderr."""
+    """Run ``quicklook`` from parsed arguments and return its exit code (see
+    :func:`mastpipe.pipeline.summary.outcome`): 0 ``complete`` or ``empty``, 1 ``error``,
+    3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` raised before the
+    calibration library was open is one ``FAILED:`` line on stderr, any other exception
+    (a run error re-raised from a group included) its traceback; the printed summary
+    follows only a run that ended normally. It is left out silently when stdout is closed;
+    a stdout that cannot take it (an encoding that cannot spell a file name, a full device)
+    is one line on stderr, then stdout is drained, or discarded only when it cannot be
+    written at all (:func:`_drain_stdout`), and the exit code and the result file are left
+    alone. With
+    ``--summary-json`` the result document is built and written last; a failure to do so
+    is one line on stderr and changes nothing else."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -103,24 +131,85 @@ def quicklook_command(args: argparse.Namespace) -> int:
         reference_id=args.reference,
         time_policy=args.time_policy,
         library=args.library,
+        quiet=args.quiet,
     )
+    summary = RunSummary()
+    error: Exception | None = None
     try:
-        summary = run_quicklook(args.night_dir, args.out, options)
-    except (FileNotFoundError, ManifestError) as error:
-        print(f"FAILED: {error}", file=sys.stderr)
-        return 2
+        run_quicklook(args.night_dir, args.out, options, summary)
+    except Exception as caught:
+        error = caught
+        if stopped_by_run_error(summary, caught):
+            print(f"FAILED: {caught}", file=sys.stderr)
+        else:
+            traceback.print_exception(caught, file=sys.stderr)
+    if error is None and sys.stdout is not None:  # None: file descriptor 1 is closed
+        try:
+            _print_summary(summary, options, args.night_dir)
+            sys.stdout.flush()
+        except (OSError, ValueError) as failure:  # UnicodeError is a ValueError, as is a closed file's
+            print(f"could not print the summary: {failure}", file=sys.stderr)
+            _drain_stdout()
+    if args.summary_json is not None:
+        try:
+            doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
+            result.write(args.summary_json, doc)
+        except Exception as failure:
+            print(f"could not write the result file {args.summary_json}: {failure}", file=sys.stderr)
+    return result.outcome(summary, error)[1]
+
+
+def _drain_stdout() -> None:
+    """After a failed print: flush what stdout still holds (the lines printed before an
+    encoding failure reach their reader), and only when stdout cannot be written at all
+    (the flush raises ``OSError``: a full device, say) discard it (:func:`_discard_stdout`).
+    Any other error of the flush (a closed file) is left alone."""
+    try:
+        sys.stdout.flush()
+    except OSError:
+        _discard_stdout()
+    except ValueError:
+        pass
+
+
+def _discard_stdout() -> None:
+    """Point file descriptor 1 at the null device, so that the text a failed write left
+    in stdout's buffer is flushed there at shutdown instead of failing once more (which
+    would end the process with the interpreter's status 120, not the run's); whatever
+    the process writes to stdout afterwards is discarded too. A stdout without a real
+    descriptor (one replaced in-process) is left alone, and so is everything when the
+    null device cannot be opened or duplicated."""
+    try:
+        target = sys.stdout.fileno()
+    except (OSError, ValueError, AttributeError):  # io.UnsupportedOperation is both of the first two
+        return
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(null, target)
+    except OSError:
+        pass
+    finally:
+        os.close(null)
+
+
+def _print_summary(summary: RunSummary, options: RunOptions, night_dir: Path) -> None:
     print(
         f"{len(summary.products)} products, {len(summary.qc)} QC files, "
         f"{len(summary.skipped)} skipped, {len(summary.reduced_again)} reduced again, "
         f"{len(summary.failed)} failed"
     )
+    if summary.frames_scanned == 0:
+        print(f"no frames of {options.instrument} in {night_dir}")
     for item in summary.skipped:
-        print(f"  skipped {item}")
+        print(f"  skipped {item.label}: {item.reason}")
     for source in summary.reduced_again:
         print(f"  reduced again {source}")
-    for source, why in summary.failed:
-        print(f"  FAILED {source}: {why}")
-    return 0 if not summary.failed else 2
+    for failure in summary.failed:
+        cause = failure.message if failure.error_type is None else f"{failure.error_type}: {failure.message}"
+        print(f"  FAILED {failure.label}: {cause}")
 
 
 # ---------------------------------------------------------------------------------- solve

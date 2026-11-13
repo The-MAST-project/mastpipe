@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError
 from mastpipe.core.model import LINE_COLUMNS, FrameMeta, MasterCalib, WavelengthSolution
 from mastpipe.io.atomic import locked
 from mastpipe.io.ingest import file_checksum
@@ -352,3 +353,35 @@ def test_opening_a_library_waits_for_a_writer(tmp_path):
         assert reader.is_alive() and not opened  # blocked while the index is being written
     reader.join(timeout=10)
     assert len(opened) == 1 and opened[0].list() == []
+
+
+def test_bad_index_is_library_invalid(tmp_path):
+    (tmp_path / "index.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(LibraryInvalidError, match="index.json"):
+        CalibLibrary(tmp_path)
+    (tmp_path / "index.json").write_text('{"a": 1}', encoding="utf-8")
+    with pytest.raises(LibraryInvalidError):
+        CalibLibrary(tmp_path)
+    (tmp_path / "index.json").write_bytes(b"[\xff\xfe]")
+    with pytest.raises(LibraryInvalidError, match="index.json"):
+        CalibLibrary(tmp_path)
+
+
+def test_held_lock_is_library_busy(tmp_path, monkeypatch):
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        CalibLibrary(tmp_path)
+
+
+def test_held_lock_on_write_is_library_busy(tmp_path, monkeypatch):
+    library = CalibLibrary(tmp_path)
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library._replace("file", "a.fits", {"file": "a.fits"})

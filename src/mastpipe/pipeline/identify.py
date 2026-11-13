@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 from mastpipe.__version__ import __version__
-from mastpipe.config.loader import build_effective, config_hash, load_yaml, parse_override
+from mastpipe.config.loader import build_effective, config_hash, load_yaml, override_argument, parse_override
 from mastpipe.config.models import EffectiveConfig
 from mastpipe.core.model import (
     CalibrationSet,
@@ -636,6 +636,7 @@ def register_identify(subparsers: argparse._SubParsersAction) -> None:
         "--set",
         action="append",
         default=[],
+        type=override_argument,
         metavar="KEY.PATH=VALUE",
         help="override a step parameter, e.g. trace.trace_halfwidth=4 (repeatable)",
     )

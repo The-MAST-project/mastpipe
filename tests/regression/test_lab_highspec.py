@@ -202,7 +202,7 @@ def test_lab_traces_match_notebook(night, effective, first_run, out_dir):
     log = "".join(path.read_text(encoding="utf-8") for path in (out_dir / "logs").glob("quicklook_*.log"))
     assert f"light {FULL_ARC}: arc (content:arc_like)" in log
     assert f"arc {FULL_ARC}: full" in log
-    assert any(item.startswith(FULL_ARC) and "run identify" in item for item in first_run.skipped)
+    assert any(item.source == FULL_ARC and "run identify" in item.reason for item in first_run.skipped)
     masters = {
         kind: build_master([load_frame(refs[name], detector)], kind, params.calib)
         for name, kind in CALIB_FRAMES.items()
@@ -328,7 +328,7 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     the calibration folder and fails on nothing."""
     assert first_run.failed == []
     assert first_run.reduced_again == []
-    assert any(item.startswith(FULL_ARC) and "run identify" in item for item in first_run.skipped), first_run.skipped
+    assert any(item.source == FULL_ARC and "run identify" in item.reason for item in first_run.skipped), first_run.skipped
     assert not any(p.name.endswith("_spec.fits") for p in first_run.products)
     library = CalibLibrary(out_dir / CALIB_FOLDER)
     assert {e["kind"] for e in library.list()} >= {"bias", "background", "flat"}
@@ -347,15 +347,15 @@ def test_lab_quicklook_runs(first_run, reference, second_run, night, out_dir):
     assert summary.failed == []
     assert summary.reduced_again == []
     assert any(
-        item.startswith(FULL_ARC) and f"already solved into reference {reference.ref.identifier}" in item
+        item.source == FULL_ARC and f"already solved into reference {reference.ref.identifier}" in item.reason
         for item in summary.skipped
     ), summary.skipped
     assert not any(p.name.endswith("_spec.fits") for p in summary.products)
     assert second_run.after == second_run.before
     assert any(name.endswith("_wref.fits") for name in second_run.after)
     assert len(library.list(kind="reference")) == 1
-    # one log per run, unless both runs started within the same second
+    # one log file per run, never shared (a random suffix keeps two runs of one second apart)
     logs = sorted((out_dir / "logs").glob("quicklook_*.log"))
-    assert 1 <= len(logs) <= 2
+    assert len(logs) == 2
     text = "".join(log.read_text(encoding="utf-8") for log in logs)
     assert "run identify" in text and "already solved" in text

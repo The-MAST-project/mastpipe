@@ -9,8 +9,12 @@ the nominal run, the reference made by ``run_identify`` and the transferred run,
 tests share them read-only.
 """
 
+import json
+import os
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +26,7 @@ from astropy.io import fits
 
 from mastpipe.cli import main
 from mastpipe.config.loader import build_effective, parse_override
+from mastpipe.core.errors import LibraryBusyError
 from mastpipe.instruments import registry
 from mastpipe.instruments.registry import layout_hash, load_instrument
 from mastpipe.io.ingest import file_checksum
@@ -36,7 +41,7 @@ from mastpipe.io.products import (
 )
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.identify import run_identify
-from mastpipe.pipeline.runner import NO_FRAMES, RunOptions, RunSummary, run_quicklook
+from mastpipe.pipeline.runner import RunOptions, RunSummary, Skipped, run_quicklook
 from mastpipe.sim.simulator import BIAS_LEVEL_ADU, simulate_night, undrift_x
 from mastpipe.steps.atlas import catalogue_arrays
 from mastpipe.steps.combine import group_by_target
@@ -201,9 +206,9 @@ def test_quicklook_without_reference_gives_nominal(nominal_run, night, out_dir):
         assert all(spectrum.wavelength is not None for spectrum in es.spectra)
         assert prov.inputs == [es.meta.checksum]
     # the full arc cannot be solved and the drift arcs have nothing to drift against
-    assert any(night.full_arc.name in item and "run identify" in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and "run identify" in item.reason for item in summary.skipped)
     for arc in night.cal_arcs:
-        assert any(arc in item and "no reference" in item for item in summary.skipped)
+        assert any(arc in item.source and "no reference" in item.reason for item in summary.skipped)
     # masters, traces and the log are in place
     library = CalibLibrary(out_dir / "calib")
     assert {entry["kind"] for entry in library.list()} == {"bias", "dark", "background", "flat"}
@@ -225,7 +230,7 @@ def test_quicklook_end_to_end_on_simulated_night(transferred_run, identified, ni
     sources = science_files(truth)
     # the nominal products were reduced again, now against the reference and its arcs
     assert sorted(summary.reduced_again) == sorted(sources)
-    assert any(night.full_arc.name in item and identified.ref.identifier in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and identified.ref.identifier in item.reason for item in summary.skipped)
     products = spec_products(out_dir)
     assert len(products) == N_SCIENCE
     checksums = {name: file_checksum(night.dir / name) for name in night.cal_arcs}
@@ -311,7 +316,7 @@ def test_quicklook_idempotent_then_reduced_again(tmp_path, night, survey_layout,
     # nothing changed: every science product is skipped
     again = run_quicklook(folder, out, options(SHORT_AGE))
     assert again.failed == [] and again.reduced_again == []
-    skipped = [item for item in again.skipped if "already reduced" in item]
+    skipped = [item for item in again.skipped if "already reduced" in item.reason]
     assert len(skipped) == N_SCIENCE
     assert not any(p.name.endswith("_spec.fits") for p in again.products)
 
@@ -331,11 +336,11 @@ def test_quicklook_idempotent_then_reduced_again(tmp_path, night, survey_layout,
     assert sorted(third.reduced_again) == near
     assert all(statuses[s][0] == "transferred" for s in near)
     assert all(statuses[s][0] == "reference" for s in far)
-    assert all(any(s in item and "already reduced" in item for item in third.skipped) for s in far)
+    assert all(any(s in item.source and "already reduced" in item.reason for item in third.skipped) for s in far)
     # and with --force everything is reduced once more
     forced = run_quicklook(folder, out, options(SHORT_AGE, force=True))
     assert forced.failed == []
-    assert not any("already reduced" in item for item in forced.skipped)
+    assert not any("already reduced" in item.reason for item in forced.skipped)
 
 
 MASTERS = ("bias", "dark", "background", "flat")
@@ -378,7 +383,7 @@ def test_quicklook_rereduces_when_layout_reference_master_or_policy_changes(
     # (a) nothing changed: nothing is reduced again and the masters are reused untouched
     again = run_quicklook(folder, out, options())
     assert again.failed == [] and again.reduced_again == []
-    assert sum("already reduced" in item for item in again.skipped) == N_SCIENCE
+    assert sum("already reduced" in item.reason for item in again.skipped) == N_SCIENCE
     assert (out / "calib" / "index.json").read_text(encoding="utf-8") == index
     assert master_files(out) == masters
     assert not any(path.name in masters for path in again.products)
@@ -653,7 +658,7 @@ def test_quicklook_drops_detections_outside_the_layout(tmp_path, sim_night_lab3)
     plain = run_quicklook(folder, tmp_path / "out_light", RunOptions("highspec"))
     assert plain.failed == [] and spec_products(tmp_path / "out_light") == []
     for source in sources:
-        assert any(item.startswith(source) and "content:no_signal" in item for item in plain.skipped), (
+        assert any(item.source == source and "content:no_signal" in item.reason for item in plain.skipped), (
             source,
             plain.skipped,
         )
@@ -696,10 +701,10 @@ def test_reference_on_another_pixel_grid_is_refused(tmp_path, night, survey_layo
     CalibLibrary(tmp_path / "out" / "calib").add_reference(narrow, identified.prov, "main")
     summary = run_quicklook(folder, tmp_path / "out", options(reference_id=narrow.identifier))
     assert len(summary.failed) == N_SCIENCE
-    for source, reason in summary.failed:
-        assert source.startswith("sim_science_")
-        assert "ValueError" in reason and narrow.identifier in reason
-        assert "1000" in reason and str(night.n_pix) in reason
+    for failure in summary.failed:
+        assert failure.source.startswith("sim_science_")
+        assert failure.error_type == "ValueError" and narrow.identifier in failure.message
+        assert "1000" in failure.message and str(night.n_pix) in failure.message
     assert spec_products(tmp_path / "out") == []
 
 
@@ -712,28 +717,30 @@ def write_frame(path: Path, data: np.ndarray, **cards) -> None:
     hdu.writeto(path, overwrite=True)
 
 
-def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
+def test_missing_night_folder_fails_and_empty_one_is_a_success(tmp_path, capsys):
     nowhere = tmp_path / "nowhere"
     with pytest.raises(FileNotFoundError, match="nowhere"):
         run_quicklook(nowhere, tmp_path / "out", RunOptions("highspec"))
     assert not (tmp_path / "out").exists()  # nothing is written for a mistyped path
     argv = ["quicklook", str(nowhere), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
+    assert main(argv) == 4
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == f"FAILED: night folder {nowhere} is not a directory\n"
 
     empty = tmp_path / "empty"
     empty.mkdir()
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
-    assert summary.products == [] and summary.skipped == []
-    assert summary.failed == [("night empty", NO_FRAMES)]
+    assert summary.products == [] and summary.skipped == [] and summary.failed == []
+    assert summary.frames_scanned == 0
     argv = ["quicklook", str(empty), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
-    assert NO_FRAMES in capsys.readouterr().out
-    # a folder whose only file cannot be read is as empty
+    assert main(argv) == 0  # empty: nothing to do is not a failure
+    captured = capsys.readouterr()
+    assert f"no frames of highspec in {empty}" in captured.out
+    assert "WARNING no frames of highspec" in captured.err
+    # a folder whose only file cannot be read has no frames, but a failure (partial, exit 3)
     (empty / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     summary = run_quicklook(empty, tmp_path / "out", RunOptions("highspec"))
-    assert [source for source, _ in summary.failed] == ["junk.fits", "night empty"]
+    assert [item.source for item in summary.failed] == ["junk.fits"] and summary.frames_scanned == 0
 
 
 @pytest.mark.parametrize(
@@ -745,7 +752,7 @@ def test_missing_or_empty_night_folder_is_not_a_success(tmp_path, capsys):
     ],
 )
 def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest, message):
-    """An error in the manifest's content ends ``quicklook`` with exit code 2 and one
+    """An error in the manifest's content ends ``quicklook`` with exit code 4 and one
     ``FAILED:`` line on stderr naming the file or the row (after the run's opening log
     line), not a traceback."""
     night_dir = tmp_path / "night"
@@ -753,7 +760,7 @@ def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest
     path = tmp_path / "frames.csv"
     path.write_text(manifest, encoding="utf-8")
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main([*argv, "--manifest", str(path)]) == 2
+    assert main([*argv, "--manifest", str(path)]) == 4
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Traceback" not in captured.err
@@ -763,20 +770,20 @@ def test_quicklook_reports_a_bad_manifest_in_one_line(tmp_path, capsys, manifest
 
 def test_quicklook_reports_a_missing_manifest_on_stderr(tmp_path, capsys):
     """A ``--manifest`` file that does not exist is reported like a missing night folder:
-    one ``FAILED:`` line on stderr, exit code 2."""
+    one ``FAILED:`` line on stderr, exit code 4."""
     night_dir = tmp_path / "night"
     night_dir.mkdir()
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 2
+    assert main([*argv, "--manifest", str(tmp_path / "missing.csv")]) == 4
     captured = capsys.readouterr()
     assert captured.out == "" and "Traceback" not in captured.err
     failed = [line for line in captured.err.splitlines() if line.startswith("FAILED")]
     assert failed == [captured.err.splitlines()[-1]] and "missing.csv" in failed[0], captured.err
 
 
-def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
-    """Only the manifest's errors are reported as a user error: a ``ValueError`` from the
-    reduction itself still propagates."""
+def test_quicklook_reports_other_value_errors_as_unexpected(tmp_path, monkeypatch, capsys):
+    """Only a run error is reported as one ``FAILED:`` line: a ``ValueError`` from the
+    reduction itself is an unexpected error, exit code 1 with its traceback on stderr."""
 
     def broken(*args, **kwargs):
         raise ValueError("a programming error")
@@ -785,8 +792,10 @@ def test_quicklook_does_not_catch_other_value_errors(tmp_path, monkeypatch):
     night_dir = tmp_path / "night"
     night_dir.mkdir()
     argv = ["quicklook", str(night_dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    with pytest.raises(ValueError, match="a programming error"):
-        main(argv)
+    assert main(argv) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Traceback" in captured.err
+    assert "ValueError: a programming error" in captured.err and "FAILED:" not in captured.err
 
 
 def test_unknown_frames_are_skipped_with_reason(tmp_path):
@@ -817,12 +826,12 @@ def test_unknown_frames_are_skipped_with_reason(tmp_path):
     manifest = tmp_path / "manifest.csv"
     manifest.write_text("source,exposure_type\nweird.fits,unknown\n", encoding="utf-8", newline="")
     summary = run_quicklook(folder, tmp_path / "out", RunOptions("highspec", configuration="Mg", manifest=manifest))
-    assert any("junk.fits" in item and "rule:4" in item for item in summary.skipped)
-    assert any("weird.fits" in item and "manifest" in item for item in summary.skipped)
-    assert not any("sci.fits" in item for item in summary.skipped)
+    assert any("junk.fits" in item.source and "rule:4" in item.reason for item in summary.skipped)
+    assert any("weird.fits" in item.source and "manifest" in item.reason for item in summary.skipped)
+    assert not any("sci.fits" in item.source for item in summary.skipped)
     assert summary.products == []
     # the group has nothing to calibrate with, which is recorded, not raised
-    assert len(summary.failed) == 1 and "bias" in summary.failed[0][1]
+    assert len(summary.failed) == 1 and "bias" in summary.failed[0].message
     with pytest.raises(RuntimeError, match="bias"):
         run_quicklook(
             folder,
@@ -851,7 +860,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
     (folder / "sim_science_garbage.fits").write_bytes(b"this is not a FITS file\n" * 200)
 
     summary = run_quicklook(folder, tmp_path / "out", options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert "sim_science_bad.fits" in failed and "shape" in failed["sim_science_bad.fits"]
     assert "sim_science_garbage.fits" in failed
     assert set(failed) == {"sim_science_bad.fits", "sim_science_garbage.fits"}
@@ -867,7 +876,7 @@ def test_quicklook_continues_after_bad_frame(tmp_path, night):
 def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
     """A truncated bias, a flat binned 2x1 and a corrupt arc are each dropped and recorded
     as a failure of that frame; the masters are stacked from the other frames and the night
-    still yields every science product. The command reports the failures (exit code 2)."""
+    still yields every science product. The command reports the failures (exit code 3)."""
     folder = tmp_path / "night"
     shutil.copytree(night.dir, folder)
     truth = night.truth
@@ -886,7 +895,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert set(failed) == {"sim_bias_bad.fits", "sim_flat_bad.fits", "sim_arc_bad.fits"}
     assert "shape" in failed["sim_bias_bad.fits"]
     assert "binning 2x1" in failed["sim_flat_bad.fits"]
@@ -899,7 +908,7 @@ def test_quicklook_survives_bad_calibration_frames(tmp_path, night):
         assert len(prov.inputs) == n, kind
 
     argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec"]
-    assert main(argv + ["--layout", "survey45"]) == 2
+    assert main(argv + ["--layout", "survey45"]) == 3
 
 
 def test_quicklook_skips_a_bias_of_another_amplifier(tmp_path, night):
@@ -918,7 +927,7 @@ def test_quicklook_skips_a_bias_of_another_amplifier(tmp_path, night):
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
     assert summary.failed == []
-    assert f"{em_bias}: readout image/em is not the group's image/conventional" in summary.skipped
+    assert Skipped("frame", em_bias, "readout image/em is not the group's image/conventional") in summary.skipped
     _, prov = read_master(next((out / "calib").glob("*_bias.fits")))
     assert em_checksum not in prov.inputs and len(prov.inputs) == len(biases) - 1
     assert len(spec_products(out)) == N_SCIENCE
@@ -939,7 +948,7 @@ def test_quicklook_drops_a_science_frame_of_another_amplifier(tmp_path, night):
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert list(failed) == [em_frame]
     assert "image/em" in failed[em_frame] and "image/conventional" in failed[em_frame]
     produced = {read_spectra(p)[0].meta.source for p in spec_products(out)}
@@ -957,7 +966,7 @@ def test_quicklook_fails_a_science_frame_of_another_binning(tmp_path, night):
         hdul[0].header["HBIN"] = 2
 
     summary = run_quicklook(folder, tmp_path / "out", options())
-    failed = dict(summary.failed)
+    failed = {item.source: item.message for item in summary.failed}
     assert list(failed) == [binned]
     assert "binning 2x1 is not the group's 1x1" in failed[binned]
     produced = {read_spectra(p)[0].meta.source for p in spec_products(tmp_path / "out")}
@@ -980,8 +989,9 @@ def test_quicklook_skips_a_full_arc_of_another_amplifier_among_the_trace_candida
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
     assert summary.failed == []
-    reason = "sim_arc_full_em.fits: readout image/em is not the group's image/conventional"
-    assert [item for item in summary.skipped if item.startswith("sim_arc_full_em.fits")] == [reason]
+    reason = "readout image/em is not the group's image/conventional"
+    em_arc = [item for item in summary.skipped if item.source == "sim_arc_full_em.fits"]
+    assert em_arc == [Skipped("frame", "sim_arc_full_em.fits", reason)]
     _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
     assert prov.inputs == [file_checksum(night.full_arc)]
     assert len(spec_products(out)) == N_SCIENCE
@@ -1002,7 +1012,7 @@ def test_quicklook_drops_a_bad_full_arc_among_the_trace_candidates(tmp_path, nig
 
     out = tmp_path / "out"
     summary = run_quicklook(folder, out, options())
-    assert [source for source, _ in summary.failed] == ["sim_arc_full_bad.fits"]
+    assert [item.source for item in summary.failed] == ["sim_arc_full_bad.fits"]
     trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
     assert trace_qc.values["source"] == "arc_full"
     _, prov = read_traceset(next((out / "calib").glob("*_traces.fits")))
@@ -1039,9 +1049,9 @@ def test_resolve_light_sorts_frames_by_content(tmp_path, night):
     trace_qc = read_qc(next(p for p in summary.qc if p.name.endswith("_traces.json")))
     assert trace_qc.values["source"] == "arc_full"
     # the full arc reached the arc stage (no reference yet), and so did the drift arcs
-    assert any(night.full_arc.name in item and "run identify" in item for item in summary.skipped)
+    assert any(night.full_arc.name in item.source and "run identify" in item.reason for item in summary.skipped)
     for arc in night.cal_arcs:
-        assert any(arc in item and "no reference" in item for item in summary.skipped)
+        assert any(arc in item.source and "no reference" in item.reason for item in summary.skipped)
     products = spec_products(out)
     assert sorted(read_spectra(p)[0].meta.source for p in products) == sorted(sources)
     rules = {}
@@ -1134,7 +1144,7 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
         labelled[site_of[es.meta.source]] = es
     site_files = site_night.truth.frames
     background = site_files.loc[site_files["exposure_type"] == "background", "file"].iloc[0]
-    assert any(item.startswith(f"{background}: ") and "content:no_signal" in item for item in summary.skipped)
+    assert any(item.source == background and "content:no_signal" in item.reason for item in summary.skipped)
     assert not any(background in str(p) for p in summary.products)
 
     worst = 0.0
@@ -1162,13 +1172,345 @@ def test_site_shaped_night_reduces_without_a_manifest(tmp_path, site_night, tran
 
 def test_site_night_without_configuration_stops_with_a_message(site_night, tmp_path, capsys):
     argv = ["quicklook", str(site_night.dir), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    assert main(argv) == 2
+    assert main(argv) == 3
     out = capsys.readouterr().out
     assert "--configuration" in out
     configurations = sorted(load_instrument("highspec").configurations)
     assert str(configurations) in out
     for name in set(GRATING_NAMES) - set(configurations):
         assert name not in out
+
+
+# ------------------------------------------------------------------ the caller contract
+
+
+def read(path: Path) -> dict:
+    """The result file ``--summary-json`` wrote."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_exit_codes_and_result_file(tmp_path, capsys):
+    out, result = tmp_path / "out", tmp_path / "new" / "dir" / "r.json"
+    base = ["--out", str(out), "--instrument", "highspec", "--summary-json", str(result)]
+    nowhere, empty = tmp_path / "nowhere", tmp_path / "empty"
+    empty.mkdir()
+
+    assert main(["quicklook", str(nowhere), *base]) == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["run_error"]["kind"] == "input_missing"
+    # every run is stamped; only what the run never reached is null
+    assert doc["started"] is not None and doc["finished"] is not None
+    assert doc["started"] <= doc["finished"]
+    assert doc["frames_scanned"] is None and doc["log"] is None and doc["library"] is None
+    assert not out.exists() and capsys.readouterr().err.startswith("FAILED: night folder")
+
+    assert main(["quicklook", str(empty), *base]) == 0
+    assert read(result)["status"] == "empty"
+    assert "no frames of highspec" in capsys.readouterr().out
+
+    (empty / "sub").mkdir()
+    (empty / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    assert main(["quicklook", str(empty), *base]) == 3
+    doc = read(result)
+    assert doc["status"] == "partial" and doc["failed"][0]["source"] == "sub/junk.fits"
+
+    assert main(["quicklook", str(empty), *base, "--manifest", str(tmp_path / "missing.csv")]) == 4
+    assert read(result)["run_error"]["kind"] == "manifest_missing"
+
+    bad = tmp_path / "frames.csv"
+    bad.write_text("source,exposure\nx.fits,1\n", encoding="utf-8")
+    assert main(["quicklook", str(empty), *base, "--manifest", str(bad)]) == 4
+    assert read(result)["run_error"]["kind"] == "manifest_invalid"
+
+    base[3] = "nosuch"
+    assert main(["quicklook", str(empty), *base]) == 4
+    assert read(result)["run_error"]["kind"] == "instrument_unknown"
+
+
+def test_library_and_output_run_errors_are_exit_4(tmp_path, monkeypatch, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+
+    def run(out: Path) -> int:
+        return main(["quicklook", str(night), "--out", str(out), "--instrument", "highspec", "--summary-json", str(result)])
+
+    invalid = tmp_path / "invalid"
+    (invalid / "calib").mkdir(parents=True)
+    (invalid / "calib" / "index.json").write_text("{not json", encoding="utf-8")
+    assert run(invalid) == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["exit_code"] == 4
+    assert doc["run_error"]["kind"] == "library_invalid" and doc["run_error"]["retryable"] is False
+
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file, not a folder", encoding="utf-8")
+    assert run(blocked) == 4
+    doc = read(result)
+    assert doc["run_error"]["kind"] == "output_unwritable" and doc["run_error"]["retryable"] is False
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    assert run(tmp_path / "busy") == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["library"] is None
+    assert doc["run_error"]["kind"] == "library_busy" and doc["run_error"]["retryable"] is True
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("FAILED:") == 3
+
+
+def test_run_error_inside_a_group_is_a_failed_item(tmp_path, night, monkeypatch, capsys):
+    """Under the default ``--on-error continue`` a library write that times out inside a
+    group fails that group with the run error's kind: the run is ``partial`` (exit 3)."""
+
+    def busy(*args, **kwargs):
+        raise LibraryBusyError("calibration library is busy")
+
+    monkeypatch.setattr(CalibLibrary, "add", busy)
+    out, result = tmp_path / "out", tmp_path / "r.json"
+    argv = ["quicklook", str(night.dir), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--summary-json", str(result)]) == 3
+    doc = read(result)
+    assert doc["status"] == "partial" and doc["run_error"] is None
+    assert [item["kind"] for item in doc["failed"]] == ["library_busy"]
+    assert doc["failed"][0]["scope"] == "group" and doc["failed"][0]["error_type"] == "LibraryBusyError"
+    assert "FAILED group main/Mg: LibraryBusyError: calibration library is busy" in capsys.readouterr().out
+
+
+class Unprintable:
+    """A stdout that cannot take the summary: ``write`` or ``flush`` raises ``error``."""
+
+    encoding = "cp1252"
+
+    def __init__(self, error: Exception, on: str) -> None:
+        self.error, self.on = error, on
+
+    def write(self, text: str) -> int:
+        if self.on == "write":
+            raise self.error
+        return len(text)
+
+    def flush(self) -> None:
+        if self.on == "flush":
+            raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "on"),
+    [
+        (UnicodeEncodeError("charmap", "é", 0, 1, "character maps to <undefined>"), "write"),
+        (OSError(28, "No space left on device"), "write"),
+        (OSError(28, "No space left on device"), "flush"),
+        (ValueError("I/O operation on closed file."), "write"),
+    ],
+)
+def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatch, capsys, error, on):
+    night = tmp_path / "night"
+    (night / "sub").mkdir(parents=True)
+    (night / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    monkeypatch.setattr("sys.stdout", Unprintable(error, on))
+    assert main([*argv, "--summary-json", str(result)]) == 3
+    assert read(result)["status"] == "partial"
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert [line for line in err.splitlines() if "could not print the summary" in line] == [
+        f"could not print the summary: {error}"
+    ]
+
+
+def test_closed_stdout_is_not_a_failure(tmp_path, monkeypatch, capsys):
+    """With file descriptor 1 closed Python sets ``sys.stdout`` to ``None``: the summary
+    is not printed, silently, and the run's exit code and result file stand."""
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    monkeypatch.setattr("sys.stdout", None)
+    assert main([*argv, "--summary-json", str(result)]) == 0
+    assert read(result)["exit_code"] == 0
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "summary" not in err
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/dev/full").exists(), reason="needs POSIX and /dev/full")
+def test_full_stdout_device_keeps_the_exit_code(tmp_path):
+    """A stdout on a full device: the summary cannot be printed, which is one line on
+    stderr, and the process still exits with the run's status (not the interpreter's 120
+    for a failed flush at shutdown)."""
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    entry = "import sys; from mastpipe.cli import main; sys.exit(main())"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with Path("/dev/full").open("w", encoding="utf-8") as full:
+        done = subprocess.run(
+            [sys.executable, "-c", entry, *argv, "--quiet", "--summary-json", str(result)],
+            stdout=full,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    assert done.returncode == 0, done.stderr
+    lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
+    assert len(lines) == 1 and "Exception ignored" not in done.stderr, done.stderr
+    assert read(result)["exit_code"] == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs POSIX")
+def test_unencodable_summary_line_keeps_stdout(tmp_path):
+    """A summary line stdout's encoding cannot spell is lost, but stdout itself works: the
+    lines printed before it, and whatever the process prints after ``main`` returns, still
+    arrive."""
+    night = tmp_path / "né"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    entry = "import sys; from mastpipe.cli import main; code = main(); print('MARKER after main'); sys.exit(code)"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    done = subprocess.run(
+        [sys.executable, "-c", entry, *argv, "--quiet", "--summary-json", str(result)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
+    assert len(lines) == 1, done.stderr
+    out = done.stdout.splitlines()
+    assert out[0].startswith("0 products") and out[-1] == "MARKER after main", done.stdout
+    assert read(result)["exit_code"] == 0
+
+
+@pytest.mark.parametrize("command", ["quicklook", "identify", "solve"])
+def test_bad_set_is_a_usage_error(tmp_path, capsys, command):
+    argv = [command, str(tmp_path), "--out", str(tmp_path / "o"), "--instrument", "highspec", "--configuration", "Mg"]
+    with pytest.raises(SystemExit) as excinfo:
+        main([*argv, "--set", "novalue"])
+    assert excinfo.value.code == 2
+    assert "must have the form key.path=value" in capsys.readouterr().err
+
+
+def test_unexpected_error_is_exit_1_with_a_result(tmp_path, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise RuntimeError("a defect")
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", broken)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 1
+    doc = read(result)
+    assert doc["status"] == "error" and doc["run_error"]["kind"] == "unexpected" and doc["log"] is not None
+    assert "RuntimeError: a defect" in capsys.readouterr().err
+    assert "a defect" in (tmp_path / "out" / doc["log"]).read_text(encoding="utf-8")
+
+
+def test_interrupt_propagates_and_writes_no_result(tmp_path, monkeypatch):
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", interrupted)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    with pytest.raises(KeyboardInterrupt):
+        main([*argv, "--summary-json", str(result)])
+    assert not result.exists()
+
+
+def test_unwritable_result_file_keeps_the_exit_code(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    blocked = tmp_path / "blocked"  # the result path is a folder
+    blocked.mkdir()
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(blocked)]) == 0
+    err = capsys.readouterr().err
+    assert "could not write the result file" in err and "Traceback" not in err
+
+
+def test_result_file_that_cannot_be_built_keeps_the_exit_code(tmp_path, monkeypatch, capsys):
+    def broken(*args, **kwargs):
+        raise ValueError("no root")
+
+    monkeypatch.setattr("mastpipe.pipeline.summary.document", broken)
+    night = tmp_path / "night"
+    night.mkdir()
+    result = tmp_path / "r.json"
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 0
+    err = capsys.readouterr().err
+    assert f"could not write the result file {result}: no root" in err and "Traceback" not in err
+    assert not result.exists()
+
+
+def test_run_error_re_raised_from_a_group_is_unexpected(tmp_path, night, monkeypatch, capsys):
+    """Under ``--on-error raise`` a library write that times out inside a group is
+    re-raised: the run got past opening the library, so it is ``error`` (exit 1), not a
+    retryable ``failed`` run, and its traceback is on stderr and in the log."""
+
+    def busy(*args, **kwargs):
+        raise LibraryBusyError("calibration library is busy")
+
+    monkeypatch.setattr(CalibLibrary, "add", busy)
+    out, result = tmp_path / "out", tmp_path / "r.json"
+    argv = ["quicklook", str(night.dir), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--on-error", "raise", "--summary-json", str(result)]) == 1
+    doc = read(result)
+    assert doc["status"] == "error" and doc["library"] is not None
+    assert doc["run_error"] == {
+        "kind": "unexpected",
+        "error_type": "LibraryBusyError",
+        "message": "calibration library is busy",
+        "retryable": False,
+    }
+    err = capsys.readouterr().err
+    assert "Traceback" in err and "FAILED:" not in err
+    assert "Traceback" in (out / doc["log"]).read_text(encoding="utf-8")
+
+
+def test_quiet_keeps_info_lines_off_stderr(tmp_path, capsys):
+    night = tmp_path / "night"
+    night.mkdir()
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--quiet"]) == 0
+    captured = capsys.readouterr()
+    levels = {line.split(" ", 1)[0] for line in captured.err.splitlines()}
+    assert levels == {"WARNING"} and "WARNING no frames of highspec" in captured.err
+    assert "no frames of highspec" in captured.out
+    assert main(argv) == 0
+    assert "INFO" in {line.split(" ", 1)[0] for line in capsys.readouterr().err.splitlines()}
+
+
+def test_result_file_of_a_full_run(tmp_path, night, survey_layout, mg_lines, identified, capsys):
+    folder = tmp_path / "night"
+    simulate_night(night.effective, survey_layout, mg_lines, folder, seed=0, n_science=N_SCIENCE, no_cal_arcs=True)
+    out, library, result = tmp_path / "out", tmp_path / "lib", tmp_path / "r.json"
+    CalibLibrary(library).add_reference(identified.ref, identified.prov, "main")
+    argv = ["quicklook", str(folder), "--out", str(out), "--instrument", "highspec", "--layout", "survey45"]
+    assert main([*argv, "--library", str(library), "--summary-json", str(result)]) == 0
+    capsys.readouterr()
+    doc = read(result)
+    assert doc["status"] == "complete" and doc["exit_code"] == 0 and doc["run_error"] is None
+    assert doc["library"] == library.as_posix() and doc["frames_scanned"] > 0
+    assert doc["input"] == folder.as_posix() and doc["out"] == out.as_posix()
+    assert doc["counts"] == {name: len(doc[name]) for name in ("products", "qc", "skipped", "reduced_again", "failed")}
+    roots = {item["root"] for item in doc["products"]}
+    assert roots == {"out", "library"}
+    paths = [item["path"] for item in doc["products"] + doc["qc"]]
+    sources = [item["source"] for item in doc["skipped"] + doc["failed"]]
+    assert all("\\" not in text for text in paths + sources + doc["reduced_again"])
+    assert all((out if item["root"] == "out" else library).joinpath(item["path"]).is_file() for item in doc["products"])
+    assert (out / doc["log"]).is_file()
 
 
 # ------------------------------------------------------------------------------- the CLI

@@ -12,21 +12,37 @@ meet and what to do.
   and no rule matched (a frame with no exposure time is deliberately left
   `unknown`, never scaled by a guess). Add a manifest row for it.
 
-"no readable frame in the night folder" / "night folder … is not a directory"
-: The path is wrong, or the folder has no FITS astropy can open. The command
-  exits with status 2 (a missing folder is reported on stderr, before the run
-  starts).
+"no frames of <instrument> in <folder>" / "night folder … is not a directory"
+: The path is wrong, or the folder has no FITS astropy can open of that
+  instrument. A missing folder stops the command with status 4, reported in one
+  `FAILED:` line on stderr before the run starts. An empty folder is not a failure:
+  a warning in the log, one line on stdout, and status 0 (`empty`).
 
 "FAILED: frames.csv: …" / "FAILED: manifest row N: …"
 : The manifest given with `--manifest` has an error: the file is not UTF-8 CSV, a
   column is missing or unknown, or row N has a bad source, glob, extension or value.
-  Nothing is reduced and the command exits with status 2. Fix the file or the row
+  Nothing is reduced and the command exits with status 4. Fix the file or the row
   named (see [The manifest](night-folder.md#the-manifest)).
 
+"run failed: …" (in the log)
+: Something stopped the whole run before or outside the per-frame handling: the
+  manifest is missing or wrong, the instrument name is unknown, the calibration
+  library cannot be written, its `index.json` is not a JSON list (fix or restore
+  it), or another process held the library's lock past its timeout (run again
+  later). The cause is the last entry of the log under `out/logs/`; the
+  traceback follows it when the error was unexpected. On the console the command
+  prints the one line `FAILED: …` and exits with status 4, or, for an unexpected
+  error, prints the traceback and exits with status 1. With `--on-error raise`, an
+  error raised inside a group (a busy library while adding a master, say) is
+  unexpected in this sense: traceback, status 1.
+
 "FAILED <file>: …"
-: An exception in that frame's reduction; the traceback is in the log. The
+: An exception in that frame's reduction, printed as `FAILED <file>: <exception
+  class>: <message>` (a failure no exception caused, such as an unreadable file, has
+  the message alone); the traceback is in the log. The
   other frames are unaffected. A failure in the masters or trace finding fails
-  the whole camera-and-grating group instead, since nothing downstream can run.
+  the whole camera-and-grating group instead (`FAILED group <camera>/<grating>: …`),
+  since nothing downstream can run.
 
 ## Arcs and references
 
