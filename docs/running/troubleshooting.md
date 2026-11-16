@@ -27,8 +27,8 @@ meet and what to do.
 "run failed: …" (in the log)
 : Something stopped the whole run before or outside the per-frame handling: the
   manifest is missing or wrong, the instrument name is unknown, the calibration
-  library cannot be written, its `index.json` is not a JSON list (fix or restore
-  it), or another process held the library's lock past its timeout (run again
+  library cannot be written, its `index.json` is not a JSON list of objects (fix
+  or restore it; the message names the first bad entry), or another process held the library's lock past its timeout (run again
   later). The cause is the last entry of the log under `out/logs/`; the
   traceback follows it when the error was unexpected. On the console the command
   prints the one line `FAILED: …` and exits with status 4, or, for an unexpected

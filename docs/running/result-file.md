@@ -19,24 +19,36 @@ wrong) and an interrupt (Ctrl-C). Without the option nothing is written. The fol
 `PATH` is created when missing, and the file is written atomically: a reader sees the
 whole document or no file, never half of one.
 
+An existing `PATH` is replaced only when it is an empty file or an earlier result
+document (a JSON object whose `"command"` is `"quicklook"` and which has a `"schema"`
+key). Anything else, such as the calibration library's `index.json`, a FITS frame, the
+manifest, the log, another JSON file or a folder, is left untouched, and the command says
+`could not write the result file PATH: PATH exists and is not a quick-look result file;
+not overwritten` on stderr. What decides is the file's content, read through `PATH`, so a
+link or another spelling of a file's path is no way around it.
+
 A run that is interrupted (Ctrl-C) or killed writes no result file, and its exit status
 is the interpreter's or the operating system's own (130 or a signal's status, say), not
 one of the table below.
 
-If the printed summary cannot be written to stdout (an encoding that cannot spell a file
-name, a full device), one line on stderr says `could not print the summary: …`; the exit
-status is still the run's and the result file is still written. An encoding failure loses
-only the summary lines that could not be printed. Only when stdout cannot be written at
-all (a full device) is it pointed at the null device, so that the interpreter's own flush
-at exit cannot fail and change the status; anything the same process writes to stdout
-afterwards is then discarded. With stdout closed the summary is simply not printed, and
-nothing else changes.
+The printed summary goes to stdout line by line. A line that stdout's encoding cannot
+spell (a file name with `é` on an ASCII console, say) is printed with the characters it
+cannot encode as backslash escapes (`n\xe9` for `né`), and the lines after it follow as
+usual; nothing is lost and nothing is said on stderr. If stdout cannot be written at all
+(a full device, a closed file), one line on stderr says `could not print the summary: …`;
+the exit status is still the run's and the result file is still written. Only when stdout
+cannot be flushed (a full device) is it pointed at the null device, so that the
+interpreter's own flush at exit cannot fail and change the status; anything the same
+process writes to stdout afterwards is then discarded. With stdout closed the summary is
+simply not printed, and nothing else changes. Likewise a stderr that cannot take a
+diagnostic (a closed pipe, a full device, closed altogether) loses that line and nothing
+else: the exit status and the result file are the run's.
 
 If the file cannot be written, the exit status is still the run's, and one line on
 stderr says `could not write the result file PATH: …`. A caller that asked for a result
 and finds none after status 0, 1, 3 or 4 treats the run as `error`. A caller that reuses
-one `PATH` across runs **removes the old file first**, since a stale one would otherwise
-be read as this run's.
+one `PATH` across runs **removes the old file first** (or empties it), since a stale one
+would otherwise be read as this run's when this run cannot write its own.
 
 ## Exit status
 

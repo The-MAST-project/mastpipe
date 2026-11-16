@@ -145,9 +145,49 @@ def document(
     }
 
 
+_HEAD_BYTES = 4096
+"""How much of an existing destination :func:`_check_replaceable` reads before deciding
+that it cannot be a result document (one starts with ``{``)."""
+
+
+def _check_replaceable(path: Path) -> None:
+    """Return when ``path`` may be replaced by a result document: it does not exist, or it
+    is an empty file, or it is an earlier result document (a UTF-8 JSON object whose
+    ``"command"`` is ``"quicklook"`` and which has a ``"schema"`` key). Raise
+    ``FileExistsError`` for anything else: another file (the library's ``index.json``, a
+    FITS frame, a manifest, the log), a folder, a link that cannot be followed, unreadable
+    or non-JSON content, a JSON list. The existing content decides, read through the path
+    as given, so every spelling of a file (a link, ``..``) is judged by what it holds; the
+    file is closed again before anything is replaced (Windows refuses to replace an open
+    file)."""
+    if not os.path.lexists(path):
+        return
+    refused = f"{path} exists and is not a quick-look result file; not overwritten"
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(_HEAD_BYTES)
+            if data.lstrip()[:1] == b"{":
+                data += handle.read()
+    except OSError as error:  # a folder, a dangling link, no permission
+        raise FileExistsError(f"{refused} ({error})") from error
+    if not data:
+        return
+    try:
+        existing = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError) as error:  # UnicodeDecodeError, JSONDecodeError
+        raise FileExistsError(refused) from error
+    if not (isinstance(existing, dict) and existing.get("command") == "quicklook" and "schema" in existing):
+        raise FileExistsError(refused)
+
+
 def write(path: Path, doc: Mapping[str, Any]) -> None:
     """Write ``doc`` to ``path`` as JSON (indent 1, sorted keys, ASCII, a final newline),
-    atomically: a reader sees the whole file or none. The folder is created when missing."""
+    atomically: a reader sees the whole file or none. The folder is created when missing.
+    An existing ``path`` is replaced only when it is empty or an earlier result document;
+    anything else is left as it is and ``FileExistsError`` raised
+    (:func:`_check_replaceable`)."""
+    path = Path(path)
+    _check_replaceable(path)
     text = json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=True) + "\n"
     with atomic_write(path) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text)

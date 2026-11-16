@@ -528,3 +528,23 @@ designer made, and from the rulings made while the plan was executed.
   by a hand-written example under `tests/unit/data/` that the docs page includes
   verbatim. `KeyboardInterrupt` is not caught: no result file, and the interrupt
   propagates. `solve` keeps its exit 2 ("run identify first") until it adopts the table.
+- **The result file never replaces a file that is not a result** (2026-11-16):
+  `summary.write` replaces an existing destination only when it is empty or an earlier
+  result document (a JSON object with `"command": "quicklook"` and a `"schema"` key), and
+  refuses anything else with `FileExistsError`. The check reads the existing content
+  through the path as given, rather than comparing paths with the inputs, the library or
+  the products, because content covers every alias (links, `..`, case-insensitive file
+  systems) and every file a caller might name by mistake.
+- **A library write holds the lock from before the file is written** (2026-11-16):
+  `CalibLibrary.add` and `add_reference` take the index lock, write the product, re-read
+  and save the index, and only then release it (`_replace_locked` assumes the lock; the
+  lock is not re-entrant). A lock timeout therefore happens before anything is written,
+  so the folder never holds a product its index (and a run's `products`) does not list.
+  Readers wait on the lock for one product write instead of one index write. An index
+  entry that is not a JSON object makes the whole index invalid (`LibraryInvalidError`)
+  when it is read, instead of failing later inside a group.
+- **The quick-look command's console output is best effort** (2026-11-16): every stderr
+  diagnostic goes through one helper that does nothing without a stderr and swallows
+  `OSError` and `ValueError`; the summary is printed line by line, a line the encoding
+  cannot spell is printed once more with backslash escapes. Neither console can change
+  the exit status or cost the result file.

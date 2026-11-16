@@ -9,6 +9,7 @@ the nominal run, the reference made by ``run_identify`` and the transferred run,
 tests share them read-only.
 """
 
+import io
 import json
 import os
 import re
@@ -1261,6 +1262,21 @@ def test_library_and_output_run_errors_are_exit_4(tmp_path, monkeypatch, capsys)
     assert "Traceback" not in err and err.count("FAILED:") == 3
 
 
+@pytest.mark.parametrize("index", ["[null]", "[1, {}]"])
+def test_index_with_a_non_object_entry_is_library_invalid(tmp_path, capsys, index):
+    night = tmp_path / "night"
+    night.mkdir()
+    out, result = tmp_path / "out", tmp_path / "r.json"
+    (out / "calib").mkdir(parents=True)
+    (out / "calib" / "index.json").write_text(index, encoding="utf-8")
+    argv = ["quicklook", str(night), "--out", str(out), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 4
+    doc = read(result)
+    assert doc["status"] == "failed" and doc["run_error"]["kind"] == "library_invalid"
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "FAILED: " in err and "entry 0" in err
+
+
 def test_run_error_inside_a_group_is_a_failed_item(tmp_path, night, monkeypatch, capsys):
     """Under the default ``--on-error continue`` a library write that times out inside a
     group fails that group with the run error's kind: the run is ``partial`` (exit 3)."""
@@ -1286,8 +1302,10 @@ class Unprintable:
 
     def __init__(self, error: Exception, on: str) -> None:
         self.error, self.on = error, on
+        self.writes = 0
 
     def write(self, text: str) -> int:
+        self.writes += 1
         if self.on == "write":
             raise self.error
         return len(text)
@@ -1312,7 +1330,8 @@ def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatc
     (night / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     result = tmp_path / "r.json"
     argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
-    monkeypatch.setattr("sys.stdout", Unprintable(error, on))
+    stdout = Unprintable(error, on)
+    monkeypatch.setattr("sys.stdout", stdout)
     assert main([*argv, "--summary-json", str(result)]) == 3
     assert read(result)["status"] == "partial"
     err = capsys.readouterr().err
@@ -1320,6 +1339,30 @@ def test_summary_that_cannot_be_printed_keeps_the_exit_code(tmp_path, monkeypatc
     assert [line for line in err.splitlines() if "could not print the summary" in line] == [
         f"could not print the summary: {error}"
     ]
+    if on == "write":
+        # an encoding error is retried once, with the line escaped; that failing too ends
+        # the summary like any other error (no loop); other errors are not retried
+        assert stdout.writes == (2 if isinstance(error, UnicodeEncodeError) else 1)
+
+
+def test_unencodable_summary_line_is_escaped(tmp_path, monkeypatch, capsys):
+    """A summary line stdout's encoding cannot spell arrives with the characters it cannot
+    encode as backslash escapes, every later line arrives, and nothing goes to stderr."""
+    night = tmp_path / "n\u00e9"
+    (night / "sub").mkdir(parents=True)
+    (night / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
+    result = tmp_path / "r.json"
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="\n")
+    monkeypatch.setattr("sys.stdout", stdout)
+    argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec", "--quiet"]
+    assert main([*argv, "--summary-json", str(result)]) == 3
+    stdout.flush()
+    lines = stdout.buffer.getvalue().decode("ascii").splitlines()
+    escaped = str(night).replace("\u00e9", "\\xe9")
+    assert lines[0].startswith("0 products") and lines[-1].startswith("  FAILED sub/junk.fits"), lines
+    assert f"no frames of highspec in {escaped}" in lines, lines
+    assert "could not print" not in capsys.readouterr().err
+    assert read(result)["status"] == "partial"
 
 
 def test_closed_stdout_is_not_a_failure(tmp_path, monkeypatch, capsys):
@@ -1334,6 +1377,54 @@ def test_closed_stdout_is_not_a_failure(tmp_path, monkeypatch, capsys):
     assert read(result)["exit_code"] == 0
     err = capsys.readouterr().err
     assert "Traceback" not in err and "summary" not in err
+
+
+class Unwritable:
+    """A stderr on a closed pipe or a full device: every ``write`` and ``flush`` raises."""
+
+    encoding = "utf-8"
+
+    def __init__(self) -> None:
+        self.writes = 0
+
+    def write(self, text: str) -> int:
+        self.writes += 1
+        raise OSError(32, "Broken pipe")
+
+    def flush(self) -> None:
+        raise OSError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("stderr", ["unwritable", "closed"])
+def test_failing_stderr_keeps_the_exit_code_and_the_result(tmp_path, monkeypatch, stderr):
+    """A diagnostic that stderr cannot take is lost, nothing else: a missing night folder
+    is still status 4 with its result file, an unexpected error status 1 with its."""
+    result = tmp_path / "r.json"
+    monkeypatch.setattr("sys.stderr", Unwritable() if stderr == "unwritable" else None)
+    argv = ["quicklook", str(tmp_path / "nowhere"), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(result)]) == 4
+    assert read(result)["run_error"]["kind"] == "input_missing"
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("a defect")
+
+    monkeypatch.setattr("mastpipe.pipeline.runner.scan_folder", broken)
+    night = tmp_path / "night"
+    night.mkdir()
+    argv[1] = str(night)
+    assert main([*argv, "--summary-json", str(result)]) == 1
+    doc = read(result)
+    assert doc["status"] == "error" and doc["run_error"]["kind"] == "unexpected"
+
+    # the result file cannot be written either: its diagnostic is lost quietly too
+    assert main([*argv, "--summary-json", str(tmp_path)]) == 1
+
+    # and the summary cannot be printed: the one line about it is lost, the status stands
+    monkeypatch.undo()
+    monkeypatch.setattr("sys.stderr", Unwritable() if stderr == "unwritable" else None)
+    monkeypatch.setattr("sys.stdout", Unprintable(OSError(28, "No space left on device"), "write"))
+    assert main([*argv, "--summary-json", str(result)]) == 0
+    assert read(result)["status"] == "empty"
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/dev/full").exists(), reason="needs POSIX and /dev/full")
@@ -1363,11 +1454,12 @@ def test_full_stdout_device_keeps_the_exit_code(tmp_path):
 
 @pytest.mark.skipif(os.name != "posix", reason="needs POSIX")
 def test_unencodable_summary_line_keeps_stdout(tmp_path):
-    """A summary line stdout's encoding cannot spell is lost, but stdout itself works: the
-    lines printed before it, and whatever the process prints after ``main`` returns, still
-    arrive."""
+    """A summary line stdout's encoding cannot spell arrives escaped, and stdout itself
+    works: the lines printed before and after it, and whatever the process prints after
+    ``main`` returns, still arrive."""
     night = tmp_path / "né"
-    night.mkdir()
+    (night / "sub").mkdir(parents=True)
+    (night / "sub" / "junk.fits").write_bytes(b"this is not a FITS file\n" * 200)
     result = tmp_path / "r.json"
     entry = "import sys; from mastpipe.cli import main; code = main(); print('MARKER after main'); sys.exit(code)"
     argv = ["quicklook", str(night), "--out", str(tmp_path / "out"), "--instrument", "highspec"]
@@ -1380,12 +1472,13 @@ def test_unencodable_summary_line_keeps_stdout(tmp_path):
         env={**os.environ, "PYTHONIOENCODING": "ascii"},
         check=False,
     )
-    assert done.returncode == 0, done.stderr
-    lines = [line for line in done.stderr.splitlines() if "could not print the summary" in line]
-    assert len(lines) == 1, done.stderr
+    assert done.returncode == 3, done.stderr
+    assert "could not print the summary" not in done.stderr, done.stderr
     out = done.stdout.splitlines()
     assert out[0].startswith("0 products") and out[-1] == "MARKER after main", done.stdout
-    assert read(result)["exit_code"] == 0
+    assert f"no frames of highspec in {str(night).replace('é', chr(92) + 'xe9')}" in out, done.stdout
+    assert out[-2].startswith("  FAILED sub/junk.fits"), done.stdout
+    assert read(result)["exit_code"] == 3
 
 
 @pytest.mark.parametrize("command", ["quicklook", "identify", "solve"])
@@ -1436,6 +1529,38 @@ def test_unwritable_result_file_keeps_the_exit_code(tmp_path, capsys):
     assert main([*argv, "--summary-json", str(blocked)]) == 0
     err = capsys.readouterr().err
     assert "could not write the result file" in err and "Traceback" not in err
+
+
+def test_result_file_never_overwrites_another_file(tmp_path, capsys):
+    """``--summary-json`` naming the library's index (or any file that is not an earlier
+    result) leaves that file alone: one line on stderr, the run's exit code stands."""
+    night = tmp_path / "night"
+    night.mkdir()
+    out = tmp_path / "out"
+    index = out / "calib" / "index.json"
+    index.parent.mkdir(parents=True)
+    index.write_text('[{"kind": "bias", "path": "m_bias.fits"}]\n', encoding="utf-8")
+    before = index.read_bytes()
+    argv = ["quicklook", str(night), "--out", str(out), "--instrument", "highspec"]
+    assert main([*argv, "--summary-json", str(index)]) == 0
+    assert index.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert f"could not write the result file {index}: " in err and "not overwritten" in err
+    assert CalibLibrary(out / "calib").list() == [{"kind": "bias", "path": "m_bias.fits"}]
+
+    other = tmp_path / "notes.txt"
+    other.write_text("keep me\n", encoding="utf-8")
+    assert main([*argv, "--summary-json", str(other)]) == 0
+    assert other.read_text(encoding="utf-8") == "keep me\n"
+    assert "not overwritten" in capsys.readouterr().err
+
+    placeholder = tmp_path / "placeholder.json"
+    placeholder.touch()  # an empty file is replaced
+    assert main([*argv, "--summary-json", str(placeholder)]) == 0
+    assert read(placeholder)["status"] == "empty"
+    assert main([*argv, "--summary-json", str(placeholder)]) == 0  # and so is an earlier result
+    assert read(placeholder)["status"] == "empty" and "could not write" not in capsys.readouterr().err
 
 
 def test_result_file_that_cannot_be_built_keeps_the_exit_code(tmp_path, monkeypatch, capsys):

@@ -20,6 +20,9 @@ Several processes may share one library (a quick-look and an ``identify`` run ag
 same folder). Products and the index are written atomically, and every change to the
 index re-reads it under an exclusive lock on ``index.lock``
 (:func:`mastpipe.io.atomic.locked`), so concurrent writers keep each other's entries.
+Adding a product holds the lock from before its file is written until the index is
+saved, so a lock that is not free in time fails the addition before anything is written:
+the folder never holds a new product the index does not list.
 Lookups read the index as last loaded or written by this instance, without the lock: an
 entry another process added since is not seen until this instance next writes or is
 re-created, which is acceptable for finding calibrations.
@@ -90,7 +93,8 @@ class CalibLibrary:
     folder. Code that must not create a library checks that ``root`` is a folder first.
     :class:`~mastpipe.core.errors.LibraryBusyError` when the lock is not free in time
     (here and on every write), :class:`~mastpipe.core.errors.LibraryInvalidError` when
-    ``index.json`` is not UTF-8 JSON holding a list.
+    ``index.json`` is not UTF-8 JSON holding a list of objects (the error names the first
+    entry that is not one).
     """
 
     def __init__(self, root: Path | str) -> None:
@@ -128,25 +132,34 @@ class CalibLibrary:
             raise LibraryInvalidError(f"{path}: not a readable UTF-8 JSON index: {error}") from error
         if not isinstance(entries, list):
             raise LibraryInvalidError(f"{path}: the index must be a JSON list of entries")
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise LibraryInvalidError(
+                    f"{path}: entry {position} of the index is not a JSON object: {json.dumps(entry)[:80]}"
+                )
         return entries
 
     def _save(self) -> None:
-        """Write the index atomically; callers hold the lock (see :meth:`_replace`)."""
+        """Write the index atomically; callers hold the lock (see :meth:`_replace_locked`)."""
         text = json.dumps(self._entries, indent=1, sort_keys=True, ensure_ascii=True)
         with atomic_write(self.root / INDEX_FILE) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
             handle.write(text + "\n")
 
     def _replace(self, key: str, value: Any, entry: dict[str, Any]) -> None:
-        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``.
-
-        Under the lock on ``index.lock`` the index is re-read from disk first, so entries
-        another process added since this instance loaded it are kept;
+        """:meth:`_replace_locked` under the lock on ``index.lock``;
         :class:`~mastpipe.core.errors.LibraryBusyError` when the lock is not free in time.
         """
         with self._lock():
-            self._entries = [e for e in self._load() if e.get(key) != value]
-            self._entries.append(entry)
-            self._save()
+            self._replace_locked(key, value, entry)
+
+    def _replace_locked(self, key: str, value: Any, entry: dict[str, Any]) -> None:
+        """Append ``entry``, dropping any entry whose ``key`` already equals ``value``, and
+        save the index. The caller holds the lock (which is not re-entrant: never take it
+        again here). The index is re-read from disk first, so entries another process added
+        since this instance loaded it are kept."""
+        self._entries = [e for e in self._load() if e.get(key) != value]
+        self._entries.append(entry)
+        self._save()
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
         """Copies of the index entries, those of ``kind`` only when given."""
@@ -173,31 +186,37 @@ class CalibLibrary:
         ``calib_hash`` (:func:`~mastpipe.config.loader.calib_hash` of the configuration it
         was built under; ``None`` when not given, and such an entry is never reused by
         :meth:`find_by_inputs`). A master of the same file name replaces the earlier entry.
+
+        The lock on ``index.lock`` is held for the whole operation, from before the file is
+        written until the index is saved, so a
+        :class:`~mastpipe.core.errors.LibraryBusyError` (the lock not free in time) comes
+        before anything is written.
         """
         name = product_name(meta_for_name, master.kind)
         path = self.root / name
-        write_master(path, master, prov)
-        validity = master.validity
-        binning = validity.get("binning") or meta_for_name.binning
-        entry = {
-            "kind": master.kind,
-            "path": name,
-            "instrument": meta_for_name.instrument,
-            "configuration": meta_for_name.configuration,
-            "camera": validity.get("camera") or meta_for_name.camera,
-            "binning": [int(b) for b in binning],
-            "readout_mode": validity.get("readout_mode"),
-            "amplifier": validity.get("amplifier"),
-            "readout_key": readout_key(validity.get("readout_mode"), validity.get("amplifier")),
-            "detector_temperature": validity.get("detector_temperature"),
-            "mid_time": validity.get("mid_time"),
-            "exposure_time": validity.get("exposure_time"),
-            "n_frames": int(master.n_frames),
-            "inputs": sorted(str(checksum) for checksum in prov.inputs),
-            "file_checksum": file_checksum(path),
-            "calib_hash": calib_hash,
-        }
-        self._replace("path", name, entry)
+        with self._lock():
+            write_master(path, master, prov)
+            validity = master.validity
+            binning = validity.get("binning") or meta_for_name.binning
+            entry = {
+                "kind": master.kind,
+                "path": name,
+                "instrument": meta_for_name.instrument,
+                "configuration": meta_for_name.configuration,
+                "camera": validity.get("camera") or meta_for_name.camera,
+                "binning": [int(b) for b in binning],
+                "readout_mode": validity.get("readout_mode"),
+                "amplifier": validity.get("amplifier"),
+                "readout_key": readout_key(validity.get("readout_mode"), validity.get("amplifier")),
+                "detector_temperature": validity.get("detector_temperature"),
+                "mid_time": validity.get("mid_time"),
+                "exposure_time": validity.get("exposure_time"),
+                "n_frames": int(master.n_frames),
+                "inputs": sorted(str(checksum) for checksum in prov.inputs),
+                "file_checksum": file_checksum(path),
+                "calib_hash": calib_hash,
+            }
+            self._replace_locked("path", name, entry)
         return path
 
     def find(
@@ -293,12 +312,21 @@ class CalibLibrary:
         """Write ``ref`` as ``root/<identifier>_wref.fits`` and index it with ``camera``.
 
         A reference of the same identifier (the same instrument, configuration, preset and
-        arc time) replaces the earlier entry and file.
+        arc time) replaces the earlier entry and file. Like :meth:`add`, the lock is held
+        from before the file is written until the index is saved.
         """
         name = reference_name(ref)
         path = self.root / name
-        write_reference(path, ref, prov)
-        entry = {
+        with self._lock():
+            write_reference(path, ref, prov)
+            self._references.pop(name, None)
+            self._replace_locked("identifier", ref.identifier, self._reference_entry(ref, name, camera))
+        return path
+
+    @staticmethod
+    def _reference_entry(ref: ReferenceSolution, name: str, camera: str) -> dict[str, Any]:
+        """The index entry of ``ref`` written as ``name`` for ``camera``."""
+        return {
             "kind": REFERENCE_KIND,
             "path": name,
             "identifier": ref.identifier,
@@ -311,9 +339,6 @@ class CalibLibrary:
             "hash": ref.hash,
             "source_checksums": list(ref.source_checksums),
         }
-        self._references.pop(name, None)
-        self._replace("identifier", ref.identifier, entry)
-        return path
 
     def _reference_entries(self, instrument: str, configuration: str, fiber_preset: str) -> list[dict[str, Any]]:
         return [

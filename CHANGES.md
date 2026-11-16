@@ -2,6 +2,21 @@
 
 ## 0.0.1 (unreleased)
 
+- `quicklook` review fixes (2026-11-16): `--summary-json PATH` replaces an existing
+  `PATH` only when it is an empty file or an earlier result document (a JSON object with
+  `"command": "quicklook"` and a `"schema"` key); any other file (the library's
+  `index.json`, a frame, the manifest, the log, a folder) is left untouched, which is one
+  line on stderr, `could not write the result file PATH: ... not overwritten`, and the exit
+  status stands (it was overwritten). A summary line that stdout's encoding cannot spell
+  is printed with those characters as backslash escapes and the lines after it follow (it
+  lost that line and every later one, with a `could not print the summary` line). Every
+  diagnostic the command writes to stderr is best effort: a closed or full stderr no
+  longer costs the exit status or the result file. An `index.json` holding an entry that
+  is not a JSON object is `LibraryInvalidError` (exit 4, `library_invalid`), naming the
+  first bad entry (it opened, and failed later inside a group). `CalibLibrary.add` and
+  `add_reference` hold the index lock from before the file is written, so a lock timeout
+  (`LibraryBusyError`) leaves no new file in the library that the index and the result's
+  `products` do not list.
 - `quicklook` caller-contract fixes (2026-11-13): a printed summary that stdout cannot take
   (an encoding that cannot spell a file name, a full device) is one line on stderr,
   `could not print the summary: ...`, instead of a traceback with exit status 1 and no

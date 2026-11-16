@@ -112,3 +112,71 @@ def test_write_is_sorted_ascii_json_with_a_newline(tmp_path):
     text = path.read_bytes().decode("ascii")
     assert text == '{\n "a": [\n  1\n ],\n "b": "\\u00e9"\n}\n'
     assert [p.name for p in path.parent.iterdir()] == ["r.json"]
+
+
+RESULT = {"schema": 1, "command": "quicklook", "status": "complete"}
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        b"",  # an empty file (a caller's pre-created placeholder)
+        json.dumps(RESULT).encode("utf-8"),  # an earlier result document
+        b'\n  {"command": "quicklook", "schema": 99}\n',  # another schema's result
+    ],
+)
+def test_write_replaces_an_empty_file_or_an_earlier_result(tmp_path, existing):
+    path = tmp_path / "r.json"
+    path.write_bytes(existing)
+    write(path, {"schema": 1, "command": "quicklook", "status": "empty"})
+    assert json.loads(path.read_text(encoding="utf-8"))["status"] == "empty"
+    assert [p.name for p in tmp_path.iterdir()] == ["r.json"]
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        b'[{"kind": "bias", "path": "m_bias.fits"}]\n',  # the library's index.json
+        b"SIMPLE  =                    T" + b" " * 2850,  # a FITS file
+        b"source,lamp_state\nx.fits,on\n",  # a manifest
+        b'{"command": "identify", "schema": 1}',  # a JSON object of another command
+        b'{"command": "quicklook"}',  # no schema
+        b'{"schema": 1}',  # no command
+        b"\xff\xfe{",  # not UTF-8
+        b"{not json",
+        b"   ",  # not empty, not JSON
+    ],
+)
+def test_write_refuses_to_overwrite_another_file(tmp_path, existing):
+    path = tmp_path / "index.json"
+    path.write_bytes(existing)
+    with pytest.raises(FileExistsError, match="is not a quick-look result file; not overwritten"):
+        write(path, {"schema": 1, "command": "quicklook"})
+    assert path.read_bytes() == existing
+    assert [p.name for p in tmp_path.iterdir()] == ["index.json"]  # no temporary left
+
+
+def test_write_refuses_a_folder(tmp_path):
+    folder = tmp_path / "r.json"
+    folder.mkdir()
+    with pytest.raises(OSError):
+        write(folder, {"schema": 1, "command": "quicklook"})
+    assert folder.is_dir() and list(folder.iterdir()) == []
+
+
+def test_write_refuses_an_alias_of_another_file(tmp_path):
+    """The existing content decides, not the spelling: a link to the library index is refused."""
+    index = tmp_path / "calib" / "index.json"
+    index.parent.mkdir()
+    index.write_text("[]\n", encoding="utf-8")
+    link = tmp_path / "r.json"
+    try:
+        link.symlink_to(index)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symbolic link here")
+    with pytest.raises(FileExistsError, match="not overwritten"):
+        write(link, {"schema": 1, "command": "quicklook"})
+    assert link.is_symlink() and index.read_text(encoding="utf-8") == "[]\n"
+    with pytest.raises(FileExistsError, match="not overwritten"):
+        write(tmp_path / "calib" / ".." / "calib" / "index.json", {"schema": 1, "command": "quicklook"})
+    assert index.read_text(encoding="utf-8") == "[]\n"

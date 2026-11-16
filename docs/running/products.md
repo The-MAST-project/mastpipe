@@ -29,7 +29,9 @@ Every product, the QC files and `calib/index.json` are written to a temporary
 `<name>.tmp-<pid>-<random>` next to the target and moved into place when complete, so an
 interrupted run never leaves a partial file. `calib/index.lock` is the lock that
 lets several runs (a quick-look and an `identify`) share one `calib/` folder
-without losing each other's index entries; leave it in place. Each run writes a new
+without losing each other's index entries; leave it in place. A run adding a master or
+a reference holds that lock from before the file is written until the index lists it,
+so `calib/` never gains a product its index does not know of. Each run writes a new
 log file, named after its UTC start time with a random six-hex-digit suffix, so two runs
 started in the same second never write into one file.
 

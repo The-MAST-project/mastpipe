@@ -112,13 +112,17 @@ def quicklook_command(args: argparse.Namespace) -> int:
     3 ``partial``, 4 ``failed``. A :class:`~mastpipe.core.errors.RunError` raised before the
     calibration library was open is one ``FAILED:`` line on stderr, any other exception
     (a run error re-raised from a group included) its traceback; the printed summary
-    follows only a run that ended normally. It is left out silently when stdout is closed;
-    a stdout that cannot take it (an encoding that cannot spell a file name, a full device)
-    is one line on stderr, then stdout is drained, or discarded only when it cannot be
-    written at all (:func:`_drain_stdout`), and the exit code and the result file are left
-    alone. With
+    follows only a run that ended normally. It is left out silently when stdout is closed.
+    It is printed line by line: a line stdout's encoding cannot spell is printed with those
+    characters as backslash escapes (:func:`_print_line`), so no line is lost to the
+    encoding; a stdout that cannot be written (a full device, a closed file) is one line on
+    stderr, then stdout is drained, or discarded only when it cannot be flushed
+    (:func:`_drain_stdout`), and the exit code and the result file are left alone. With
     ``--summary-json`` the result document is built and written last; a failure to do so
-    is one line on stderr and changes nothing else."""
+    (an existing destination that is not an earlier result is never replaced, see
+    :func:`mastpipe.pipeline.summary.write`) is one line on stderr and changes nothing
+    else. Every stderr line goes through :func:`_diagnose`, so a stderr that cannot take
+    it changes nothing either."""
     options = RunOptions(
         instrument=args.instrument,
         configuration=args.configuration,
@@ -140,28 +144,45 @@ def quicklook_command(args: argparse.Namespace) -> int:
     except Exception as caught:
         error = caught
         if stopped_by_run_error(summary, caught):
-            print(f"FAILED: {caught}", file=sys.stderr)
+            _diagnose(f"FAILED: {caught}")
         else:
-            traceback.print_exception(caught, file=sys.stderr)
+            _diagnose("".join(traceback.format_exception(caught)))
     if error is None and sys.stdout is not None:  # None: file descriptor 1 is closed
         try:
             _print_summary(summary, options, args.night_dir)
             sys.stdout.flush()
-        except (OSError, ValueError) as failure:  # UnicodeError is a ValueError, as is a closed file's
-            print(f"could not print the summary: {failure}", file=sys.stderr)
+        except (OSError, ValueError) as failure:  # a closed file's error is a ValueError, as is a
+            # UnicodeEncodeError that the escaped line raises again (a stdout that rejects it)
+            _diagnose(f"could not print the summary: {failure}")
             _drain_stdout()
     if args.summary_json is not None:
         try:
             doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
             result.write(args.summary_json, doc)
         except Exception as failure:
-            print(f"could not write the result file {args.summary_json}: {failure}", file=sys.stderr)
+            _diagnose(f"could not write the result file {args.summary_json}: {failure}")
     return result.outcome(summary, error)[1]
 
 
+def _diagnose(text: str) -> None:
+    """Write one diagnostic to stderr, best effort: ``text`` and a newline (unless it ends
+    with one), then a flush. Nothing happens when ``sys.stderr`` is ``None`` (file
+    descriptor 2 closed), and an ``OSError`` or ``ValueError`` from the write or the flush
+    (a closed pipe, a full device, a closed file) is swallowed, so a stderr that cannot
+    take the diagnostic never costs the exit code or the result file."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    try:
+        stream.write(text if text.endswith("\n") else text + "\n")
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def _drain_stdout() -> None:
-    """After a failed print: flush what stdout still holds (the lines printed before an
-    encoding failure reach their reader), and only when stdout cannot be written at all
+    """After a failed print: flush what stdout still holds (the lines printed before the
+    failure reach their reader), and only when stdout cannot be written at all
     (the flush raises ``OSError``: a full device, say) discard it (:func:`_discard_stdout`).
     Any other error of the flush (a closed file) is left alone."""
     try:
@@ -195,21 +216,34 @@ def _discard_stdout() -> None:
         os.close(null)
 
 
+def _print_line(line: str) -> None:
+    """Print ``line`` to stdout; when stdout's encoding cannot spell it
+    (``UnicodeEncodeError``), print it once more with the characters it cannot encode
+    replaced by backslash escapes (``n\\xe9`` for ``né``). Any error of that second try,
+    and any other error, propagates (see :func:`quicklook_command`)."""
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(encoding, "backslashreplace").decode(encoding))
+
+
 def _print_summary(summary: RunSummary, options: RunOptions, night_dir: Path) -> None:
-    print(
+    """Print the run's summary to stdout, line by line through :func:`_print_line`."""
+    _print_line(
         f"{len(summary.products)} products, {len(summary.qc)} QC files, "
         f"{len(summary.skipped)} skipped, {len(summary.reduced_again)} reduced again, "
         f"{len(summary.failed)} failed"
     )
     if summary.frames_scanned == 0:
-        print(f"no frames of {options.instrument} in {night_dir}")
+        _print_line(f"no frames of {options.instrument} in {night_dir}")
     for item in summary.skipped:
-        print(f"  skipped {item.label}: {item.reason}")
+        _print_line(f"  skipped {item.label}: {item.reason}")
     for source in summary.reduced_again:
-        print(f"  reduced again {source}")
+        _print_line(f"  reduced again {source}")
     for failure in summary.failed:
         cause = failure.message if failure.error_type is None else f"{failure.error_type}: {failure.message}"
-        print(f"  FAILED {failure.label}: {cause}")
+        _print_line(f"  FAILED {failure.label}: {cause}")
 
 
 # ---------------------------------------------------------------------------------- solve

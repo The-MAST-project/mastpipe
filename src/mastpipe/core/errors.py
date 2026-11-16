@@ -55,7 +55,8 @@ class LibraryBusyError(RunError, TimeoutError):
 
 
 class LibraryInvalidError(RunError, ValueError):
-    """The calibration library's index cannot be read: not UTF-8, not JSON, or not a list."""
+    """The calibration library's index cannot be read: not UTF-8, not JSON, not a list, or an
+    entry of the list is not an object."""
 
     kind = "library_invalid"
 

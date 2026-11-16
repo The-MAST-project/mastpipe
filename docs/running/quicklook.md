@@ -91,7 +91,8 @@ Per camera and grating found in the folder:
 `--summary-json PATH`
 : Write the run's result to `PATH` as one JSON document, for a program that
   starts `quicklook` and needs to know what happened; see
-  [The result file](result-file.md).
+  [The result file](result-file.md). An existing `PATH` is replaced only when it is
+  empty or an earlier result; any other file is left untouched.
 
 `--quiet`
 : Keep the per-frame progress lines off the console: warnings and errors still go
@@ -116,13 +117,15 @@ quick-look runs again, those frames are reduced once more and become
 ## What the run reports
 
 The console shows one line per product and a summary (each failure as `FAILED <source>:
-<exception class>: <message>`, or the message alone when no exception caused it); a
-stdout that cannot take the summary is one line on stderr, `could not print the summary:
-…`, and leaves the exit status and the result file alone. An encoding failure loses
-only the summary lines that could not be printed; only a stdout that cannot be written at
-all (a full device) is pointed at the null device, which discards anything the same
-process writes to stdout afterwards. With stdout closed the summary is simply not
-printed. The log in `out/logs/`
+<exception class>: <message>`, or the message alone when no exception caused it). A
+summary line that stdout's encoding cannot spell is printed with those characters as
+backslash escapes (`n\xe9` for `né`) and the lines after it follow, so nothing is lost; a
+stdout that cannot be written at all (a full device, a closed file) is one line on
+stderr, `could not print the summary: …`, and leaves the exit status and the result file
+alone; only a stdout that cannot be flushed (a full device) is pointed at the null
+device, which discards anything the same process writes to stdout afterwards. With
+stdout closed the summary is simply not printed, and a stderr that cannot take a
+diagnostic loses that line and changes nothing else. The log in `out/logs/`
 has everything with timestamps, one new file per run
 (`quicklook_<UTC stamp>_<6 hex>.log`, the random suffix keeping two runs started in
 the same second apart). When something stops the whole run, the runner writes why to

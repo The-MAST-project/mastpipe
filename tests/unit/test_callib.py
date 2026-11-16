@@ -4,6 +4,7 @@ found by validity time or identifier, and the ``index.json`` behind both."""
 import json
 import multiprocessing
 import threading
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -13,7 +14,7 @@ from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError
 from mastpipe.core.model import LINE_COLUMNS, FrameMeta, MasterCalib, WavelengthSolution
 from mastpipe.io.atomic import locked
 from mastpipe.io.ingest import file_checksum
-from mastpipe.io.products import read_master, reference_name
+from mastpipe.io.products import read_master, reference_name, write_master, write_reference
 from mastpipe.pipeline.callib import INDEX_FILE, LOCK_FILE, CalibLibrary
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.geometry import grating_geometry
@@ -367,6 +368,13 @@ def test_bad_index_is_library_invalid(tmp_path):
         CalibLibrary(tmp_path)
 
 
+@pytest.mark.parametrize(("index", "position"), [("[null]", 0), ("[1, {}]", 0), ('[{}, "x"]', 1)])
+def test_index_entry_that_is_not_an_object_is_library_invalid(tmp_path, index, position):
+    (tmp_path / "index.json").write_text(index, encoding="utf-8")
+    with pytest.raises(LibraryInvalidError, match=rf"index\.json: entry {position} .*not a JSON object"):
+        CalibLibrary(tmp_path)
+
+
 def test_held_lock_is_library_busy(tmp_path, monkeypatch):
     def busy(path, timeout_s=30.0):
         raise TimeoutError(f"could not lock {path}")
@@ -385,3 +393,62 @@ def test_held_lock_on_write_is_library_busy(tmp_path, monkeypatch):
     monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
     with pytest.raises(LibraryBusyError, match="could not lock"):
         library._replace("file", "a.fits", {"file": "a.fits"})
+
+
+def test_lock_timeout_on_add_writes_no_master(tmp_path, monkeypatch):
+    """The lock is taken before the master is written: a timeout leaves no file behind
+    that the index (and a run's ``products``) would not know of."""
+    library = CalibLibrary(tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library.add(master, make_provenance(), meta)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_lock_timeout_on_add_reference_writes_no_file(tmp_path, monkeypatch, highspec_effective):
+    library = CalibLibrary(tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library.add_reference(make_reference("2026-10-01T18:00:00", 0.0, highspec_effective), make_provenance(), "main")
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_add_writes_the_file_while_holding_the_lock(tmp_path, monkeypatch, highspec_effective):
+    """The file is written, and the index re-read and saved, inside one hold of the lock."""
+    library = CalibLibrary(tmp_path)
+    real = locked
+    events: list[str] = []
+
+    @contextmanager
+    def spy(path, timeout_s=30.0):
+        with real(path, timeout_s):
+            events.append("lock")
+            yield
+            events.append("unlock")
+
+    def recorder(name, function):
+        def wrapped(*args, **kwargs):
+            events.append(name)
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(f"mastpipe.pipeline.callib.{name}", wrapped)
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", spy)
+    recorder("write_master", write_master)
+    recorder("write_reference", write_reference)
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    library.add(master, make_provenance(), meta)
+    library.add_reference(make_reference("2026-10-01T18:00:00", 0.0, highspec_effective), make_provenance(), "main")
+    assert events == ["lock", "write_master", "unlock", "lock", "write_reference", "unlock"]
+    assert len(CalibLibrary(tmp_path).list()) == 2
