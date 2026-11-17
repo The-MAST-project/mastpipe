@@ -124,8 +124,8 @@ mastpipe solve <full-arc.fits> --out <dir> --instrument highspec --configuration
 mastpipe quicklook <night-folder> --out <dir> --instrument highspec [--layout lab3|survey45] [--manifest frames.csv]
 mastpipe quicklook <night-folder> --out <dir> --instrument highspec --configuration Mg --layout survey45   # site form, no manifest
 mastpipe show <product.fits>
-# quicklook exits 0, or 2 when a frame or group failed; a missing night folder or
-# manifest, or a manifest error (`ManifestError`), is one `FAILED:` line on stderr, exit 2.
+# quicklook exits 0 (complete or empty), 1 (unexpected error, traceback), 3 (some frames or
+# groups failed), 4 (the run could not start: one `FAILED:` line on stderr); 2 is a usage error.
 # `mastpipe reduce` (manual mode, --force <stage>) and `mastpipe focus` are later plans.
 ```
 

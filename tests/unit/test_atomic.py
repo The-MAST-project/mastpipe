@@ -1,11 +1,13 @@
 """Tests for the atomic file replacement and the advisory lock of ``mastpipe.io.atomic``."""
 
 import errno
+import os
 import sys
+from contextlib import nullcontext
 
 import pytest
 
-from mastpipe.io.atomic import atomic_write, locked
+from mastpipe.io.atomic import atomic_write, locked, staged
 
 
 def test_atomic_write_replaces_the_target(tmp_path):
@@ -87,3 +89,26 @@ def test_atomic_write_unlink_failure_does_not_mask_the_error(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="interrupted"), atomic_write(tmp_path / "product.fits") as tmp:
         tmp.write_text("partial", encoding="utf-8")
         raise RuntimeError("interrupted")
+
+
+def test_staged_leaves_the_move_to_the_caller(tmp_path):
+    target = tmp_path / "sub" / "product.fits"
+    with staged(target) as tmp:
+        assert tmp.parent == target.parent and tmp.name.startswith("product.fits.tmp-")
+        tmp.write_text("new", encoding="utf-8")
+        assert not target.exists()  # nothing moves on its own
+        os.replace(tmp, target)
+    assert target.read_text(encoding="utf-8") == "new"
+    assert [p.name for p in target.parent.iterdir()] == ["product.fits"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_staged_removes_a_temporary_never_moved(tmp_path, fails):
+    target = tmp_path / "product.fits"
+    target.write_text("old", encoding="utf-8")
+    with pytest.raises(RuntimeError) if fails else nullcontext(), staged(target) as tmp:
+        tmp.write_text("new", encoding="utf-8")
+        if fails:
+            raise RuntimeError("index unreadable")
+    assert target.read_text(encoding="utf-8") == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["product.fits"]

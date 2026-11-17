@@ -18,6 +18,7 @@ import pandas as pd
 
 from mastpipe.config.loader import load_yaml
 from mastpipe.config.models import ConfigurationBlock, InstrumentConfig
+from mastpipe.core.errors import UnknownInstrumentError
 from mastpipe.core.hashing import HASH_LENGTH
 from mastpipe.core.model import ROLES
 from mastpipe.vocab import GRATING_NAMES
@@ -37,10 +38,11 @@ def list_instruments() -> list[str]:
 
 
 def instrument_dir(name: str) -> Path:
-    """Folder of the instrument ``name``; ``KeyError`` when no such instrument is shipped."""
+    """Folder of the instrument ``name``; :class:`~mastpipe.core.errors.UnknownInstrumentError`
+    (a ``KeyError``) when no such instrument is shipped."""
     path = _root() / name
     if not (path / "config.yaml").is_file():
-        raise KeyError(f"unknown instrument {name!r}; known: {list_instruments()}")
+        raise UnknownInstrumentError(f"unknown instrument {name!r}; known: {list_instruments()}")
     return path
 
 

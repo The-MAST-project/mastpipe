@@ -22,6 +22,7 @@ import pandas as pd
 
 from mastpipe.__version__ import __version__
 from mastpipe.config.models import DriftParams, EffectiveConfig, InstrumentConfig, StepParams
+from mastpipe.core.errors import RunError
 from mastpipe.core.model import (
     CalibrationSet,
     DriftModel,
@@ -53,8 +54,6 @@ MASTER_KINDS = ("bias", "dark", "background")
 TIME_POLICIES = ("nearest_before", "nearest", "interpolate")
 ALREADY_REDUCED = "already reduced"
 """Start of the ``skipped`` reason of a science product whose idempotence key is unchanged."""
-NO_FRAMES = "no readable frame in the night folder"
-"""The failure recorded for a night folder that holds nothing to reduce."""
 CONFIGURATION_FROM_RUN = "run"
 """QC ``configuration_origin`` of a frame given ``options.configuration`` by the run."""
 CONFIGURATION_FROM_FRAME = "frame"
@@ -76,7 +75,8 @@ class RunOptions:
     time; ``time_policy`` overrides ``params.drift.time_policy`` (as the last override, so
     the configuration hash covers it); ``force`` rebuilds masters and science products that
     are up to date; ``library`` is the calibration library folder (default
-    ``out_dir/calib``).
+    ``out_dir/calib``); ``quiet`` keeps the console to warnings and errors (the run's log
+    file still has every ``INFO`` line).
     """
 
     instrument: str
@@ -90,19 +90,86 @@ class RunOptions:
     reference_id: str | None = None
     time_policy: str | None = None
     library: Path | None = None
+    quiet: bool = False
+
+
+Scope = Literal["frame", "group", "manifest", "run"]
+"""What a summary item is about: one frame (``source`` its path relative to the night
+folder), one ``(camera, configuration)`` group (``source`` is ``<camera>/<configuration>``),
+one manifest row (``source`` its source cell) or the whole run (``source`` is ``None``)."""
+
+
+def _label(scope: Scope, source: str | None) -> str:
+    if scope == "run":
+        return "run"
+    if scope == "group":
+        return f"group {source}"
+    return str(source)
+
+
+@dataclass(frozen=True)
+class Skipped:
+    """Something a run left out on purpose, and why."""
+
+    scope: Scope
+    source: str | None
+    reason: str
+
+    @property
+    def label(self) -> str:
+        """``source`` for a frame or manifest row, ``group <source>`` for a group, ``run``
+        for the run."""
+        return _label(self.scope, self.source)
+
+
+@dataclass(frozen=True)
+class Failure:
+    """Something a run could not do: ``message`` says what went wrong, ``kind`` sorts the
+    failure (``"error"`` unless a site names it), ``error_type`` names the exception's
+    class when an exception caused it."""
+
+    scope: Scope
+    source: str | None
+    message: str
+    kind: str = "error"
+    error_type: str | None = None
+
+    @property
+    def label(self) -> str:
+        """As :attr:`Skipped.label`."""
+        return _label(self.scope, self.source)
 
 
 @dataclass
 class RunSummary:
-    """What a run produced: product and QC paths, and the frames it skipped, failed on or
-    reduced again (``skipped`` holds ``"<source>: <reason>"`` strings, ``failed`` pairs of
-    source and error, ``reduced_again`` the sources of rewritten science products)."""
+    """What a run produced: product and QC paths, the things it skipped
+    (:class:`Skipped`) or failed on (:class:`Failure`), the sources of the science products
+    it reduced again, and the run's facts: its start and end (UTC,
+    ``YYYY-MM-DDTHH:MM:SSZ``), the number of frames the scan found (after the manifest),
+    and its log file and calibration library."""
 
     products: list[Path] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
-    failed: list[tuple[str, str]] = field(default_factory=list)
+    skipped: list[Skipped] = field(default_factory=list)
+    failed: list[Failure] = field(default_factory=list)
     qc: list[Path] = field(default_factory=list)
     reduced_again: list[str] = field(default_factory=list)
+    started: str | None = None
+    finished: str | None = None
+    frames_scanned: int | None = None
+    log: Path | None = None
+    library: Path | None = None
+
+
+def stopped_by_run_error(summary: RunSummary, error: BaseException | None) -> bool:
+    """Whether ``error`` is a run error of the result (``failed``, exit 4, with its own
+    ``kind`` and ``retryable``): a :class:`~mastpipe.core.errors.RunError` raised before
+    the calibration library was open (``summary.library`` still ``None``), when nothing
+    has been reduced. Once the library is open, any exception leaving the run -- a
+    ``RunError`` re-raised from a group under ``--on-error raise`` included -- is an
+    unexpected ``error``. One predicate for the exit code and the result document
+    (:mod:`mastpipe.pipeline.summary`), stderr (:mod:`mastpipe.pipeline.commands`) and the
+    log (:mod:`mastpipe.pipeline.runner`)."""
+    return isinstance(error, RunError) and summary.library is None
 
 
 @dataclass(eq=False)
@@ -191,17 +258,54 @@ class _Group:
 # ------------------------------------------------------------------------------ helpers
 
 
-def _describe(error: BaseException) -> str:
-    return f"{type(error).__name__}: {error}"
-
-
 def _time_key(ref: FrameRef) -> tuple[bool, str, str]:
     return (ref.meta.mid_time is None, ref.meta.mid_time or "", ref.meta.source)
 
 
+def _record_skip(summary: RunSummary, scope: Scope, source: str | None, reason: str, level: int) -> None:
+    item = Skipped(scope, source, reason)
+    summary.skipped.append(item)
+    log.log(level, "skipped %s: %s", item.label, reason)
+
+
+def skip(summary: RunSummary, scope: Scope, source: str | None, reason: str) -> None:
+    """Record in ``summary`` that ``source`` was skipped for ``reason``, with a warning."""
+    _record_skip(summary, scope, source, reason, logging.WARNING)
+
+
+def fail(
+    summary: RunSummary,
+    scope: Scope,
+    source: str | None,
+    error: BaseException | str,
+    *,
+    prefix: str = "",
+    kind: str | None = None,
+) -> None:
+    """Record in ``summary`` that ``source`` failed, and log it (with the traceback when
+    ``error`` is an exception). An exception gives the message ``prefix + str(error)``
+    (its class name when ``str(error)`` is empty) and its class name as ``error_type``; a
+    string is the message itself, without ``prefix``. An explicit ``kind`` wins; else a
+    :class:`~mastpipe.core.errors.RunError` gives its own ``kind``; else ``"error"``."""
+    if kind is None:
+        kind = error.kind if isinstance(error, RunError) else "error"
+    if isinstance(error, BaseException):
+        message = prefix + (str(error) or type(error).__name__)
+        item = Failure(scope, source, message, kind, type(error).__name__)
+    else:
+        item = Failure(scope, source, error, kind)
+    summary.failed.append(item)
+    log.error(
+        "failed %s: %s",
+        item.label,
+        item.message,
+        exc_info=error if isinstance(error, BaseException) else None,
+    )
+
+
 def _skip(group: _Group, source: str, reason: str) -> None:
-    group.summary.skipped.append(f"{source}: {reason}")
-    log.info("skipped %s: %s", source, reason)
+    """Record that the frame ``source`` was skipped for ``reason`` (logged at INFO)."""
+    _record_skip(group.summary, "frame", source, reason, logging.INFO)
 
 
 def _per_frame(group: _Group, ref: FrameRef, action: Callable[[_Group, FrameRef], None]) -> None:
@@ -211,8 +315,7 @@ def _per_frame(group: _Group, ref: FrameRef, action: Callable[[_Group, FrameRef]
     except Exception as error:
         if group.options.on_error == "raise":
             raise
-        group.summary.failed.append((ref.meta.source, _describe(error)))
-        log.exception("failed %s", ref.meta.source)
+        fail(group.summary, "frame", ref.meta.source, error)
 
 
 def _by_exposure(refs: list[FrameRef]) -> list[list[FrameRef]]:

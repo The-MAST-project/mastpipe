@@ -1,0 +1,71 @@
+{
+ "command": "quicklook",
+ "counts": {
+  "failed": 1,
+  "products": 2,
+  "qc": 1,
+  "reduced_again": 1,
+  "skipped": 1
+ },
+ "exit_code": 3,
+ "failed": [
+  {
+   "error_type": "ValueError",
+   "kind": "error",
+   "message": "boom",
+   "scope": "frame",
+   "source": "acq/e1.fits"
+  }
+ ],
+ "finished": "2026-01-02T03:04:06Z",
+ "frames_scanned": 3,
+ "input": "<input>",
+ "library": "<library>",
+ "log": "logs/quicklook_20260102T030405_abcdef.log",
+ "mastpipe_version": "<version>",
+ "options": {
+  "camera": null,
+  "configuration": null,
+  "force": true,
+  "instrument": "highspec",
+  "layout": null,
+  "manifest": null,
+  "on_error": "continue",
+  "reference": null,
+  "set": [
+   "extract.halfwidth=4"
+  ],
+  "time_policy": null
+ },
+ "out": "<out>",
+ "products": [
+  {
+   "path": "spec/p_spec.fits",
+   "root": "out"
+  },
+  {
+   "path": "m_bias.fits",
+   "root": "library"
+  }
+ ],
+ "qc": [
+  {
+   "path": "qa/p.json",
+   "root": "out"
+  }
+ ],
+ "reduced_again": [
+  "acq/e2.fits"
+ ],
+ "run_error": null,
+ "schema": 1,
+ "skipped": [
+  {
+   "reason": "not camera x",
+   "scope": "group",
+   "source": "main/Mg"
+  }
+ ],
+ "started": "2026-01-02T03:04:05Z",
+ "status": "partial"
+}

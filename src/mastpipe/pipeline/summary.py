@@ -1,0 +1,208 @@
+"""The result of a ``quicklook`` run for a calling program: its outcome and exit code
+(:func:`outcome`), and the schema-1 JSON document (:func:`document`, :func:`write`) that
+``--summary-json`` writes.
+
+Exit codes: 0 ``complete`` or ``empty``, 1 ``error`` (an unexpected exception), 2 a usage
+error (the argument parser's own, never returned here), 3 ``partial`` (some frame or group
+failed), 4 ``failed`` (a :class:`~mastpipe.core.errors.RunError` stopped the run before
+the calibration library was open, so nothing was reduced; see
+:func:`~mastpipe.pipeline.group.stopped_by_run_error`).
+The fields and the stability rule are documented on the user-docs page "The result file".
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from mastpipe.__version__ import __version__
+from mastpipe.core.errors import RunError
+from mastpipe.io.atomic import atomic_write
+from mastpipe.pipeline.group import RunOptions, RunSummary, stopped_by_run_error
+
+SCHEMA = 1
+"""The result document's schema version: it changes when a field is removed or renamed or
+a value changes meaning, never when a field or a ``kind`` is added."""
+
+EXIT_OK, EXIT_ERROR, EXIT_PARTIAL, EXIT_FAILED = 0, 1, 3, 4
+
+
+def outcome(summary: RunSummary, error: BaseException | None) -> tuple[str, int]:
+    """The run's status and exit code: ``("failed", 4)`` when
+    :func:`~mastpipe.pipeline.group.stopped_by_run_error`; ``("error", 1)`` for any other exception;
+    ``("partial", 3)`` when something failed; ``("empty", 0)`` when the scan found no frame;
+    else ``("complete", 0)``."""
+    if stopped_by_run_error(summary, error):
+        return "failed", EXIT_FAILED
+    if error is not None:
+        return "error", EXIT_ERROR
+    if summary.failed:
+        return "partial", EXIT_PARTIAL
+    if summary.frames_scanned == 0:
+        return "empty", EXIT_OK
+    return "complete", EXIT_OK
+
+
+def _absolute(path: Path) -> Path:
+    """``path`` made absolute and normalised (``..`` removed) without following links."""
+    return Path(os.path.abspath(path))
+
+
+def _written(path: Path, out_dir: Path, library: Path | None) -> dict[str, str]:
+    """A written path relative to its root, with forward slashes: of ``out`` and
+    ``library``, the deeper root that holds it, decided on absolute paths (so ``--out .``
+    does not hold ``../lib``, and a library inside ``--out`` is the master's root)."""
+    target = _absolute(path)
+    roots = [("out", _absolute(out_dir))]
+    if library is not None:
+        roots.append(("library", _absolute(library)))
+    holding = [(name, root) for name, root in roots if target.is_relative_to(root)]
+    if not holding:
+        raise ValueError(f"{path} lies outside {out_dir} and the library {library}")
+    name, root = max(holding, key=lambda item: len(item[1].parts))
+    return {"root": name, "path": target.relative_to(root).as_posix()}
+
+
+def _posix(path: Path | None) -> str | None:
+    return None if path is None else path.as_posix()
+
+
+def _run_error(summary: RunSummary, error: BaseException | None) -> dict[str, Any] | None:
+    if error is None:
+        return None
+    if stopped_by_run_error(summary, error):
+        assert isinstance(error, RunError)
+        kind, retryable = error.kind, error.retryable
+    else:
+        kind, retryable = "unexpected", False
+    return {"kind": kind, "error_type": type(error).__name__, "message": str(error), "retryable": retryable}
+
+
+def document(
+    summary: RunSummary,
+    options: RunOptions,
+    night_dir: Path,
+    out_dir: Path,
+    overrides: Sequence[str],
+    error: BaseException | None,
+) -> dict[str, Any]:
+    """The schema-1 result document of a run: ``summary`` as the run left it (its facts
+    ``None`` and its lists empty when the run stopped before them), the run's options with
+    ``overrides`` the ``--set`` texts as given, and ``error`` the exception that ended the
+    run, if any."""
+    status, code = outcome(summary, error)
+    library = summary.library
+    return {
+        "schema": SCHEMA,
+        "command": "quicklook",
+        "mastpipe_version": __version__,
+        "status": status,
+        "exit_code": code,
+        "started": summary.started,
+        "finished": summary.finished,
+        "input": night_dir.as_posix(),
+        "out": out_dir.as_posix(),
+        "library": _posix(library),
+        "options": {
+            "instrument": options.instrument,
+            "configuration": options.configuration,
+            "camera": options.camera,
+            "layout": options.layout,
+            "time_policy": options.time_policy,
+            "force": options.force,
+            "on_error": options.on_error,
+            "manifest": _posix(options.manifest),
+            "reference": options.reference_id,
+            "set": list(overrides),
+        },
+        "log": None if summary.log is None else _absolute(summary.log).relative_to(_absolute(out_dir)).as_posix(),
+        "frames_scanned": summary.frames_scanned,
+        "counts": {
+            "products": len(summary.products),
+            "qc": len(summary.qc),
+            "skipped": len(summary.skipped),
+            "reduced_again": len(summary.reduced_again),
+            "failed": len(summary.failed),
+        },
+        "products": [_written(path, out_dir, library) for path in summary.products],
+        "qc": [_written(path, out_dir, library) for path in summary.qc],
+        "skipped": [{"scope": item.scope, "source": item.source, "reason": item.reason} for item in summary.skipped],
+        "reduced_again": list(summary.reduced_again),
+        "failed": [
+            {
+                "scope": item.scope,
+                "source": item.source,
+                "kind": item.kind,
+                "error_type": item.error_type,
+                "message": item.message,
+            }
+            for item in summary.failed
+        ],
+        "run_error": _run_error(summary, error),
+    }
+
+
+_HEAD_BYTES = 4096
+"""How much of an existing destination :func:`_check_replaceable` reads before deciding
+that it cannot be a result document (one starts with ``{``)."""
+
+
+def _check_replaceable(path: Path) -> None:
+    """Return when ``path`` may be replaced by a result document: it does not exist, or it
+    is an empty file, or it is an earlier result document (a UTF-8 JSON object whose
+    ``"command"`` is ``"quicklook"`` and which has a ``"schema"`` key). Raise
+    ``FileExistsError`` for anything else: another file (the library's ``index.json``, a
+    FITS frame, a manifest, the log), a folder, a link that cannot be followed, unreadable
+    or non-JSON content, a JSON list. The existing content decides, read through the path
+    as given, so every spelling of a file (a link, ``..``) is judged by what it holds; the
+    file is closed again before anything is replaced (Windows refuses to replace an open
+    file)."""
+    if not os.path.lexists(path):
+        return
+    refused = f"{path} exists and is not a quick-look result file; not overwritten"
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(_HEAD_BYTES)
+            if data.lstrip()[:1] == b"{":
+                data += handle.read()
+    except OSError as error:  # a folder, a dangling link, no permission
+        raise FileExistsError(f"{refused} ({error})") from error
+    if not data:
+        return
+    try:
+        existing = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError) as error:  # UnicodeDecodeError, JSONDecodeError
+        raise FileExistsError(refused) from error
+    if not (isinstance(existing, dict) and existing.get("command") == "quicklook" and "schema" in existing):
+        raise FileExistsError(refused)
+
+
+def _check_outside(path: Path, library: Path | None) -> None:
+    """Raise ``FileExistsError`` when ``path`` lies in the calibration library folder
+    ``library``, whether or not the file exists yet (an empty library has no
+    ``index.json`` until its first product): every name there is the library's. Both
+    paths are compared with their links resolved, so another spelling of the folder is
+    refused too."""
+    if library is None:
+        return
+    root = Path(os.path.realpath(library))
+    if Path(os.path.realpath(path)).is_relative_to(root):
+        raise FileExistsError(f"{path} lies in the calibration library {library}; not written")
+
+
+def write(path: Path, doc: Mapping[str, Any], library: Path | None = None) -> None:
+    """Write ``doc`` to ``path`` as JSON (indent 1, sorted keys, ASCII, a final newline),
+    atomically: a reader sees the whole file or none. The folder is created when missing.
+    A ``path`` inside the calibration library folder ``library`` is refused, existing or
+    not (:func:`_check_outside`); an existing ``path`` is replaced only when it is empty or
+    an earlier result document. Anything refused is left as it is and ``FileExistsError``
+    raised (:func:`_check_replaceable`)."""
+    path = Path(path)
+    _check_outside(path, library)
+    _check_replaceable(path)
+    text = json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=True) + "\n"
+    with atomic_write(path) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)

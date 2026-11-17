@@ -43,6 +43,7 @@ import pandas as pd
 from astropy.io import fits
 
 from mastpipe.config.models import DetectorConfig
+from mastpipe.core.errors import ManifestMissingError, RunError
 from mastpipe.core.model import (
     ALL_TELESCOPES,
     ARC_KINDS,
@@ -157,12 +158,15 @@ LEGACY_MANIFEST_FIELDS = {TARGET_FIELD: TARGETS_FIELD}
 is one target for every telescope); the new column wins when a row fills both."""
 
 
-class ManifestError(ValueError):
+class ManifestError(RunError, ValueError):
     """An error in a manifest's content, naming the file or the row: a file pandas cannot
     read as UTF-8 CSV, a missing ``source`` column or an unknown one, or a row whose
     source, extension or values are bad (:func:`read_manifest`, :func:`apply_manifest`).
-    A ``ValueError``, so callers catching that still catch it; a command catches this
+    A :class:`~mastpipe.core.errors.RunError` of kind ``manifest_invalid``, and a
+    ``ValueError``, so callers catching that still catch it; a command catches this
     class to report the manifest as a user error, apart from the run's own errors."""
+
+    kind = "manifest_invalid"
 
 
 def file_checksum(path: Path | str) -> str:
@@ -419,13 +423,14 @@ def read_manifest(path: Path | str) -> pd.DataFrame:
     :data:`MANIFEST_FIELDS`; empty cells mean "no override". :class:`ManifestError` naming
     the file when it is not UTF-8 CSV (pandas' parser errors and ``UnicodeDecodeError`` are
     ``ValueError`` subclasses), cannot be opened (a folder, say), has rows longer than its
-    header, lacks ``source`` or has an unknown column; ``FileNotFoundError`` when it does
-    not exist."""
+    header, lacks ``source`` or has an unknown column;
+    :class:`~mastpipe.core.errors.ManifestMissingError` (a ``FileNotFoundError``) when it
+    does not exist."""
     path = Path(path)
     try:
         table = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
-    except FileNotFoundError:
-        raise
+    except FileNotFoundError as error:
+        raise ManifestMissingError(f"manifest {path} does not exist") from error
     except OSError as error:
         raise ManifestError(f"{path.name}: cannot be read: {error}") from error
     except ValueError as error:

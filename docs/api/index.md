@@ -11,6 +11,7 @@ mastpipe
 mastpipe-core-model
 mastpipe-core-hashing
 mastpipe-core-times
+mastpipe-core-errors
 mastpipe-config-models
 mastpipe-config-loader
 mastpipe-instruments-registry

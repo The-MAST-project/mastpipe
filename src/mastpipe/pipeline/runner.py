@@ -78,21 +78,37 @@ of the key existed is reduced again once.
 Errors follow ``options.on_error``: with ``"continue"`` a frame's exception is logged and
 recorded in ``failed`` and the run goes on, and a failure of the masters or traces aborts
 its group with a recorded failure; with ``"raise"`` it propagates. A night folder that is
-not a directory raises ``FileNotFoundError`` before anything is written; one without a
-readable frame records a failure for the night; an error in the manifest raises
-:class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. The ``mastpipe``
-logger writes ``out/logs/quicklook_<UTC stamp>.log`` and the console for the run; both
-handlers are removed when it ends.
+not a directory raises :class:`~mastpipe.core.errors.InputMissingError` (a
+``FileNotFoundError``) before anything is written; one without a readable frame logs one
+warning (``frames_scanned`` is then 0); an error in the manifest raises
+:class:`~mastpipe.io.ingest.ManifestError` before any frame is reduced. An ``--out``, log
+or calibration library that cannot be created raises
+:class:`~mastpipe.core.errors.OutputUnwritableError`; a library that is busy or whose index
+is invalid raises its own :class:`~mastpipe.core.errors.RunError`. The ``mastpipe`` logger
+writes a new log file per run, ``out/logs/quicklook_<UTC stamp>_<6 hex>.log`` (created
+exclusively, another random suffix drawn when the name is taken, so two runs started in
+the same second never share a file; its path is the summary's ``log`` as soon as it
+exists), and the console: ``INFO`` and above, or ``WARNING`` and above with
+``options.quiet`` (the file always has ``INFO``); both handlers are removed when the run
+ends. An exception that ends the run is written to the log file only (``run failed:
+...``, one line for a run error of the result
+(:func:`~mastpipe.pipeline.group.stopped_by_run_error`: a ``RunError`` raised before the
+calibration library was open), with the traceback for any other exception, a ``RunError``
+re-raised after the library opened included; ``run interrupted``, one line without a
+traceback, for a ``KeyboardInterrupt``), and the summary handed to :func:`run_quicklook`
+keeps what the run gathered, with its ``started`` and ``finished`` times (stamped on
+every run, one stopped by an option out of range or a missing night folder included).
 
-The constants ``NO_FRAMES`` and ``TIME_POLICIES`` and the classes ``RunOptions`` and
-``RunSummary`` (the run's options and summary) re-exported here are documented in
-:mod:`mastpipe.pipeline.group`.
+The constant ``TIME_POLICIES`` and the classes ``RunOptions``, ``RunSummary``, ``Skipped``
+and ``Failure`` (the run's options, its summary and the summary's items) re-exported here
+are documented in :mod:`mastpipe.pipeline.group`.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import secrets
 from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -103,6 +119,7 @@ import numpy as np
 from mastpipe.__version__ import __version__
 from mastpipe.config.loader import build_effective, calib_hash, config_hash
 from mastpipe.config.models import InstrumentConfig
+from mastpipe.core.errors import InputMissingError, OutputUnwritableError, RunError
 from mastpipe.core.model import FrameRef
 from mastpipe.core.times import ASSUMED_UTC
 from mastpipe.instruments.registry import layout_hash, load_header_map, load_instrument, load_layout
@@ -111,20 +128,24 @@ from mastpipe.pipeline.arc_stage import _arcs
 from mastpipe.pipeline.callib import CalibLibrary
 from mastpipe.pipeline.group import (
     LOG_FOLDER,
-    NO_FRAMES,
     SPEC_FOLDER,
     TIME_POLICIES,
+    Failure,
     RunOptions,
     RunSummary,
-    _describe,
+    Skipped,
     _Group,
     _group_binning,
     _group_readout,
     _per_frame,
+    _record_skip,
     _time_key,
     _timezone,
     _unlisted_amplifiers,
+    fail,
     log,
+    skip,
+    stopped_by_run_error,
 )
 from mastpipe.pipeline.identify import CALIB_FOLDER
 from mastpipe.pipeline.masters import _masters
@@ -133,10 +154,11 @@ from mastpipe.pipeline.traces import _resolve_light, _traces
 
 __all__ = [
     "EARLIER_PRODUCT",
-    "NO_FRAMES",
     "TIME_POLICIES",
+    "Failure",
     "RunOptions",
     "RunSummary",
+    "Skipped",
     "run_quicklook",
 ]
 
@@ -148,20 +170,51 @@ NO_CONFIGURATION = "(no configuration)"
 # ---------------------------------------------------------------------------- the run
 
 
-def _start_logging(out_dir: Path) -> tuple[list[logging.Handler], int]:
+def _utc_now() -> str:
+    """The current time in UTC as ``YYYY-MM-DDTHH:MM:SSZ`` (the run summary's stamps)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+LOG_NAME_ATTEMPTS = 100
+"""How many random suffixes :func:`_new_log_file` draws before giving up on a log name."""
+
+
+def _new_log_file(folder: Path) -> tuple[logging.FileHandler, Path]:
+    """A handler on a new file ``quicklook_<UTC stamp>_<6 hex>.log`` in ``folder``, and its
+    path (under ``folder`` as given), the file created exclusively: a name already taken
+    (another run in the same second) draws another suffix, so no two runs ever write into
+    one file."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    attempts = LOG_NAME_ATTEMPTS
+    while True:
+        path = folder / f"quicklook_{stamp}_{secrets.token_hex(3)}.log"
+        try:
+            handler = logging.FileHandler(path, mode="x", encoding="utf-8")
+        except FileExistsError:
+            attempts -= 1
+            if attempts == 0:
+                raise
+            continue
+        handler.mode = "a"  # should the stream ever be reopened, append to this run's file
+        return handler, path
+
+
+def _start_logging(out_dir: Path, quiet: bool = False) -> tuple[list[logging.Handler], int, Path]:
+    """Start the run's log: a new file in ``out_dir/logs`` (:func:`_new_log_file`) at
+    ``INFO`` and the console at ``INFO``, or ``WARNING`` when ``quiet``. Returns the
+    handlers, the logger's previous level and the log file's path."""
     folder = out_dir / LOG_FOLDER
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    file_handler = logging.FileHandler(folder / f"quicklook_{stamp}.log", encoding="utf-8")
+    file_handler, path = _new_log_file(folder)
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
+    console.setLevel(logging.WARNING if quiet else logging.INFO)
     console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     previous = log.level
     log.setLevel(logging.INFO)
     log.addHandler(file_handler)
     log.addHandler(console)
-    return [file_handler, console], previous
+    return [file_handler, console], previous, path
 
 
 def _run_group(
@@ -259,19 +312,77 @@ def _warn_earlier_products(spec_dir: Path) -> None:
         )
 
 
-def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOptions) -> RunSummary:
-    """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring)."""
-    night_dir, out_dir = Path(night_dir), Path(out_dir)
-    if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
-        raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
-    if options.on_error not in ("continue", "raise"):
-        raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
-    if not night_dir.is_dir():
-        raise FileNotFoundError(f"night folder {night_dir} is not a directory")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    handlers, level = _start_logging(out_dir)
-    summary = RunSummary()
+def _start_output(out_dir: Path, quiet: bool = False) -> tuple[list[logging.Handler], int, Path]:
+    """Create ``out_dir`` and start the run's log (:func:`_start_logging`);
+    :class:`~mastpipe.core.errors.OutputUnwritableError` for an ``OSError`` doing so."""
     try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return _start_logging(out_dir, quiet)
+    except OSError as error:
+        raise OutputUnwritableError(f"cannot write the output folder {out_dir}: {error}") from error
+
+
+def _open_library(root: Path) -> CalibLibrary:
+    """The calibration library at ``root``. Its own :class:`~mastpipe.core.errors.RunError`
+    (busy, invalid index) propagates; any other ``OSError`` is an
+    :class:`~mastpipe.core.errors.OutputUnwritableError`."""
+    try:
+        return CalibLibrary(root)
+    except RunError:
+        raise
+    except OSError as error:
+        raise OutputUnwritableError(f"cannot open the calibration library {root}: {error}") from error
+
+
+def _log_run_failure(handlers: list[logging.Handler], error: BaseException, summary: RunSummary) -> None:
+    """Write the exception leaving the run to the log file only: the console handler is
+    removed first (stderr is the command layer's). A ``KeyboardInterrupt`` is the one line
+    ``run interrupted``, without a traceback; a run error of the result
+    (:func:`~mastpipe.pipeline.group.stopped_by_run_error`) the one line
+    ``run failed: ...``; anything else, a ``RunError`` re-raised from a group included,
+    ``run failed`` with its traceback. Nothing is written when the log has not started."""
+    if not handlers:
+        return
+    for handler in handlers:
+        if not isinstance(handler, logging.FileHandler):
+            log.removeHandler(handler)
+    if isinstance(error, KeyboardInterrupt):
+        log.error("run interrupted")
+    elif stopped_by_run_error(summary, error):
+        log.error("run failed: %s", error)
+    else:
+        log.exception("run failed", exc_info=error)
+
+
+def run_quicklook(
+    night_dir: Path | str,
+    out_dir: Path | str,
+    options: RunOptions,
+    summary: RunSummary | None = None,
+) -> RunSummary:
+    """Reduce the night in ``night_dir`` into ``out_dir`` (see the module docstring).
+
+    The run is recorded in ``summary`` (a new :class:`RunSummary` when not given), so a
+    caller that hands one in still has what the run gathered when it raises; a handed-in
+    summary must be a fresh one (the run adds to its lists and sets its facts, and a used
+    one would mix two runs). Every run stamps ``started`` and ``finished``, one that fails
+    its precondition checks (an option out of range, a missing night folder) included."""
+    night_dir, out_dir = Path(night_dir), Path(out_dir)
+    if summary is None:
+        summary = RunSummary()
+    summary.started = _utc_now()
+    handlers: list[logging.Handler] = []
+    level = log.level
+    try:
+        # the precondition checks: nothing is created or logged when one fails, but the
+        # run is stamped like any other
+        if options.time_policy is not None and options.time_policy not in TIME_POLICIES:
+            raise ValueError(f"time_policy must be one of {TIME_POLICIES}, got {options.time_policy!r}")
+        if options.on_error not in ("continue", "raise"):
+            raise ValueError(f"on_error must be 'continue' or 'raise', got {options.on_error!r}")
+        if not night_dir.is_dir():
+            raise InputMissingError(f"night folder {night_dir} is not a directory")
+        handlers, level, summary.log = _start_output(out_dir, options.quiet)
         log.info("quicklook of %s into %s (mastpipe %s)", night_dir, out_dir, __version__)
         _warn_earlier_products(out_dir / SPEC_FOLDER)
         instrument = load_instrument(options.instrument)
@@ -286,12 +397,9 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             skipped=other,
         )
         for path in unreadable:
-            source = path.relative_to(night_dir).as_posix()
-            summary.failed.append((source, "unreadable FITS file"))
-            log.error("unreadable FITS file skipped: %s", source)
+            fail(summary, "frame", path.relative_to(night_dir).as_posix(), "unreadable FITS file")
         for source, reason in other:
-            summary.skipped.append(f"{source}: {reason}")
-            log.warning("skipped %s: %s", source, reason)
+            skip(summary, "frame", source, reason)
         if manifest is not None:
             unmatched: list[str] = []
             refs = apply_manifest(refs, manifest, unmatched)
@@ -301,8 +409,8 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                     reason = f"not a FITS file ({', '.join(FITS_SUFFIXES)})"
                 else:
                     reason = "matches no frame"
-                summary.skipped.append(f"{label} ({source}): {reason}")
-                log.warning("%s (%s): %s", label, source, reason)
+                skip(summary, "manifest", source, f"{label}: {reason}")
+        summary.frames_scanned = len(refs)
         log.info("scanned %d frames in %s", len(refs), night_dir)
         if any(ref.meta.timezone == ASSUMED_UTC for ref in refs):
             log.warning("frame times carry no time zone; taken as UTC (header map 'assume-utc')")
@@ -313,18 +421,16 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 ", ".join(unlisted),
             )
         if not refs:
-            summary.failed.append((f"night {night_dir.name}", NO_FRAMES))
-            log.error("%s: %s", night_dir, NO_FRAMES)
-        library = CalibLibrary(options.library or out_dir / CALIB_FOLDER)
+            log.warning("no frames of %s in %s", options.instrument, night_dir)
+        library = _open_library(Path(options.library or out_dir / CALIB_FOLDER))
+        summary.library = library.root
         default_conf = options.configuration
         groups: dict[tuple[str, str | None], list[FrameRef]] = defaultdict(list)
         run_configured: set[tuple[str, int]] = set()
         for ref in refs:
             meta = ref.meta
             if meta.exposure_type == "unknown":
-                reason = f"exposure type unknown ({meta.classification_rule})"
-                summary.skipped.append(f"{meta.source}: {reason}")
-                log.warning("skipped %s: %s", meta.source, reason)
+                skip(summary, "frame", meta.source, f"exposure type unknown ({meta.classification_rule})")
                 continue
             if meta.configuration is None and default_conf is not None:
                 # the run's --configuration names the grating of a frame whose header does
@@ -333,15 +439,14 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
                 run_configured.add((meta.source, meta.extension))
             groups[(meta.camera, ref.meta.configuration)].append(ref)
         for (camera, configuration), group_refs in sorted(groups.items(), key=str):
-            label = f"group {camera}/{NO_CONFIGURATION if configuration is None else configuration}"
+            source = f"{camera}/{NO_CONFIGURATION if configuration is None else configuration}"
             if options.camera is not None and camera != options.camera:
-                summary.skipped.append(f"{label}: not camera {options.camera}")
-                log.info("skipped %s: not camera %s", label, options.camera)
+                _record_skip(summary, "group", source, f"not camera {options.camera}", logging.INFO)
                 continue
             if configuration is None:
                 choices = sorted(instrument.configurations)
-                summary.failed.append((label, f"configuration unknown; pass --configuration one of {choices}"))
-                log.error("%s: configuration unknown, group skipped", label)
+                message = f"configuration unknown; pass --configuration one of {choices}"
+                fail(summary, "group", source, message, kind="configuration_unknown")
                 continue
             try:
                 _run_group(
@@ -358,8 +463,7 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             except Exception as error:
                 if options.on_error == "raise":
                     raise
-                summary.failed.append((label, _describe(error)))
-                log.exception("%s failed", label)
+                fail(summary, "group", source, error)
         log.info(
             "done: %d products, %d QC files, %d skipped, %d reduced again, %d failed",
             len(summary.products),
@@ -368,7 +472,11 @@ def run_quicklook(night_dir: Path | str, out_dir: Path | str, options: RunOption
             len(summary.reduced_again),
             len(summary.failed),
         )
+    except BaseException as error:
+        _log_run_failure(handlers, error, summary)
+        raise
     finally:
+        summary.finished = _utc_now()
         for handler in handlers:
             log.removeHandler(handler)
             handler.close()

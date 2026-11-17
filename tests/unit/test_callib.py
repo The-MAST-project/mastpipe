@@ -3,16 +3,20 @@ found by validity time or identifier, and the ``index.json`` behind both."""
 
 import json
 import multiprocessing
+import os
 import threading
+from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError
 from mastpipe.core.model import LINE_COLUMNS, FrameMeta, MasterCalib, WavelengthSolution
 from mastpipe.io.atomic import locked
 from mastpipe.io.ingest import file_checksum
-from mastpipe.io.products import read_master, reference_name
+from mastpipe.io.products import read_master, reference_name, write_master, write_reference
 from mastpipe.pipeline.callib import INDEX_FILE, LOCK_FILE, CalibLibrary
 from mastpipe.pipeline.provenance import Provenance
 from mastpipe.steps.geometry import grating_geometry
@@ -352,3 +356,140 @@ def test_opening_a_library_waits_for_a_writer(tmp_path):
         assert reader.is_alive() and not opened  # blocked while the index is being written
     reader.join(timeout=10)
     assert len(opened) == 1 and opened[0].list() == []
+
+
+def test_bad_index_is_library_invalid(tmp_path):
+    (tmp_path / "index.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(LibraryInvalidError, match="index.json"):
+        CalibLibrary(tmp_path)
+    (tmp_path / "index.json").write_text('{"a": 1}', encoding="utf-8")
+    with pytest.raises(LibraryInvalidError):
+        CalibLibrary(tmp_path)
+    (tmp_path / "index.json").write_bytes(b"[\xff\xfe]")
+    with pytest.raises(LibraryInvalidError, match="index.json"):
+        CalibLibrary(tmp_path)
+
+
+@pytest.mark.parametrize(("index", "position"), [("[null]", 0), ("[1, {}]", 0), ('[{}, "x"]', 1)])
+def test_index_entry_that_is_not_an_object_is_library_invalid(tmp_path, index, position):
+    (tmp_path / "index.json").write_text(index, encoding="utf-8")
+    with pytest.raises(LibraryInvalidError, match=rf"index\.json: entry {position} .*not a JSON object"):
+        CalibLibrary(tmp_path)
+
+
+def test_held_lock_is_library_busy(tmp_path, monkeypatch):
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        CalibLibrary(tmp_path)
+
+
+def test_held_lock_on_write_is_library_busy(tmp_path, monkeypatch):
+    library = CalibLibrary(tmp_path)
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library._replace("file", "a.fits", {"file": "a.fits"})
+
+
+def test_lock_timeout_on_add_writes_no_master(tmp_path, monkeypatch):
+    """The lock is taken before the master is written: a timeout leaves no file behind
+    that the index (and a run's ``products``) would not know of."""
+    library = CalibLibrary(tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library.add(master, make_provenance(), meta)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_lock_timeout_on_add_reference_writes_no_file(tmp_path, monkeypatch, highspec_effective):
+    library = CalibLibrary(tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    def busy(path, timeout_s=30.0):
+        raise TimeoutError(f"could not lock {path}")
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", busy)
+    with pytest.raises(LibraryBusyError, match="could not lock"):
+        library.add_reference(make_reference("2026-10-01T18:00:00", 0.0, highspec_effective), make_provenance(), "main")
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_add_writes_the_file_before_taking_the_lock(tmp_path, monkeypatch, highspec_effective):
+    """The file is written to a temporary without the lock (other processes do not wait for a
+    FITS write); only moving it into place and saving the index happen under the lock."""
+    library = CalibLibrary(tmp_path)
+    real = locked
+    real_replace = os.replace
+    events: list[str] = []
+
+    @contextmanager
+    def spy(path, timeout_s=30.0):
+        with real(path, timeout_s):
+            events.append("lock")
+            yield
+            events.append("unlock")
+
+    def recorder(name, function):
+        def wrapped(*args, **kwargs):
+            events.append(name)
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(f"mastpipe.pipeline.callib.{name}", wrapped)
+
+    def replace(src, dst):
+        if Path(dst).suffix == ".fits" and ".tmp-" not in Path(dst).name:
+            events.append(f"move {Path(dst).name.rsplit('_', 1)[-1]}")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("mastpipe.pipeline.callib.locked", spy)
+    monkeypatch.setattr("mastpipe.pipeline.callib.os.replace", replace)
+    recorder("write_master", write_master)
+    recorder("write_reference", write_reference)
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    library.add(master, make_provenance(), meta)
+    library.add_reference(make_reference("2026-10-01T18:00:00", 0.0, highspec_effective), make_provenance(), "main")
+    assert events == [
+        "write_master",
+        "lock",
+        "move bias.fits",
+        "unlock",
+        "write_reference",
+        "lock",
+        "move wref.fits",
+        "unlock",
+    ]
+    assert sorted(p.name for p in tmp_path.iterdir() if ".tmp-" in p.name) == []
+    assert len(CalibLibrary(tmp_path).list()) == 2
+
+
+def test_entry_file_checksum_is_that_of_the_moved_file(tmp_path):
+    library = CalibLibrary(tmp_path)
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    path = library.add(master, make_provenance(), meta)
+    assert library.list("bias")[0]["file_checksum"] == file_checksum(path)
+
+
+def test_invalid_index_on_add_leaves_no_file(tmp_path, highspec_effective):
+    """An index that became unreadable after the library was opened stops an addition
+    before its file is moved into place: no product the index does not list, no temporary."""
+    library = CalibLibrary(tmp_path)
+    (tmp_path / INDEX_FILE).write_text("[null]\n", encoding="utf-8")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    master, meta = make_master("bias", "2026-10-01T18:00:00", 500.0)
+    with pytest.raises(LibraryInvalidError):
+        library.add(master, make_provenance(), meta)
+    with pytest.raises(LibraryInvalidError):
+        library.add_reference(make_reference("2026-10-01T18:00:00", 0.0, highspec_effective), make_provenance(), "main")
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
