@@ -19,7 +19,13 @@ wrong) and an interrupt (Ctrl-C). Without the option nothing is written. The fol
 `PATH` is created when missing, and the file is written atomically: a reader sees the
 whole document or no file, never half of one.
 
-An existing `PATH` is replaced only when it is an empty file or an earlier result
+A `PATH` inside the calibration library folder (`OUT/calib`, or `--library`) is never
+written, whether the file exists or not: every name there belongs to the library (an
+empty library has no `index.json` yet), and the command says `could not write the result
+file PATH: PATH lies in the calibration library LIBRARY; not written` on stderr. Links
+and `..` in either path are resolved before the comparison.
+
+Elsewhere, an existing `PATH` is replaced only when it is an empty file or an earlier result
 document (a JSON object whose `"command"` is `"quicklook"` and which has a `"schema"`
 key). Anything else, such as the calibration library's `index.json`, a FITS frame, the
 manifest, the log, another JSON file or a folder, is left untouched, and the command says

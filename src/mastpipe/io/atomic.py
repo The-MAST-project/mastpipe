@@ -2,7 +2,9 @@
 
 :func:`atomic_write` lets a writer fill a temporary file next to the target and moves it
 into place with :func:`os.replace` only when the writer finishes, so a reader sees either
-the old file or the new one, never a partial one. :func:`locked` serialises a
+the old file or the new one, never a partial one. :func:`staged` is the same temporary
+for a writer that moves it into place itself, later (under a lock, say). :func:`locked`
+serialises a
 read-modify-write across processes (the calibration library's index). Both work on
 POSIX and Windows; the lock is the only platform-specific code, guarded by
 ``sys.platform``.
@@ -28,6 +30,31 @@ _BUSY = frozenset({errno.EACCES}) if sys.platform == "win32" else frozenset({err
 ``flock`` raises ``EWOULDBLOCK`` (= ``EAGAIN``), and some systems ``EACCES``."""
 
 
+def _temporary(path: Path) -> Path:
+    """A new temporary name ``<name>.tmp-<pid>-<random>`` next to ``path``."""
+    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:12]}")
+
+
+@contextmanager
+def staged(path: Path | str) -> Iterator[Path]:
+    """Yield a temporary path next to ``path`` for the caller to fill and then move onto
+    ``path`` itself (:func:`os.replace`) whenever it is ready -- after taking a lock, say.
+
+    The temporary is named and placed as in :func:`atomic_write`, and the folder is created
+    when missing. When the block ends, normally or by an exception, a temporary still
+    there (never moved) is removed, so nothing is left behind; ``path`` itself is touched
+    only by the caller's move.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _temporary(path)
+    try:
+        yield tmp
+    finally:
+        with suppress(OSError):  # never let a failed clean-up mask the writer's error
+            tmp.unlink(missing_ok=True)
+
+
 @contextmanager
 def atomic_write(path: Path | str) -> Iterator[Path]:
     """Yield a temporary path next to ``path``; on normal exit move it onto ``path``.
@@ -41,15 +68,9 @@ def atomic_write(path: Path | str) -> Iterator[Path]:
     file that is open).
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:12]}")
-    try:
+    with staged(path) as tmp:
         yield tmp
         os.replace(tmp, path)
-    except BaseException:
-        with suppress(OSError):  # never let a failed clean-up mask the writer's error
-            tmp.unlink(missing_ok=True)
-        raise
 
 
 def _try_lock(handle: IO[bytes]) -> bool:

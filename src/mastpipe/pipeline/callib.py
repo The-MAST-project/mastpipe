@@ -20,9 +20,13 @@ Several processes may share one library (a quick-look and an ``identify`` run ag
 same folder). Products and the index are written atomically, and every change to the
 index re-reads it under an exclusive lock on ``index.lock``
 (:func:`mastpipe.io.atomic.locked`), so concurrent writers keep each other's entries.
-Adding a product holds the lock from before its file is written until the index is
-saved, so a lock that is not free in time fails the addition before anything is written:
-the folder never holds a new product the index does not list.
+Adding a product writes its file to a temporary name next to it first, without the lock
+(a FITS write and a checksum can take a while, and other processes wait for the lock), and
+then, under the lock, re-reads and checks the index, moves the file into place and saves
+the index. A lock that is not free in time, or an index that cannot be read, fails the
+addition before the file is moved, and the temporary is removed: the folder does not gain
+a product the index does not list. (Only a failure to save the index itself, after the
+move, could leave one.)
 Lookups read the index as last loaded or written by this instance, without the lock: an
 entry another process added since is not seen until this instance next writes or is
 re-created, which is acceptable for finding calibrations.
@@ -31,6 +35,7 @@ re-created, which is acceptable for finding calibrations.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -42,7 +47,7 @@ from mastpipe.core.errors import LibraryBusyError, LibraryInvalidError
 from mastpipe.core.model import MasterCalib, ReferenceSolution, readout_key
 from mastpipe.core.times import to_utc
 from mastpipe.instruments.registry import load_instrument
-from mastpipe.io.atomic import atomic_write, locked
+from mastpipe.io.atomic import atomic_write, locked, staged
 from mastpipe.io.ingest import file_checksum
 from mastpipe.io.products import (
     product_name,
@@ -152,13 +157,19 @@ class CalibLibrary:
         with self._lock():
             self._replace_locked(key, value, entry)
 
-    def _replace_locked(self, key: str, value: Any, entry: dict[str, Any]) -> None:
+    def _replace_locked(self, key: str, value: Any, entry: dict[str, Any], install: Path | None = None) -> None:
         """Append ``entry``, dropping any entry whose ``key`` already equals ``value``, and
         save the index. The caller holds the lock (which is not re-entrant: never take it
         again here). The index is re-read from disk first, so entries another process added
-        since this instance loaded it are kept."""
-        self._entries = [e for e in self._load() if e.get(key) != value]
-        self._entries.append(entry)
+        since this instance loaded it are kept. With ``install`` (a staged temporary,
+        :func:`~mastpipe.io.atomic.staged`), that file is moved onto ``root/entry["path"]``
+        after the index was read and checked and before it is saved, so an index that cannot
+        be read (:class:`~mastpipe.core.errors.LibraryInvalidError`) stops the addition
+        before the product is in place."""
+        entries = [e for e in self._load() if e.get(key) != value]
+        if install is not None:
+            os.replace(install, self.root / entry["path"])
+        self._entries = [*entries, entry]
         self._save()
 
     def list(self, kind: str | None = None) -> list[dict[str, Any]]:
@@ -187,15 +198,17 @@ class CalibLibrary:
         was built under; ``None`` when not given, and such an entry is never reused by
         :meth:`find_by_inputs`). A master of the same file name replaces the earlier entry.
 
-        The lock on ``index.lock`` is held for the whole operation, from before the file is
-        written until the index is saved, so a
-        :class:`~mastpipe.core.errors.LibraryBusyError` (the lock not free in time) comes
-        before anything is written.
+        The file is written to a temporary next to it without the lock; the lock on
+        ``index.lock`` is then held only to re-read the index, move the file into place and
+        save the index (see the module docstring). A
+        :class:`~mastpipe.core.errors.LibraryBusyError` (the lock not free in time) or a
+        :class:`~mastpipe.core.errors.LibraryInvalidError` comes before the file is moved:
+        neither leaves a file behind.
         """
         name = product_name(meta_for_name, master.kind)
         path = self.root / name
-        with self._lock():
-            write_master(path, master, prov)
+        with staged(path) as tmp:
+            write_master(tmp, master, prov)
             validity = master.validity
             binning = validity.get("binning") or meta_for_name.binning
             entry = {
@@ -213,10 +226,11 @@ class CalibLibrary:
                 "exposure_time": validity.get("exposure_time"),
                 "n_frames": int(master.n_frames),
                 "inputs": sorted(str(checksum) for checksum in prov.inputs),
-                "file_checksum": file_checksum(path),
+                "file_checksum": file_checksum(tmp),
                 "calib_hash": calib_hash,
             }
-            self._replace_locked("path", name, entry)
+            with self._lock():
+                self._replace_locked("path", name, entry, install=tmp)
         return path
 
     def find(
@@ -312,15 +326,16 @@ class CalibLibrary:
         """Write ``ref`` as ``root/<identifier>_wref.fits`` and index it with ``camera``.
 
         A reference of the same identifier (the same instrument, configuration, preset and
-        arc time) replaces the earlier entry and file. Like :meth:`add`, the lock is held
-        from before the file is written until the index is saved.
+        arc time) replaces the earlier entry and file. Like :meth:`add`, the file is written
+        to a temporary without the lock and moved into place under it.
         """
         name = reference_name(ref)
         path = self.root / name
-        with self._lock():
-            write_reference(path, ref, prov)
-            self._references.pop(name, None)
-            self._replace_locked("identifier", ref.identifier, self._reference_entry(ref, name, camera))
+        with staged(path) as tmp:
+            write_reference(tmp, ref, prov)
+            with self._lock():
+                self._replace_locked("identifier", ref.identifier, self._reference_entry(ref, name, camera), install=tmp)
+                self._references.pop(name, None)
         return path
 
     @staticmethod

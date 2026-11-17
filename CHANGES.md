@@ -2,6 +2,18 @@
 
 ## 0.0.1 (unreleased)
 
+- `quicklook` review fixes (2026-11-17): `--summary-json PATH` refuses any `PATH` inside
+  the calibration library folder, existing or not (`could not write the result file
+  PATH: ... lies in the calibration library ...; not written`); before, an empty night's
+  result could be written as the library's not-yet-existing `index.json`, which made every
+  later run fail with `library_invalid`. `CalibLibrary.add` and `add_reference` write the
+  product to a temporary without the index lock and take the lock only to check the
+  index, move the file into place and save the index, so other processes no longer wait
+  for a FITS write (holding the lock across the write, from the 2026-11-16 fixes, could
+  push them past the 30 s lock timeout). An index that became unreadable after the
+  library was opened now stops an addition before its file is moved (it left a product
+  the index did not list). New `mastpipe.io.atomic.staged`, the temporary of
+  `atomic_write` for a caller that moves it into place itself.
 - `quicklook` review fixes (2026-11-16): `--summary-json PATH` replaces an existing
   `PATH` only when it is an empty file or an earlier result document (a JSON object with
   `"command": "quicklook"` and a `"schema"` key); any other file (the library's

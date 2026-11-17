@@ -180,3 +180,35 @@ def test_write_refuses_an_alias_of_another_file(tmp_path):
     with pytest.raises(FileExistsError, match="not overwritten"):
         write(tmp_path / "calib" / ".." / "calib" / "index.json", {"schema": 1, "command": "quicklook"})
     assert index.read_text(encoding="utf-8") == "[]\n"
+
+
+@pytest.mark.parametrize("name", ["index.json", "index.lock", "sub/r.json"])
+def test_write_refuses_a_path_in_the_library_even_when_absent(tmp_path, name):
+    """An empty library has no index.json yet: a result written there would take its place."""
+    library = tmp_path / "out" / "calib"
+    path = library / name
+    with pytest.raises(FileExistsError, match="lies in the calibration library .*not written"):
+        write(path, {"schema": 1, "command": "quicklook"}, library)
+    assert not path.exists()
+
+
+def test_write_refuses_the_library_under_another_spelling(tmp_path):
+    library = tmp_path / "calib"
+    library.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(library, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symbolic link here")
+    with pytest.raises(FileExistsError, match="lies in the calibration library"):
+        write(alias / "index.json", {"schema": 1, "command": "quicklook"}, library)
+    with pytest.raises(FileExistsError, match="lies in the calibration library"):
+        write(tmp_path / "x" / ".." / "calib" / "index.json", {"schema": 1, "command": "quicklook"}, library)
+    assert list(library.iterdir()) == []
+
+
+def test_write_beside_the_library_is_allowed(tmp_path):
+    library = tmp_path / "out" / "calib"
+    path = tmp_path / "out" / "calib-result.json"  # a sibling whose name starts like the library's
+    write(path, {"schema": 1, "command": "quicklook"}, library)
+    assert json.loads(path.read_text(encoding="utf-8"))["command"] == "quicklook"

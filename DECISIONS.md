@@ -535,7 +535,21 @@ designer made, and from the rulings made while the plan was executed.
   through the path as given, rather than comparing paths with the inputs, the library or
   the products, because content covers every alias (links, `..`, case-insensitive file
   systems) and every file a caller might name by mistake.
-- **A library write holds the lock from before the file is written** (2026-11-16):
+- **The result file is never written into the calibration library** (2026-11-17): the
+  content check above cannot protect a library file that does not exist yet (an empty
+  library has no `index.json`), so `summary.write` also refuses any destination inside the
+  library folder, comparing resolved paths. Every name in that folder belongs to the
+  library; a path check is the only guard for a file that is not there.
+- **A library write stages the file, then locks** (2026-11-17, superseding the next
+  entry's ordering): `CalibLibrary.add` and `add_reference` write the product to a
+  temporary (`io.atomic.staged`) without the lock, then under the lock re-read and check
+  the index, move the file into place and save the index. Holding the lock across the
+  FITS write and checksum kept the "no unlisted product" guarantee but made other
+  processes wait for a whole product write against a 30 s timeout. The move after the
+  index check keeps the guarantee for a busy lock and for an unreadable index; only a
+  failure to save the index after the move could still leave an unlisted file.
+- **A library write holds the lock from before the file is written** (2026-11-16,
+  ordering superseded 2026-11-17 above):
   `CalibLibrary.add` and `add_reference` take the index lock, write the product, re-read
   and save the index, and only then release it (`_replace_locked` assumes the lock; the
   lock is not re-entrant). A lock timeout therefore happens before anything is written,

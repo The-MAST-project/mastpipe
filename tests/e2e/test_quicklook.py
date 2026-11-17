@@ -1546,7 +1546,7 @@ def test_result_file_never_overwrites_another_file(tmp_path, capsys):
     assert index.read_bytes() == before
     err = capsys.readouterr().err
     assert "Traceback" not in err
-    assert f"could not write the result file {index}: " in err and "not overwritten" in err
+    assert f"could not write the result file {index}: " in err and "lies in the calibration library" in err
     assert CalibLibrary(out / "calib").list() == [{"kind": "bias", "path": "m_bias.fits"}]
 
     other = tmp_path / "notes.txt"
@@ -1561,6 +1561,28 @@ def test_result_file_never_overwrites_another_file(tmp_path, capsys):
     assert read(placeholder)["status"] == "empty"
     assert main([*argv, "--summary-json", str(placeholder)]) == 0  # and so is an earlier result
     assert read(placeholder)["status"] == "empty" and "could not write" not in capsys.readouterr().err
+
+
+def test_result_file_never_takes_the_place_of_an_absent_index(tmp_path, capsys):
+    """An empty night adds nothing to the library, so ``index.json`` does not exist yet:
+    ``--summary-json`` naming it is refused all the same, and the next run opens the
+    library normally (with ``--library`` too)."""
+    night = tmp_path / "night"
+    night.mkdir()
+    out = tmp_path / "out"
+    argv = ["quicklook", str(night), "--out", str(out), "--instrument", "highspec"]
+    index = out / "calib" / "index.json"
+    assert main([*argv, "--summary-json", str(index)]) == 0
+    assert not index.exists()
+    err = capsys.readouterr().err
+    assert f"could not write the result file {index}: " in err and "lies in the calibration library" in err
+    library = tmp_path / "lib"
+    assert main([*argv, "--library", str(library), "--summary-json", str(library / "index.json")]) == 0
+    assert not (library / "index.json").exists()
+    assert "lies in the calibration library" in capsys.readouterr().err
+    assert main([*argv, "--summary-json", str(out / "result.json")]) == 0
+    assert read(out / "result.json")["status"] == "empty"
+    assert CalibLibrary(out / "calib").list() == []
 
 
 def test_result_file_that_cannot_be_built_keeps_the_exit_code(tmp_path, monkeypatch, capsys):

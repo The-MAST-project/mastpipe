@@ -180,13 +180,28 @@ def _check_replaceable(path: Path) -> None:
         raise FileExistsError(refused)
 
 
-def write(path: Path, doc: Mapping[str, Any]) -> None:
+def _check_outside(path: Path, library: Path | None) -> None:
+    """Raise ``FileExistsError`` when ``path`` lies in the calibration library folder
+    ``library``, whether or not the file exists yet (an empty library has no
+    ``index.json`` until its first product): every name there is the library's. Both
+    paths are compared with their links resolved, so another spelling of the folder is
+    refused too."""
+    if library is None:
+        return
+    root = Path(os.path.realpath(library))
+    if Path(os.path.realpath(path)).is_relative_to(root):
+        raise FileExistsError(f"{path} lies in the calibration library {library}; not written")
+
+
+def write(path: Path, doc: Mapping[str, Any], library: Path | None = None) -> None:
     """Write ``doc`` to ``path`` as JSON (indent 1, sorted keys, ASCII, a final newline),
     atomically: a reader sees the whole file or none. The folder is created when missing.
-    An existing ``path`` is replaced only when it is empty or an earlier result document;
-    anything else is left as it is and ``FileExistsError`` raised
-    (:func:`_check_replaceable`)."""
+    A ``path`` inside the calibration library folder ``library`` is refused, existing or
+    not (:func:`_check_outside`); an existing ``path`` is replaced only when it is empty or
+    an earlier result document. Anything refused is left as it is and ``FileExistsError``
+    raised (:func:`_check_replaceable`)."""
     path = Path(path)
+    _check_outside(path, library)
     _check_replaceable(path)
     text = json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=True) + "\n"
     with atomic_write(path) as tmp, tmp.open("w", encoding="utf-8", newline="") as handle:

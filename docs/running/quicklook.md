@@ -91,8 +91,9 @@ Per camera and grating found in the folder:
 `--summary-json PATH`
 : Write the run's result to `PATH` as one JSON document, for a program that
   starts `quicklook` and needs to know what happened; see
-  [The result file](result-file.md). An existing `PATH` is replaced only when it is
-  empty or an earlier result; any other file is left untouched.
+  [The result file](result-file.md). A `PATH` inside the calibration library folder
+  is never written; an existing `PATH` elsewhere is replaced only when it is empty or
+  an earlier result; any other file is left untouched.
 
 `--quiet`
 : Keep the per-frame progress lines off the console: warnings and errors still go

@@ -119,8 +119,8 @@ def quicklook_command(args: argparse.Namespace) -> int:
     stderr, then stdout is drained, or discarded only when it cannot be flushed
     (:func:`_drain_stdout`), and the exit code and the result file are left alone. With
     ``--summary-json`` the result document is built and written last; a failure to do so
-    (an existing destination that is not an earlier result is never replaced, see
-    :func:`mastpipe.pipeline.summary.write`) is one line on stderr and changes nothing
+    (a destination in the calibration library folder, or an existing one that is not an
+    earlier result, is never written, see :func:`mastpipe.pipeline.summary.write`) is one line on stderr and changes nothing
     else. Every stderr line goes through :func:`_diagnose`, so a stderr that cannot take
     it changes nothing either."""
     options = RunOptions(
@@ -158,7 +158,8 @@ def quicklook_command(args: argparse.Namespace) -> int:
     if args.summary_json is not None:
         try:
             doc = result.document(summary, options, args.night_dir, args.out, args.set, error)
-            result.write(args.summary_json, doc)
+            library = summary.library or Path(options.library or args.out / CALIB_FOLDER)
+            result.write(args.summary_json, doc, library)
         except Exception as failure:
             _diagnose(f"could not write the result file {args.summary_json}: {failure}")
     return result.outcome(summary, error)[1]
